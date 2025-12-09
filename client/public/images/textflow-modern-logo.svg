@@ -1,0 +1,42 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg width="240" height="240" viewBox="0 0 240 240" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <!-- Gradient definitions -->
+  <defs>
+    <linearGradient id="primaryGradient" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#4361EE" />
+      <stop offset="100%" stop-color="#3A0CA3" />
+    </linearGradient>
+    <linearGradient id="secondaryGradient" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#4CC9F0" />
+      <stop offset="100%" stop-color="#4361EE" />
+    </linearGradient>
+    <filter id="shadow" x="-20%" y="-20%" width="140%" height="140%">
+      <feGaussianBlur in="SourceAlpha" stdDeviation="5" />
+      <feOffset dx="0" dy="0" result="offsetblur" />
+      <feComponentTransfer>
+        <feFuncA type="linear" slope="0.2" />
+      </feComponentTransfer>
+      <feMerge>
+        <feMergeNode />
+        <feMergeNode in="SourceGraphic" />
+      </feMerge>
+    </filter>
+  </defs>
+  
+  <!-- Main circular base -->
+  <circle cx="120" cy="120" r="100" fill="white" filter="url(#shadow)" />
+  
+  <!-- Decorative ring -->
+  <circle cx="120" cy="120" r="90" fill="none" stroke="url(#primaryGradient)" stroke-width="6" opacity="0.8" />
+  
+  <!-- Chat bubble shape -->
+  <path d="M158 95C158 78.4315 144.569 65 128 65H92C75.4315 65 62 78.4315 62 95V115C62 131.569 75.4315 145 92 145H98.5L94 175L132 145H128C144.569 145 158 131.569 158 115V95Z" fill="url(#primaryGradient)" />
+  
+  <!-- SMS lines (stylized text) -->
+  <rect x="82" y="95" width="56" height="5" rx="2.5" fill="white" />
+  <rect x="82" y="110" width="40" height="5" rx="2.5" fill="white" />
+  
+  <!-- Signal waves -->
+  <path d="M170 100C178.284 100 185 107.163 185 116C185 124.837 178.284 132 170 132" stroke="url(#secondaryGradient)" stroke-width="4" stroke-linecap="round" />
+  <path d="M178 90C190.15 90 200 101.297 200 115C200 128.703 190.15 140 178 140" stroke="url(#secondaryGradient)" stroke-width="4" stroke-linecap="round" stroke-dasharray="2 4" />
+</svg>
