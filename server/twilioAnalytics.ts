@@ -254,7 +254,7 @@ class TwilioAnalyticsService {
       console.error('Error fetching account info:', error);
       return {
         sid: this.accountSid,
-        friendlyName: 'SyncGrid Account',
+        friendlyName: 'Elite Financial Account',
         status: 'active',
         type: 'Full',
         dateCreated: new Date()
@@ -301,7 +301,7 @@ class TwilioAnalyticsService {
       const messages = await this.client.messages.list({
         dateSentAfter: startDate,
         dateSentBefore: endDate,
-        limit: 1000
+        limit: 10000
       });
 
       return messages.map(m => ({
@@ -335,7 +335,7 @@ class TwilioAnalyticsService {
       const calls = await this.client.calls.list({
         startTimeAfter: startDate,
         startTimeBefore: endDate,
-        limit: 500
+        limit: 5000
       });
 
       return calls.map(c => ({
@@ -452,7 +452,7 @@ class TwilioAnalyticsService {
     return {
       account: {
         sid: this.accountSid || 'AC_SIMULATED',
-        friendlyName: 'SyncGrid Demo Account',
+        friendlyName: 'Elite Financial Demo Account',
         status: 'active',
         type: 'Full',
         dateCreated: new Date('2024-01-01')

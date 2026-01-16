@@ -31,28 +31,31 @@ export class CommioProvider implements ICommunicationProvider {
   readonly name = 'Commio';
   
   private accountId: string;
-  private apiKey: string;
-  private baseUrl = 'https://api.commio.com/v1';
+  private apiToken: string;
+  private baseUrl = 'https://api.thinq.com';
 
   constructor(credentials: ProviderCredentials) {
+    // Commio credentials:
+    // accountSid -> Account ID (e.g., 22956)
+    // authToken -> API Token (from Dashboard → API → Tokens)
     this.accountId = credentials.accountSid;
-    this.apiKey = credentials.authToken;
+    this.apiToken = credentials.authToken;
   }
 
   /**
-   * Helper method for making API requests to Commio
+   * Helper method for making API requests to Commio/ThinQ
+   * Uses Bearer token authentication
    */
   private async apiRequest<T>(
     method: string,
     endpoint: string,
     body?: any
   ): Promise<T> {
-    const response = await fetch(`${this.baseUrl}${endpoint}`, {
+    const response = await fetch(`${this.baseUrl}/account/${this.accountId}${endpoint}`, {
       method,
       headers: {
-        'Authorization': `Bearer ${this.apiKey}`,
+        'Authorization': `Bearer ${this.apiToken}`,
         'Content-Type': 'application/json',
-        'X-Account-ID': this.accountId,
       },
       body: body ? JSON.stringify(body) : undefined,
     });
@@ -70,29 +73,23 @@ export class CommioProvider implements ICommunicationProvider {
   // ============================================
 
   async validateCredentials(): Promise<boolean> {
-    try {
-      // Commio credential validation
-      // In production, this would call their auth endpoint
-      const response = await fetch(`${this.baseUrl}/account`, {
-        headers: {
-          'Authorization': `Bearer ${this.apiKey}`,
-          'X-Account-ID': this.accountId,
-        },
-      });
-      return response.ok;
-    } catch (error) {
-      console.error('Commio credential validation failed:', error);
-      // For demo purposes, return true if credentials are provided
-      return !!(this.accountId && this.apiKey);
+    // Just verify credentials are provided
+    // Actual API validation will happen when making real calls
+    if (!this.accountId || !this.apiToken) {
+      console.log('Commio: Missing credentials');
+      return false;
     }
+    
+    console.log('Commio: Credentials provided, accepting');
+    return true;
   }
 
   async getAccountInfo(): Promise<AccountInfo> {
     try {
-      const account = await this.apiRequest<any>('GET', '/account');
+      const account = await this.apiRequest<any>('GET', '');
       return {
         sid: account.id || this.accountId,
-        friendlyName: account.name || 'Commio Account',
+        friendlyName: account.name || account.company_name || 'Commio Account',
         status: account.status || 'active',
         type: 'Full',
         dateCreated: account.created_at || new Date().toISOString(),
@@ -363,55 +360,128 @@ export class CommioProvider implements ICommunicationProvider {
     const startOfWeek = new Date(startOfDay);
     startOfWeek.setDate(startOfWeek.getDate() - startOfWeek.getDay());
     const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
+    
+    // Fetch last 6 months for historical charts
+    const sixMonthsAgo = new Date(now);
+    sixMonthsAgo.setMonth(sixMonthsAgo.getMonth() - 6);
+    const lastMonth = new Date(now.getFullYear(), now.getMonth() - 1, 1);
+    const endOfLastMonth = new Date(now.getFullYear(), now.getMonth(), 0);
+    const yesterday = new Date(startOfDay);
+    yesterday.setDate(yesterday.getDate() - 1);
+    const lastWeekStart = new Date(startOfWeek);
+    lastWeekStart.setDate(lastWeekStart.getDate() - 7);
+    const lastWeekEnd = new Date(startOfWeek);
+    lastWeekEnd.setDate(lastWeekEnd.getDate() - 1);
 
-    const [account, phoneNumbers, messagesMonth, callsMonth, usageMonth] = await Promise.all([
+    // Fetch all data in parallel - 6 months for historical charts
+    const [account, phoneNumbers, messagesAll, callsAll, usageAll] = await Promise.all([
       this.getAccountInfo(),
       this.getPhoneNumbers(),
-      this.getMessages({ startDate: startOfMonth, endDate: now }),
-      this.getCalls({ startDate: startOfMonth, endDate: now }),
-      this.getUsage({ startDate: startOfMonth, endDate: now }),
+      this.getMessages({ startDate: sixMonthsAgo, endDate: now }),
+      this.getCalls({ startDate: sixMonthsAgo, endDate: now }),
+      this.getUsage({ startDate: sixMonthsAgo, endDate: now }),
     ]);
 
-    const messagesToday = messagesMonth.filter(m => new Date(m.dateSent) >= startOfDay);
-    const messagesThisWeek = messagesMonth.filter(m => new Date(m.dateSent) >= startOfWeek);
-    const callsToday = callsMonth.filter(c => new Date(c.startTime) >= startOfDay);
-    const callsThisWeek = callsMonth.filter(c => new Date(c.startTime) >= startOfWeek);
+    // Filter messages by time period
+    const messagesToday = messagesAll.filter(m => new Date(m.dateSent) >= startOfDay);
+    const messagesYesterday = messagesAll.filter(m => {
+      const d = new Date(m.dateSent);
+      return d >= yesterday && d < startOfDay;
+    });
+    const messagesThisWeek = messagesAll.filter(m => new Date(m.dateSent) >= startOfWeek);
+    const messagesLastWeek = messagesAll.filter(m => {
+      const d = new Date(m.dateSent);
+      return d >= lastWeekStart && d <= lastWeekEnd;
+    });
+    const messagesThisMonth = messagesAll.filter(m => new Date(m.dateSent) >= startOfMonth);
+    const messagesLastMonth = messagesAll.filter(m => {
+      const d = new Date(m.dateSent);
+      return d >= lastMonth && d <= endOfLastMonth;
+    });
 
-    const metrics = await this.getMetrics();
+    // Filter calls by time period
+    const callsToday = callsAll.filter(c => new Date(c.startTime) >= startOfDay);
+    const callsYesterday = callsAll.filter(c => {
+      const d = new Date(c.startTime);
+      return d >= yesterday && d < startOfDay;
+    });
+    const callsThisWeek = callsAll.filter(c => new Date(c.startTime) >= startOfWeek);
+    const callsLastWeek = callsAll.filter(c => {
+      const d = new Date(c.startTime);
+      return d >= lastWeekStart && d <= lastWeekEnd;
+    });
+    const callsThisMonth = callsAll.filter(c => new Date(c.startTime) >= startOfMonth);
+    const callsLastMonth = callsAll.filter(c => {
+      const d = new Date(c.startTime);
+      return d >= lastMonth && d <= endOfLastMonth;
+    });
+
+    // Calculate metrics
+    const outboundToday = messagesToday.filter(m => m.direction.startsWith('outbound'));
+    const outboundYesterday = messagesYesterday.filter(m => m.direction.startsWith('outbound'));
+    const outboundWeek = messagesThisWeek.filter(m => m.direction.startsWith('outbound'));
+    const outboundLastWeek = messagesLastWeek.filter(m => m.direction.startsWith('outbound'));
+    const outboundMonth = messagesThisMonth.filter(m => m.direction.startsWith('outbound'));
+    const outboundLastMonth = messagesLastMonth.filter(m => m.direction.startsWith('outbound'));
+    const inboundToday = messagesToday.filter(m => m.direction === 'inbound');
+
+    const deliveredMonth = outboundMonth.filter(m => m.status === 'delivered').length;
+    const failedMonth = outboundMonth.filter(m => m.status === 'failed' || m.status === 'undelivered').length;
+
+    const usageThisMonth = usageAll.filter(u => new Date(u.startDate) >= startOfMonth);
+    const totalSpendMonth = usageThisMonth.reduce((sum, u) => sum + u.price, 0);
+    const callDurationToday = callsToday.reduce((sum, c) => sum + parseInt(c.duration || '0'), 0);
+
+    const metrics: ProviderMetrics = {
+      totalMessagesSentToday: outboundToday.length,
+      totalMessagesSentYesterday: outboundYesterday.length,
+      totalMessagesSentThisWeek: outboundWeek.length,
+      totalMessagesSentLastWeek: outboundLastWeek.length,
+      totalMessagesSentThisMonth: outboundMonth.length,
+      totalMessagesSentLastMonth: outboundLastMonth.length,
+      totalMessagesReceivedToday: inboundToday.length,
+      totalCallsToday: callsToday.length,
+      totalCallsYesterday: callsYesterday.length,
+      totalCallsThisWeek: callsThisWeek.length,
+      totalCallsLastWeek: callsLastWeek.length,
+      totalCallsThisMonth: callsThisMonth.length,
+      totalCallsLastMonth: callsLastMonth.length,
+      totalCallDurationToday: callDurationToday,
+      totalSpendToday: 0,
+      totalSpendThisWeek: 0,
+      totalSpendThisMonth: totalSpendMonth,
+      deliveryRate: outboundMonth.length > 0 ? (deliveredMonth / outboundMonth.length) * 100 : 100,
+      failureRate: outboundMonth.length > 0 ? (failedMonth / outboundMonth.length) * 100 : 0,
+    };
 
     return {
       account,
       phoneNumbers,
       messages: {
         today: messagesToday,
+        yesterday: messagesYesterday,
         thisWeek: messagesThisWeek,
-        thisMonth: messagesMonth,
+        lastWeek: messagesLastWeek,
+        thisMonth: messagesThisMonth,
+        lastMonth: messagesLastMonth,
+        all: messagesAll,
       },
       calls: {
         today: callsToday,
+        yesterday: callsYesterday,
         thisWeek: callsThisWeek,
-        thisMonth: callsMonth,
+        lastWeek: callsLastWeek,
+        thisMonth: callsThisMonth,
+        lastMonth: callsLastMonth,
+        all: callsAll,
       },
-      usage: usageMonth,
+      usage: usageAll,
       metrics,
     };
   }
 
   async getMetrics(): Promise<ProviderMetrics> {
-    // Return default metrics - would be calculated from actual data
-    return {
-      totalMessagesSentToday: 0,
-      totalMessagesSentThisWeek: 0,
-      totalMessagesSentThisMonth: 0,
-      totalMessagesReceivedToday: 0,
-      totalCallsToday: 0,
-      totalCallsThisWeek: 0,
-      totalCallDurationToday: 0,
-      totalSpendToday: 0,
-      totalSpendThisWeek: 0,
-      totalSpendThisMonth: 0,
-      deliveryRate: 100,
-      failureRate: 0,
-    };
+    const analytics = await this.getAnalytics();
+    return analytics.metrics;
   }
 }

@@ -49,8 +49,10 @@ export interface IStorage {
   getUser(id: number): Promise<User | undefined>;
   getUserByUsername(username: string): Promise<User | undefined>;
   getUserByEmail(email: string): Promise<User | undefined>;
+  getAllUsers(): Promise<User[]>;
   createUser(user: InsertUser): Promise<User>;
   updateUser(id: number, updates: Partial<User>): Promise<User | undefined>;
+  deleteUser(id: number): Promise<boolean>;
   getSubAccounts(userId: number): Promise<User[]>;
   
   // Debug methods - not for production use
@@ -174,7 +176,7 @@ export class MemStorage implements IStorage {
       password: "admin123", // In real app, would be hashed
       firstName: "Admin",
       lastName: "User",
-      email: "admin@unicomms.io",
+      email: "admin@eliteamericanfinancials.com",
       role: "admin"
     });
   }
@@ -218,6 +220,14 @@ export class MemStorage implements IStorage {
     const updatedUser = { ...user, ...updates };
     this.users.set(id, updatedUser);
     return updatedUser;
+  }
+
+  async getAllUsers(): Promise<User[]> {
+    return Array.from(this.users.values());
+  }
+
+  async deleteUser(id: number): Promise<boolean> {
+    return this.users.delete(id);
   }
 
   async getSubAccounts(userId: number): Promise<User[]> {

@@ -6,6 +6,7 @@ import { sendGridService } from "./sendgrid";
 import { complianceService, A2PRegistrationStatus } from "./compliance";
 import { a2pSchemaSynchronizer } from "./a2pSchemaSynchronizer";
 import { a2pRegistrationService } from "./a2pRegistration";
+import { a2pSyncService } from "./services/a2pSyncService";
 import { autoRefillService } from "./autoRefillService";
 import { appleBusinessChatService } from "./appleBusinessChat";
 import { generateMessagingInsights, generateCustomInsight, chatWithAI, getKPIDashboard, type MessagingStats } from "./openai";
@@ -13,6 +14,7 @@ import { twilioAnalyticsService } from "./twilioAnalytics";
 import { accountService } from "./services/accountService";
 import { dataService } from "./services/dataService";
 import { subAccountService } from "./services/subAccountService";
+import { analyticsService } from "./services/analyticsService";
 import { createHash, randomBytes } from "crypto";
 import { 
   insertUserSchema, 
@@ -118,6 +120,20 @@ export async function registerRoutes(app: Express): Promise<Server> {
   }
   
   // User endpoints
+  
+  // Get all users (for admin user management)
+  app.get("/api/users", async (req, res) => {
+    try {
+      const users = await storage.getAllUsers();
+      // Remove passwords from response
+      const usersWithoutPasswords = users.map(({ password, ...user }) => user);
+      return res.status(200).json(usersWithoutPasswords);
+    } catch (error) {
+      console.error("Error fetching users:", error);
+      return res.status(500).json({ message: "Internal server error" });
+    }
+  });
+  
   app.get("/api/users/:id", async (req, res) => {
     try {
       const userId = parseInt(req.params.id);
@@ -149,6 +165,51 @@ export async function registerRoutes(app: Express): Promise<Server> {
       return res.status(201).json(userWithoutPassword);
     } catch (error) {
       return handleZodError(error, res);
+    }
+  });
+
+  // Update user
+  app.put("/api/users/:id", async (req, res) => {
+    try {
+      const userId = parseInt(req.params.id);
+      if (isNaN(userId)) {
+        return res.status(400).json({ message: "Invalid user ID" });
+      }
+      
+      const updates = req.body;
+      // Don't allow password updates through this endpoint
+      delete updates.password;
+      
+      const user = await storage.updateUser(userId, updates);
+      if (!user) {
+        return res.status(404).json({ message: "User not found" });
+      }
+      
+      const { password, ...userWithoutPassword } = user;
+      return res.status(200).json(userWithoutPassword);
+    } catch (error) {
+      console.error("Error updating user:", error);
+      return res.status(500).json({ message: "Internal server error" });
+    }
+  });
+
+  // Delete user
+  app.delete("/api/users/:id", async (req, res) => {
+    try {
+      const userId = parseInt(req.params.id);
+      if (isNaN(userId)) {
+        return res.status(400).json({ message: "Invalid user ID" });
+      }
+      
+      const deleted = await storage.deleteUser(userId);
+      if (!deleted) {
+        return res.status(404).json({ message: "User not found" });
+      }
+      
+      return res.status(200).json({ message: "User deleted successfully" });
+    } catch (error) {
+      console.error("Error deleting user:", error);
+      return res.status(500).json({ message: "Internal server error" });
     }
   });
   
@@ -823,8 +884,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
   
-  // Analytics endpoints
-  app.get("/api/analytics/:userId", async (req, res) => {
+  // Legacy Analytics endpoints (for backward compatibility)
+  app.get("/api/legacy-analytics/:userId", async (req, res) => {
     try {
       const userId = parseInt(req.params.userId);
       if (isNaN(userId)) {
@@ -1375,6 +1436,53 @@ export async function registerRoutes(app: Express): Promise<Server> {
       return res.status(500).json({ message: 'Failed to check registration status' });
     }
   });
+
+  // ============================================
+  // A2P SYNC FROM TWILIO
+  // ============================================
+
+  /**
+   * Sync A2P compliance data from Twilio
+   * This imports existing Brand and Campaign registrations
+   */
+  app.post("/api/compliance/a2p/sync", async (req, res) => {
+    try {
+      const userId = (req as any).user?.id || 1;
+      
+      console.log(`Starting A2P sync for user ${userId}...`);
+      const result = await a2pSyncService.syncFromTwilio(userId);
+      
+      return res.status(200).json({
+        success: true,
+        message: `Synced ${result.brands.synced} brands, ${result.campaigns.synced} campaigns, ${result.messagingServices.synced} messaging services`,
+        ...result
+      });
+    } catch (error: any) {
+      console.error('Error syncing A2P data:', error);
+      return res.status(500).json({ 
+        success: false,
+        message: error.message || 'Failed to sync A2P data from Twilio' 
+      });
+    }
+  });
+
+  /**
+   * Get A2P compliance summary from Twilio
+   */
+  app.get("/api/compliance/a2p/summary", async (req, res) => {
+    try {
+      const userId = (req as any).user?.id || 1;
+      
+      const summary = await a2pSyncService.getComplianceSummary(userId);
+      
+      return res.status(200).json(summary);
+    } catch (error: any) {
+      console.error('Error getting A2P summary:', error);
+      return res.status(500).json({ 
+        message: error.message || 'Failed to get A2P compliance summary' 
+      });
+    }
+  });
   
   // Apple Business Chat integration routes
   app.get("/api/apple-business-chat/requirements", async (req, res) => {
@@ -1893,10 +2001,10 @@ export async function registerRoutes(app: Express): Promise<Server> {
         twilioAuthToken: process.env.TWILIO_AUTH_TOKEN || "",
         twilioPhoneNumber: (process.env.TWILIO_PHONE_NUMBERS?.split(',')[0]) || "",
         sendgridApiKey: process.env.SENDGRID_API_KEY || "",
-        sendgridFromEmail: process.env.SENDGRID_FROM_EMAIL || "noreply@unicomms.io",
+        sendgridFromEmail: process.env.SENDGRID_FROM_EMAIL || "noreply@eliteamericanfinancials.com",
         upgraded: true,
         plan: "enterprise",
-        billingEmail: "billing@unicomms.io"
+        billingEmail: "billing@eliteamericanfinancials.com"
       };
       
       res.json(settingsData);
@@ -2085,7 +2193,10 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const userId = (req as any).user?.id || 1;
       const { providerCode, name, type, accountSid, authToken, apiKey, apiSecret, parentAccountId } = req.body;
 
+      console.log('Creating account:', { providerCode, name, type, accountSid: accountSid ? '***' : undefined, hasAuthToken: !!authToken });
+
       if (!providerCode || !accountSid || !authToken) {
+        console.log('Missing fields:', { providerCode: !!providerCode, accountSid: !!accountSid, authToken: !!authToken });
         return res.status(400).json({ error: "Missing required fields: providerCode, accountSid, authToken" });
       }
 
@@ -2582,6 +2693,213 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
+  // ============================================
+  // ANALYTICS & REPORTING
+  // ============================================
+
+  /**
+   * Get analytics for a specific account
+   * Query params:
+   * - startDate: ISO date string (default: 30 days ago)
+   * - endDate: ISO date string (default: now)
+   * - granularity: 'hour' | 'day' | 'week' (default: 'day')
+   */
+  app.get("/api/analytics/account/:accountId", async (req, res) => {
+    try {
+      const accountId = req.params.accountId;
+      const startDate = req.query.startDate 
+        ? new Date(req.query.startDate as string)
+        : new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
+      const endDate = req.query.endDate
+        ? new Date(req.query.endDate as string)
+        : new Date();
+
+      // Parse account ID
+      let numericId: number;
+      if (accountId === 'acc_master_twilio') {
+        // Get the DB account for env-based Twilio
+        const { accounts } = await import('@shared/schema');
+        const { db } = await import('./db');
+        const { eq } = await import('drizzle-orm');
+        const accountSid = process.env.TWILIO_ACCOUNT_SID;
+        const [dbAccount] = await db.select().from(accounts).where(eq(accounts.accountSid, accountSid || ''));
+        if (!dbAccount) {
+          return res.status(404).json({ error: "Account not found. Please sync the account first." });
+        }
+        numericId = dbAccount.id;
+      } else {
+        numericId = parseInt(accountId.replace('acc_', ''));
+        if (isNaN(numericId)) {
+          return res.status(400).json({ error: "Invalid account ID" });
+        }
+      }
+
+      const analytics = await analyticsService.getAccountAnalytics(numericId, {
+        startDate,
+        endDate,
+      });
+
+      res.json(analytics);
+    } catch (error: any) {
+      console.error("Error fetching account analytics:", error);
+      res.status(500).json({ error: error.message || "Failed to fetch analytics" });
+    }
+  });
+
+  /**
+   * Get trend data for charts
+   */
+  app.get("/api/analytics/account/:accountId/trends", async (req, res) => {
+    try {
+      const accountId = req.params.accountId;
+      const startDate = req.query.startDate 
+        ? new Date(req.query.startDate as string)
+        : new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
+      const endDate = req.query.endDate
+        ? new Date(req.query.endDate as string)
+        : new Date();
+      const granularity = (req.query.granularity as 'hour' | 'day' | 'week') || 'day';
+
+      // Parse account ID
+      let numericId: number;
+      if (accountId === 'acc_master_twilio') {
+        const { accounts } = await import('@shared/schema');
+        const { db } = await import('./db');
+        const { eq } = await import('drizzle-orm');
+        const accountSid = process.env.TWILIO_ACCOUNT_SID;
+        const [dbAccount] = await db.select().from(accounts).where(eq(accounts.accountSid, accountSid || ''));
+        if (!dbAccount) {
+          return res.status(404).json({ error: "Account not found" });
+        }
+        numericId = dbAccount.id;
+      } else {
+        numericId = parseInt(accountId.replace('acc_', ''));
+        if (isNaN(numericId)) {
+          return res.status(400).json({ error: "Invalid account ID" });
+        }
+      }
+
+      const trends = await analyticsService.getTrendData(numericId, { startDate, endDate }, granularity);
+
+      res.json({ trends });
+    } catch (error: any) {
+      console.error("Error fetching trend data:", error);
+      res.status(500).json({ error: error.message || "Failed to fetch trends" });
+    }
+  });
+
+  /**
+   * Get overview analytics for all accounts
+   */
+  app.get("/api/analytics/overview", async (req, res) => {
+    try {
+      const userId = (req as any).user?.id || 1;
+      const startDate = req.query.startDate 
+        ? new Date(req.query.startDate as string)
+        : new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
+      const endDate = req.query.endDate
+        ? new Date(req.query.endDate as string)
+        : new Date();
+
+      // Get user's organization
+      const { organizations } = await import('@shared/schema');
+      const { db } = await import('./db');
+      const { eq } = await import('drizzle-orm');
+      const [org] = await db.select().from(organizations).where(eq(organizations.ownerUserId, userId));
+      
+      if (!org) {
+        return res.json({
+          title: 'Communications Analytics Report',
+          generatedAt: new Date().toISOString(),
+          period: { startDate, endDate },
+          accounts: [],
+          summary: {
+            messages: { sent: 0, received: 0, failed: 0, total: 0 },
+            calls: { outbound: 0, inbound: 0, totalDuration: 0, avgDuration: 0 },
+            costs: { messaging: 0, voice: 0, phoneNumbers: 0, total: 0 },
+          },
+        });
+      }
+
+      const report = await analyticsService.getOverviewAnalytics(org.id, { startDate, endDate });
+
+      res.json(report);
+    } catch (error: any) {
+      console.error("Error fetching overview analytics:", error);
+      res.status(500).json({ error: error.message || "Failed to fetch overview" });
+    }
+  });
+
+  /**
+   * Export analytics report as CSV
+   */
+  app.get("/api/analytics/export/csv", async (req, res) => {
+    try {
+      const userId = (req as any).user?.id || 1;
+      const startDate = req.query.startDate 
+        ? new Date(req.query.startDate as string)
+        : new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
+      const endDate = req.query.endDate
+        ? new Date(req.query.endDate as string)
+        : new Date();
+
+      // Get user's organization
+      const { organizations } = await import('@shared/schema');
+      const { db } = await import('./db');
+      const { eq } = await import('drizzle-orm');
+      const [org] = await db.select().from(organizations).where(eq(organizations.ownerUserId, userId));
+      
+      if (!org) {
+        return res.status(404).json({ error: "Organization not found" });
+      }
+
+      const report = await analyticsService.getOverviewAnalytics(org.id, { startDate, endDate });
+      const csv = analyticsService.generateCSVExport(report);
+
+      res.setHeader('Content-Type', 'text/csv');
+      res.setHeader('Content-Disposition', `attachment; filename=elite-financial-analytics-${startDate.toISOString().split('T')[0]}-to-${endDate.toISOString().split('T')[0]}.csv`);
+      res.send(csv);
+    } catch (error: any) {
+      console.error("Error exporting CSV:", error);
+      res.status(500).json({ error: error.message || "Failed to export CSV" });
+    }
+  });
+
+  /**
+   * Export analytics report as JSON
+   */
+  app.get("/api/analytics/export/json", async (req, res) => {
+    try {
+      const userId = (req as any).user?.id || 1;
+      const startDate = req.query.startDate 
+        ? new Date(req.query.startDate as string)
+        : new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
+      const endDate = req.query.endDate
+        ? new Date(req.query.endDate as string)
+        : new Date();
+
+      // Get user's organization
+      const { organizations } = await import('@shared/schema');
+      const { db } = await import('./db');
+      const { eq } = await import('drizzle-orm');
+      const [org] = await db.select().from(organizations).where(eq(organizations.ownerUserId, userId));
+      
+      if (!org) {
+        return res.status(404).json({ error: "Organization not found" });
+      }
+
+      const report = await analyticsService.getOverviewAnalytics(org.id, { startDate, endDate });
+      const json = analyticsService.generateJSONExport(report);
+
+      res.setHeader('Content-Type', 'application/json');
+      res.setHeader('Content-Disposition', `attachment; filename=elite-financial-analytics-${startDate.toISOString().split('T')[0]}-to-${endDate.toISOString().split('T')[0]}.json`);
+      res.send(json);
+    } catch (error: any) {
+      console.error("Error exporting JSON:", error);
+      res.status(500).json({ error: error.message || "Failed to export JSON" });
+    }
+  });
+
   // Twilio Analytics endpoint - Real-time Twilio data
   app.get("/api/twilio/analytics", async (req, res) => {
     try {
@@ -2667,6 +2985,20 @@ export async function registerRoutes(app: Express): Promise<Server> {
     } catch (error) {
       console.error("Error fetching data analytics:", error);
       res.status(500).json({ error: "Failed to fetch analytics" });
+    }
+  });
+
+  /**
+   * Clear analytics cache - forces fresh data fetch on next request
+   */
+  app.post("/api/data/cache/clear", async (req, res) => {
+    try {
+      const { cacheService } = await import('./services/cacheService');
+      cacheService.clear();
+      res.json({ success: true, message: 'Cache cleared successfully' });
+    } catch (error) {
+      console.error("Error clearing cache:", error);
+      res.status(500).json({ error: "Failed to clear cache" });
     }
   });
 

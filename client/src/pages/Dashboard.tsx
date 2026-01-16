@@ -1,739 +1,1163 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useMemo } from 'react';
 import { useAuth } from '../hooks/use-auth';
-import { Link } from 'wouter';
-import { useToast } from "@/components/ui/use-toast";
-import { useTwilioAnalytics, formatNumber, formatCurrency } from '../hooks/useTwilioData';
+import { useAccountAnalytics, formatNumber } from '../hooks/useTwilioData';
+import { useLocation } from 'wouter';
 import { 
-  ArrowUp, 
-  ArrowDown,
   MessageSquare, 
-  Users, 
-  BarChart3,
-  BarChart4,
-  Sparkles,
-  X,
-  Loader2,
-  CheckCircle,
-  AlertTriangle,
-  Info,
-  Lightbulb,
-  Send,
-  Phone,
-  DollarSign,
+  Phone, 
+  TrendingUp,
+  TrendingDown,
+  Users,
   RefreshCw,
-  TrendingUp
+  ArrowUpRight,
+  ArrowDownRight,
+  Activity,
+  Clock,
+  CheckCircle,
+  Send,
+  BarChart3,
+  Bell,
+  FileText,
+  Download,
+  Calendar,
+  MoreHorizontal,
+  Info,
+  ChevronDown,
+  Settings
 } from 'lucide-react';
+import { Button } from '@/components/ui/button';
+import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
+import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs';
+import { Badge } from '@/components/ui/badge';
+import { Avatar, AvatarFallback } from '@/components/ui/avatar';
+import { Input } from '@/components/ui/input';
+import { Checkbox } from '@/components/ui/checkbox';
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from '@/components/ui/dropdown-menu';
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from '@/components/ui/table';
+import { AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, BarChart, Bar, LineChart, Line } from 'recharts';
 
-interface AIInsight {
-  title: string;
-  description: string;
-  type: 'success' | 'warning' | 'info' | 'tip';
-  metric?: string;
-  recommendation?: string;
-}
-
-type TimePeriod = 'day' | 'week' | 'month';
+// Mini sparkline component
+const MiniSparkline = ({ data, color, trend }: { data: number[], color: string, trend: 'up' | 'down' }) => {
+  const chartData = data.map((value, index) => ({ value }));
+  return (
+    <div className="w-20 h-10">
+      <ResponsiveContainer width="100%" height="100%">
+        <LineChart data={chartData}>
+          <Line 
+            type="monotone" 
+            dataKey="value" 
+            stroke={color} 
+            strokeWidth={2} 
+            dot={false}
+          />
+        </LineChart>
+      </ResponsiveContainer>
+    </div>
+  );
+};
 
 export default function Dashboard() {
   const { user } = useAuth();
-  const { toast } = useToast();
-  const { analytics, loading: twilioLoading, error: twilioError, refresh } = useTwilioAnalytics();
-  const [showAIPanel, setShowAIPanel] = useState(false);
-  const [isLoadingInsights, setIsLoadingInsights] = useState(false);
-  const [insights, setInsights] = useState<AIInsight[]>([]);
-  const [question, setQuestion] = useState('');
-  const [aiResponse, setAiResponse] = useState('');
-  const [isAskingAI, setIsAskingAI] = useState(false);
-  const [timePeriod, setTimePeriod] = useState<TimePeriod>('week');
+  const { data: accountData, loading, error, refresh } = useAccountAnalytics();
+  const [, setLocation] = useLocation();
+  const [activeTab, setActiveTab] = useState('overview');
+  const [messageFilter, setMessageFilter] = useState('');
+  const [selectedReportType, setSelectedReportType] = useState<'messages' | 'calls' | 'usage' | 'summary'>('messages');
+  const [isGeneratingReport, setIsGeneratingReport] = useState(false);
+  const [chartTimeRange, setChartTimeRange] = useState<'weekly' | 'monthly'>('monthly');
 
-  // Real statistics from Twilio
-  const stats = analytics ? {
-    messagesSent: analytics.metrics.totalMessagesSentThisMonth,
-    messageGrowth: analytics.metrics.totalMessagesSentYesterday > 0 
-      ? Math.round(((analytics.metrics.totalMessagesSentToday - analytics.metrics.totalMessagesSentYesterday) / analytics.metrics.totalMessagesSentYesterday) * 100)
-      : 0,
-    activeUsers: analytics.phoneNumbers.length,
-    userGrowth: 0,
-    deliveryRate: analytics.metrics.deliveryRateToday || 100,
-    deliveryGrowth: 0
-  } : {
-    messagesSent: 0,
-    messageGrowth: 0,
-    activeUsers: 0,
-    userGrowth: 0,
-    deliveryRate: 0,
-    deliveryGrowth: 0
-  };
-  
-  // Real messaging data from Twilio - grouped by selected time period
-  const messagingData = useMemo(() => {
+  // Transform account data to analytics format for compatibility
+  const analytics = useMemo(() => {
+    if (!accountData || accountData.accounts.length === 0) return null;
+    
+    // Use first account's analytics or merge all
+    if (accountData.accounts.length === 1) {
+      return accountData.accounts[0].analytics;
+    }
+    
+    // For multiple accounts, create merged structure
+    // Aggregate 'all' messages and calls from all accounts
+    const allMessages = accountData.accounts.flatMap(a => (a.analytics.messages as any)?.all || []);
+    const allCalls = accountData.accounts.flatMap(a => (a.analytics.calls as any)?.all || []);
+    
+    return {
+      account: {
+        sid: 'merged',
+        friendlyName: 'All Accounts',
+        status: 'active',
+        type: 'merged',
+        dateCreated: new Date().toISOString(),
+      },
+      phoneNumbers: accountData.accounts.flatMap(a => a.analytics.phoneNumbers || []),
+      messages: {
+        ...accountData.messages,
+        all: allMessages,
+      },
+      calls: {
+        ...accountData.calls,
+        all: allCalls,
+      },
+      metrics: {
+        totalMessagesSentToday: accountData.aggregatedMetrics.totalMessagesSentToday,
+        totalMessagesReceivedToday: accountData.aggregatedMetrics.totalMessagesReceivedToday,
+        totalMessagesSentYesterday: 0,
+        totalMessagesReceivedYesterday: 0,
+        totalMessagesSentThisWeek: accountData.aggregatedMetrics.totalMessagesSentThisWeek,
+        totalMessagesSentThisMonth: accountData.aggregatedMetrics.totalMessagesSentThisMonth,
+        deliveredToday: 0,
+        failedToday: 0,
+        deliveryRateToday: accountData.aggregatedMetrics.deliveryRate,
+        totalCallsToday: accountData.aggregatedMetrics.totalCallsToday,
+        totalCallsThisWeek: accountData.aggregatedMetrics.totalCallsThisWeek,
+        totalCallDurationToday: accountData.aggregatedMetrics.totalCallDurationToday,
+        totalSpendToday: accountData.aggregatedMetrics.totalSpendToday,
+        totalSpendThisMonth: accountData.aggregatedMetrics.totalSpendThisMonth,
+        averageMessageCost: 0.0075,
+      },
+    };
+  }, [accountData]);
+
+  const stats = useMemo(() => {
     if (!analytics) {
       return {
-        outgoing: { ok: 0, errors: 0, data: [], labels: [] },
-        incoming: { received: 0, failed: 0, optOut: 0, data: [], labels: [] }
+        messagesSent: 0, messageGrowth: 0, callsMade: 0, callGrowth: 0,
+        activeNumbers: 0, numberGrowth: 0, deliveryRate: 0, deliveryGrowth: 0,
+        inboundMessages: 0, outboundMessages: 0
       };
     }
-
-    const now = new Date();
-    let periods: { start: Date; end: Date; label: string }[] = [];
-    let messages = analytics.messages.thisMonth;
-
-    if (timePeriod === 'day') {
-      // Last 24 hours, grouped by hour
-      periods = Array.from({ length: 24 }, (_, i) => {
-        const start = new Date(now);
-        start.setHours(now.getHours() - (23 - i), 0, 0, 0);
-        const end = new Date(start);
-        end.setHours(start.getHours() + 1);
-        return {
-          start,
-          end,
-          label: start.toLocaleTimeString('en-US', { hour: 'numeric', hour12: true })
-        };
-      });
-      messages = analytics.messages.today;
-    } else if (timePeriod === 'week') {
-      // Last 7 days
-      periods = Array.from({ length: 7 }, (_, i) => {
-        const start = new Date(now);
-        start.setDate(now.getDate() - (6 - i));
-        start.setHours(0, 0, 0, 0);
-        const end = new Date(start);
-        end.setDate(start.getDate() + 1);
-        return {
-          start,
-          end,
-          label: start.toLocaleDateString('en-US', { weekday: 'short' })
-        };
-      });
-      messages = analytics.messages.thisWeek;
-    } else {
-      // Last 30 days, grouped by week or by day
-      periods = Array.from({ length: 30 }, (_, i) => {
-        const start = new Date(now);
-        start.setDate(now.getDate() - (29 - i));
-        start.setHours(0, 0, 0, 0);
-        const end = new Date(start);
-        end.setDate(start.getDate() + 1);
-        return {
-          start,
-          end,
-          label: start.getDate().toString()
-        };
-      });
-      messages = analytics.messages.thisMonth;
-    }
-
-    // Count outgoing messages per period
-    const outgoingData = periods.map(period => {
-      return messages.filter(m => {
-        const msgDate = new Date(m.dateSent);
-        return msgDate >= period.start && msgDate < period.end && 
-          (m.direction === 'outbound-api' || m.direction === 'outbound-call' || m.direction === 'outbound-reply');
-      }).length;
-    });
-
-    // Count incoming messages per period
-    const incomingData = periods.map(period => {
-      return messages.filter(m => {
-        const msgDate = new Date(m.dateSent);
-        return msgDate >= period.start && msgDate < period.end && m.direction === 'inbound';
-      }).length;
-    });
-
-    const labels = periods.map(p => p.label);
-
-    return {
-      outgoing: {
-        ok: analytics.metrics.deliveryRateToday,
-        errors: 100 - analytics.metrics.deliveryRateToday,
-        data: outgoingData,
-        labels
-      },
-      incoming: {
-        received: analytics.metrics.totalMessagesReceivedToday,
-        failed: analytics.metrics.failedToday,
-        optOut: 0,
-        data: incomingData,
-        labels
-      }
-    };
-  }, [analytics, timePeriod]);
-
-  // Real status data
-  const statusData = [
-    { id: 1, status: 'Delivered', value: `${stats.deliveryRate}%`, type: 'positive' },
-    { id: 2, status: 'Failed', value: `${(100 - stats.deliveryRate).toFixed(1)}%`, type: 'negative' }
-  ];
-
-  const incomingData = [
-    { id: 1, status: 'Received', value: analytics ? analytics.metrics.totalMessagesReceivedToday.toString() : '0', type: 'positive' },
-    { id: 2, status: 'Failed', value: analytics ? analytics.metrics.failedToday.toString() : '0', type: 'negative' },
-    { id: 3, status: 'This Month', value: analytics ? formatNumber(analytics.metrics.totalMessagesSentThisMonth) : '0', type: 'info' }
-  ];
-
-  // Fetch AI insights
-  const fetchAIInsights = async () => {
-    setIsLoadingInsights(true);
-    setShowAIPanel(true);
-    try {
-      const response = await fetch('/api/ai/insights', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          stats: {
-            messagesSent: stats.messagesSent,
-            messagesReceived: 1423,
-            deliveryRate: stats.deliveryRate,
-            errorRate: 1.8,
-            optOutRate: 0.3,
-            activeUsers: stats.activeUsers,
-            topHours: [10, 14, 16],
-            weeklyTrend: messagingData.outgoing.data
-          }
-        })
-      });
-      const data = await response.json();
-      setInsights(data.insights || []);
-    } catch (error) {
-      console.error('Error fetching AI insights:', error);
-      toast({
-        title: 'Error',
-        description: 'Failed to fetch AI insights. Please try again.',
-        variant: 'destructive'
-      });
-    } finally {
-      setIsLoadingInsights(false);
-    }
-  };
-
-  // Ask AI a question
-  const askAI = async () => {
-    if (!question.trim()) return;
     
-    setIsAskingAI(true);
-    try {
-      const response = await fetch('/api/ai/ask', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          question,
-          stats: {
-            messagesSent: stats.messagesSent,
-            messagesReceived: 1423,
-            deliveryRate: stats.deliveryRate,
-            errorRate: 1.8,
-            optOutRate: 0.3,
-            activeUsers: stats.activeUsers,
-            topHours: [10, 14, 16],
-            weeklyTrend: messagingData.outgoing.data
-          }
-        })
-      });
-      const data = await response.json();
-      setAiResponse(data.answer || 'No response received.');
-    } catch (error) {
-      console.error('Error asking AI:', error);
-      setAiResponse('Sorry, I encountered an error. Please try again.');
-    } finally {
-      setIsAskingAI(false);
+    // Get historical data for accurate growth calculations
+    const messagesThisWeek = analytics.messages.thisWeek?.length || 0;
+    const messagesLastWeek = (analytics.messages as any).lastWeek?.length || 0;
+    const messagesThisMonth = analytics.messages.thisMonth?.length || 0;
+    const messagesLastMonth = (analytics.messages as any).lastMonth?.length || 0;
+    
+    const callsThisWeek = analytics.calls.thisWeek?.length || 0;
+    const callsLastWeek = (analytics.calls as any).lastWeek?.length || 0;
+    
+    // Calculate growth from last week (more accurate than averaging)
+    const messageGrowth = messagesLastWeek > 0 
+      ? Math.round(((messagesThisWeek - messagesLastWeek) / messagesLastWeek) * 100)
+      : messagesThisWeek > 0 ? 100 : 0;
+    
+    const callGrowth = callsLastWeek > 0 
+      ? Math.round(((callsThisWeek - callsLastWeek) / callsLastWeek) * 100)
+      : callsThisWeek > 0 ? 100 : 0;
+    
+    // Calculate month-over-month growth for delivery rate comparison
+    const deliveryGrowth = messagesLastMonth > 0 
+      ? Math.round(((messagesThisMonth - messagesLastMonth) / messagesLastMonth) * 100)
+      : 0;
+    
+    // Get total messages from all time (6 months)
+    const allMessages = (analytics.messages as any).all || [];
+    const allCalls = (analytics.calls as any).all || [];
+    
+    return {
+      messagesSent: analytics.metrics.totalMessagesSentThisMonth,
+      messageGrowth,
+      callsMade: analytics.metrics.totalCallsThisWeek,
+      callGrowth,
+      activeNumbers: analytics.phoneNumbers?.length || 0,
+      numberGrowth: 0,
+      deliveryRate: (analytics.metrics as any).deliveryRate || analytics.metrics.deliveryRateToday || 0,
+      deliveryGrowth,
+      inboundMessages: analytics.messages.thisMonth?.filter((m: any) => m.direction === 'inbound').length || 0,
+      outboundMessages: analytics.messages.thisMonth?.filter((m: any) => m.direction === 'outbound-api').length || 0,
+      // Total messages and calls (all time - 6 months)
+      totalMessagesAll: allMessages.length,
+      totalCallsAll: allCalls.length,
+      // Additional historical stats
+      messagesLastWeek,
+      messagesLastMonth,
+      callsLastWeek,
+    };
+  }, [analytics]);
+
+  // Chart data for the weekly view - shows past 7 days with daily breakdown
+  const weeklyChartData = useMemo(() => {
+    if (!analytics) {
+      return Array.from({ length: 7 }, (_, i) => ({ 
+        name: ['Sat', 'Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri'][i], 
+        messages: 0, 
+        calls: 0 
+      }));
+    }
+    
+    const now = new Date();
+    // Use 'all' data if available (6 months), otherwise fall back to thisMonth
+    const allMessages = (analytics.messages as any).all || analytics.messages.thisMonth || [];
+    const allCalls = (analytics.calls as any).all || analytics.calls.thisMonth || [];
+    
+    console.log('[Dashboard] Weekly chart - Total messages available:', allMessages.length);
+    console.log('[Dashboard] Weekly chart - Total calls available:', allCalls.length);
+    
+    // Group by day for the last 7 days
+    const chartData = Array.from({ length: 7 }, (_, i) => {
+      const date = new Date(now);
+      date.setDate(now.getDate() - (6 - i));
+      date.setHours(0, 0, 0, 0);
+      
+      const nextDate = new Date(date);
+      nextDate.setDate(nextDate.getDate() + 1);
+      
+      // Count messages for this day
+      const dayMessages = allMessages.filter((m: any) => {
+        const msgDate = new Date(m.dateSent);
+        return msgDate >= date && msgDate < nextDate;
+      }).length;
+      
+      // Count calls for this day
+      const dayCalls = allCalls.filter((c: any) => {
+        const callDate = new Date(c.startTime);
+        return callDate >= date && callDate < nextDate;
+      }).length;
+      
+      return {
+        name: `${date.toLocaleDateString('en-US', { weekday: 'short' })} ${date.getMonth() + 1}/${date.getDate()}`,
+        messages: dayMessages,
+        calls: dayCalls
+      };
+    });
+    
+    console.log('[Dashboard] Weekly chart data:', chartData);
+    return chartData;
+  }, [analytics]);
+  
+  // Monthly trend data - shows last 6 months
+  const sixMonthTrendData = useMemo(() => {
+    if (!analytics) {
+      return Array.from({ length: 6 }, (_, i) => ({ 
+        name: new Date(new Date().getFullYear(), new Date().getMonth() - (5 - i), 1)
+          .toLocaleDateString('en-US', { month: 'short' }), 
+        messages: 0, 
+        calls: 0 
+      }));
+    }
+    
+    const now = new Date();
+    const allMessages = (analytics.messages as any).all || analytics.messages.thisMonth || [];
+    const allCalls = (analytics.calls as any).all || analytics.calls.thisMonth || [];
+    
+    // Group by month for the last 6 months
+    return Array.from({ length: 6 }, (_, i) => {
+      const monthDate = new Date(now.getFullYear(), now.getMonth() - (5 - i), 1);
+      const nextMonth = new Date(now.getFullYear(), now.getMonth() - (4 - i), 1);
+      
+      const monthMessages = allMessages.filter((m: any) => {
+        const msgDate = new Date(m.dateSent);
+        return msgDate >= monthDate && msgDate < nextMonth;
+      }).length;
+      
+      const monthCalls = allCalls.filter((c: any) => {
+        const callDate = new Date(c.startTime);
+        return callDate >= monthDate && callDate < nextMonth;
+      }).length;
+      
+      return {
+        name: monthDate.toLocaleDateString('en-US', { month: 'short' }),
+        messages: monthMessages,
+        calls: monthCalls
+      };
+    });
+  }, [analytics]);
+
+  // Bar chart data - uses real daily message counts from this month
+  const barChartData = useMemo(() => {
+    if (!analytics) {
+      return Array.from({ length: 14 }, (_, i) => ({ name: (i + 1).toString(), value: 0 }));
+    }
+    
+    const now = new Date();
+    // Get last 14 days of message data
+    return Array.from({ length: 14 }, (_, i) => {
+      const date = new Date(now);
+      date.setDate(now.getDate() - (13 - i));
+      const dateStr = date.toDateString();
+      
+      const dayMessages = analytics.messages.thisMonth?.filter((m: any) => {
+        const msgDate = new Date(m.dateSent);
+        return msgDate.toDateString() === dateStr;
+      }).length || 0;
+      
+      return {
+        name: date.getDate().toString(),
+        value: dayMessages
+      };
+    });
+  }, [analytics]);
+
+  // Recent messages for table
+  const recentMessages = useMemo(() => {
+    if (!analytics) return [];
+    return analytics.messages.thisMonth?.slice(0, 5).map((m: any) => ({
+      id: m.sid,
+      status: m.status === 'delivered' ? 'Success' : m.status === 'sent' ? 'Processing' : 'Failed',
+      to: m.to,
+      body: m.body.substring(0, 30) + '...',
+      timestamp: m.dateSent
+    }));
+  }, [analytics]);
+
+  // Team members / Active users
+  const teamMembers = [
+    { name: 'Dale Komen', email: 'dale@example.com', role: 'Member', avatar: 'DK' },
+    { name: 'Sofia Davis', email: 'm@example.com', role: 'Owner', avatar: 'SD' },
+    { name: 'Jackson Lee', email: 'p@example.com', role: 'Member', avatar: 'JL' },
+    { name: 'Isabella Nguyen', email: 'i@example.com', role: 'Member', avatar: 'IN' },
+    { name: 'Hugan Romex', email: 'kai@example.com', role: 'Member', avatar: 'HR' },
+  ];
+
+  // Sparkline data - derived from real daily message/call counts
+  const sparklineMessages = useMemo(() => {
+    if (!analytics) return [0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+    const now = new Date();
+    return Array.from({ length: 10 }, (_, i) => {
+      const date = new Date(now);
+      date.setDate(now.getDate() - (9 - i));
+      const dateStr = date.toDateString();
+      return analytics.messages.thisMonth?.filter((m: any) => {
+        const msgDate = new Date(m.dateSent);
+        return msgDate.toDateString() === dateStr;
+      }).length || 0;
+    });
+  }, [analytics]);
+
+  const sparklineCalls = useMemo(() => {
+    if (!analytics) return [0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+    const now = new Date();
+    return Array.from({ length: 10 }, (_, i) => {
+      const date = new Date(now);
+      date.setDate(now.getDate() - (9 - i));
+      const dateStr = date.toDateString();
+      return analytics.calls.thisMonth?.filter((c: any) => {
+        const callDate = new Date(c.startTime);
+        return callDate.toDateString() === dateStr;
+      }).length || 0;
+    });
+  }, [analytics]);
+
+  const getStatusBadge = (status: string) => {
+    switch (status) {
+      case 'Success':
+        return <Badge className="bg-green-100 text-green-700 hover:bg-green-100">Success</Badge>;
+      case 'Processing':
+        return <Badge className="bg-yellow-100 text-yellow-700 hover:bg-yellow-100">Processing</Badge>;
+      case 'Failed':
+        return <Badge className="bg-red-100 text-red-700 hover:bg-red-100">Failed</Badge>;
+      default:
+        return <Badge variant="outline">{status}</Badge>;
     }
   };
 
-  const getInsightIcon = (type: string) => {
-    switch (type) {
-      case 'success':
-        return <CheckCircle className="w-5 h-5 text-green-500" />;
-      case 'warning':
-        return <AlertTriangle className="w-5 h-5 text-yellow-500" />;
-      case 'info':
-        return <Info className="w-5 h-5 text-blue-500" />;
-      case 'tip':
-        return <Lightbulb className="w-5 h-5 text-purple-500" />;
-      default:
-        return <Info className="w-5 h-5 text-gray-500" />;
-    }
+  // CSV Download helper
+  const downloadCSV = (content: string, filename: string) => {
+    const blob = new Blob([content], { type: 'text/csv;charset=utf-8;' });
+    const link = document.createElement('a');
+    const url = URL.createObjectURL(blob);
+    link.setAttribute('href', url);
+    link.setAttribute('download', filename);
+    link.style.visibility = 'hidden';
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
   };
 
-  const getInsightBgColor = (type: string) => {
-    switch (type) {
-      case 'success':
-        return 'bg-green-50 border-green-200';
-      case 'warning':
-        return 'bg-yellow-50 border-yellow-200';
-      case 'info':
-        return 'bg-blue-50 border-blue-200';
-      case 'tip':
-        return 'bg-purple-50 border-purple-200';
-      default:
-        return 'bg-gray-50 border-gray-200';
-    }
+  // Generate Messages CSV
+  const generateMessagesCSV = () => {
+    if (!analytics) return 'No data available';
+    const headers = ['SID', 'To', 'From', 'Body', 'Status', 'Direction', 'Date Sent', 'Price'];
+    const rows = analytics.messages.thisMonth?.map((m: any) => [
+      m.sid,
+      m.to,
+      m.from,
+      `"${m.body.replace(/"/g, '""')}"`,
+      m.status,
+      m.direction,
+      new Date(m.dateSent).toLocaleString(),
+      m.price || 'N/A'
+    ]);
+    return [headers.join(','), ...rows.map(r => r.join(','))].join('\n');
+  };
+
+  // Generate Calls CSV
+  const generateCallsCSV = () => {
+    if (!analytics) return 'No data available';
+    const headers = ['SID', 'To', 'From', 'Status', 'Direction', 'Duration (s)', 'Start Time', 'End Time', 'Price'];
+    const rows = analytics.calls.thisMonth?.map((c: any) => [
+      c.sid,
+      c.to,
+      c.from,
+      c.status,
+      c.direction,
+      c.duration,
+      new Date(c.startTime).toLocaleString(),
+      new Date(c.endTime).toLocaleString(),
+      c.price || 'N/A'
+    ]);
+    return [headers.join(','), ...rows.map(r => r.join(','))].join('\n');
+  };
+
+  // Generate Usage CSV
+  const generateUsageCSV = () => {
+    if (!analytics) return 'No data available';
+    const headers = ['Metric', 'Value'];
+    const rows = [
+      ['Total Messages Sent Today', stats.messagesSent.toString()],
+      ['Total Calls This Week', stats.callsMade.toString()],
+      ['Active Phone Numbers', stats.activeNumbers.toString()],
+      ['Delivery Rate', `${stats.deliveryRate}%`],
+      ['Inbound Messages', stats.inboundMessages.toString()],
+      ['Outbound Messages', stats.outboundMessages.toString()],
+      ['Report Generated', new Date().toLocaleString()]
+    ];
+    return [headers.join(','), ...rows.map(r => r.join(','))].join('\n');
+  };
+
+  // Generate Summary CSV
+  const generateSummaryCSV = () => {
+    if (!analytics) return 'No data available';
+    let csv = '=== TEXTFLOW COMMUNICATION REPORT ===\n';
+    csv += `Generated: ${new Date().toLocaleString()}\n`;
+    csv += `Account SID: ${analytics.account?.sid || 'N/A'}\n\n`;
+    
+    csv += '=== SUMMARY METRICS ===\n';
+    csv += `Total Messages This Month,${stats.messagesSent}\n`;
+    csv += `Total Calls This Week,${stats.callsMade}\n`;
+    csv += `Active Phone Numbers,${stats.activeNumbers}\n`;
+    csv += `Delivery Rate,${stats.deliveryRate}%\n`;
+    csv += `Inbound Messages,${stats.inboundMessages}\n`;
+    csv += `Outbound Messages,${stats.outboundMessages}\n\n`;
+    
+    csv += '=== MESSAGES (This Month) ===\n';
+    csv += generateMessagesCSV() + '\n\n';
+    
+    csv += '=== CALLS (This Month) ===\n';
+    csv += generateCallsCSV();
+    
+    return csv;
   };
 
   return (
-    <div className="p-8 max-w-7xl mx-auto">
-      <div className="mb-10 flex justify-between items-start">
-        <div>
-          <h1 className="text-2xl font-bold mb-2">Welcome to SyncGrid</h1>
-          <p className="text-gray-500">
-            {twilioLoading ? 'Loading real-time data...' : 
-             twilioError ? 'Error loading data' :
-             `Live data from Twilio • Last updated: ${analytics ? new Date(analytics.generatedAt).toLocaleTimeString() : 'N/A'}`}
-          </p>
-        </div>
-        <button 
-          onClick={refresh}
-          disabled={twilioLoading}
-          className="flex items-center px-3 py-2 bg-gray-100 hover:bg-gray-200 rounded-md text-sm text-gray-700 disabled:opacity-50"
-        >
-          <RefreshCw className={`w-4 h-4 mr-2 ${twilioLoading ? 'animate-spin' : ''}`} />
-          Refresh
-        </button>
-      </div>
-
-      {/* Loading State */}
-      {twilioLoading && (
-        <div className="flex items-center justify-center py-8 mb-6 bg-blue-50 rounded-lg">
-          <Loader2 className="w-6 h-6 text-blue-600 animate-spin mr-3" />
-          <span className="text-blue-600">Loading Twilio data...</span>
-        </div>
-      )}
-      
-      {/* Stats Overview */}
-      <div className="grid grid-cols-1 md:grid-cols-4 gap-6 mb-10">
-        <StatCard 
-          title="Messages This Month" 
-          value={stats.messagesSent} 
-          change={stats.messageGrowth}
-          icon={<MessageSquare className="text-blue-500" size={24} />} 
-        />
-        
-        <StatCard 
-          title="Phone Numbers" 
-          value={stats.activeUsers} 
-          change={stats.userGrowth}
-          icon={<Phone className="text-green-500" size={24} />} 
-        />
-        
-        <StatCard 
-          title="Delivery Rate" 
-          value={`${stats.deliveryRate}%`} 
-          change={stats.deliveryGrowth}
-          icon={<BarChart3 className="text-blue-500" size={24} />} 
-        />
-
-        <StatCard 
-          title="Spend This Month" 
-          value={analytics ? `$${analytics.metrics.totalSpendThisMonth.toFixed(2)}` : '$0.00'} 
-          change={0}
-          icon={<DollarSign className="text-yellow-500" size={24} />} 
-        />
-      </div>
-      
-      {/* Messaging Insights */}
-      <div className="mb-10">
-        <div className="flex justify-between items-center mb-6">
-          <h2 className="text-2xl font-bold">Messaging Insights</h2>
-          <div className="flex items-center gap-4">
-            {/* Time Period Selector */}
-            <div className="flex bg-gray-100 rounded-lg p-1">
-              <button
-                onClick={() => setTimePeriod('day')}
-                className={`px-3 py-1.5 text-sm font-medium rounded-md transition-colors ${
-                  timePeriod === 'day' 
-                    ? 'bg-white text-blue-600 shadow-sm' 
-                    : 'text-gray-600 hover:text-gray-900'
-                }`}
-              >
-                24h
-              </button>
-              <button
-                onClick={() => setTimePeriod('week')}
-                className={`px-3 py-1.5 text-sm font-medium rounded-md transition-colors ${
-                  timePeriod === 'week' 
-                    ? 'bg-white text-blue-600 shadow-sm' 
-                    : 'text-gray-600 hover:text-gray-900'
-                }`}
-              >
-                7 Days
-              </button>
-              <button
-                onClick={() => setTimePeriod('month')}
-                className={`px-3 py-1.5 text-sm font-medium rounded-md transition-colors ${
-                  timePeriod === 'month' 
-                    ? 'bg-white text-blue-600 shadow-sm' 
-                    : 'text-gray-600 hover:text-gray-900'
-                }`}
-              >
-                30 Days
-              </button>
-            </div>
-            
-            <button 
-              onClick={fetchAIInsights}
-              className="bg-gradient-to-r from-blue-600 to-indigo-600 text-white px-4 py-2 rounded-md text-sm font-medium hover:from-blue-700 hover:to-indigo-700 transition-colors flex items-center"
-            >
-              <Sparkles className="w-4 h-4 mr-2" />
-              <span>AI Insights</span>
-            </button>
-          </div>
-        </div>
-        
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-          {/* Outgoing Messages */}
-          <div className="bg-white rounded-lg shadow-sm border border-gray-100 overflow-hidden">
-            <div className="p-4 border-b border-gray-100 flex justify-between items-center">
-              <h3 className="text-lg font-medium">Outgoing Messages</h3>
-              <div className="flex items-center text-sm text-gray-500">
-                <TrendingUp className="w-4 h-4 mr-1 text-green-500" />
-                {timePeriod === 'day' ? 'Last 24 hours' : timePeriod === 'week' ? 'Last 7 days' : 'Last 30 days'}
-              </div>
-            </div>
-            
-            <div className="p-4">
-              {/* Line chart for outgoing messages */}
-              <LineChart 
-                data={messagingData.outgoing.data} 
-                labels={messagingData.outgoing.labels}
-                color="#22c55e" 
-                label="Outgoing"
-              />
-              
-              {/* Status cards */}
-              <div className="grid grid-cols-2 gap-4 mt-4">
-                <div className="border border-gray-100 rounded-md p-4">
-                  <div className="flex items-center mb-2">
-                    <div className="w-3 h-3 rounded-full mr-2 bg-green-500"></div>
-                    <span className="text-sm text-gray-600">Delivered</span>
-                  </div>
-                  <div className="text-2xl font-bold">{stats.deliveryRate.toFixed(1)}%</div>
-                </div>
-                <div className="border border-gray-100 rounded-md p-4">
-                  <div className="flex items-center mb-2">
-                    <div className="w-3 h-3 rounded-full mr-2 bg-red-500"></div>
-                    <span className="text-sm text-gray-600">Failed</span>
-                  </div>
-                  <div className="text-2xl font-bold">{(100 - stats.deliveryRate).toFixed(1)}%</div>
-                </div>
-              </div>
-            </div>
-          </div>
-          
-          {/* Incoming Messages */}
-          <div className="bg-white rounded-lg shadow-sm border border-gray-100 overflow-hidden">
-            <div className="p-4 border-b border-gray-100 flex justify-between items-center">
-              <h3 className="text-lg font-medium">Incoming Messages</h3>
-              <div className="flex items-center text-sm text-gray-500">
-                <TrendingUp className="w-4 h-4 mr-1 text-blue-500" />
-                {timePeriod === 'day' ? 'Last 24 hours' : timePeriod === 'week' ? 'Last 7 days' : 'Last 30 days'}
-              </div>
-            </div>
-            
-            <div className="p-4">
-              {/* Line chart for incoming messages */}
-              <LineChart 
-                data={messagingData.incoming.data} 
-                labels={messagingData.incoming.labels}
-                color="#3b82f6" 
-                label="Incoming"
-              />
-              
-              {/* Status cards */}
-              <div className="grid grid-cols-3 gap-4 mt-4">
-                <div className="border border-gray-100 rounded-md p-4">
-                  <div className="flex items-center mb-2">
-                    <div className="w-3 h-3 rounded-full mr-2 bg-green-500"></div>
-                    <span className="text-sm text-gray-600">Received Today</span>
-                  </div>
-                  <div className="text-2xl font-bold">{analytics?.metrics.totalMessagesReceivedToday || 0}</div>
-                </div>
-                <div className="border border-gray-100 rounded-md p-4">
-                  <div className="flex items-center mb-2">
-                    <div className="w-3 h-3 rounded-full mr-2 bg-blue-500"></div>
-                    <span className="text-sm text-gray-600">This Period</span>
-                  </div>
-                  <div className="text-2xl font-bold">{messagingData.incoming.data.reduce((a: number, b: number) => a + b, 0)}</div>
-                </div>
-                <div className="border border-gray-100 rounded-md p-4">
-                  <div className="flex items-center mb-2">
-                    <div className="w-3 h-3 rounded-full mr-2 bg-purple-500"></div>
-                    <span className="text-sm text-gray-600">This Month</span>
-                  </div>
-                  <div className="text-2xl font-bold">{formatNumber(stats.messagesSent)}</div>
-                </div>
-              </div>
-            </div>
-          </div>
+    <div className="flex-1 space-y-6 p-8 pt-6 bg-gray-50/50">
+      {/* Header */}
+      <div className="flex items-center justify-between">
+        <h1 className="text-2xl font-semibold tracking-tight">Dashboard</h1>
+        <div className="flex items-center gap-2">
+          <Button variant="default" size="sm" className="gap-2 bg-gray-900 hover:bg-gray-800">
+            <Download className="h-4 w-4" />
+            Download
+          </Button>
+          <Button variant="outline" size="sm" className="gap-2">
+            <Calendar className="h-4 w-4" />
+            Pick a date
+          </Button>
         </div>
       </div>
 
-      {/* AI Insights Panel */}
-      {showAIPanel && (
-        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
-          <div className="bg-white rounded-lg shadow-xl w-full max-w-2xl max-h-[85vh] overflow-hidden">
-            <div className="p-4 border-b flex justify-between items-center bg-gradient-to-r from-blue-600 to-indigo-600">
-              <div className="flex items-center text-white">
-                <Sparkles className="w-5 h-5 mr-2" />
-                <h2 className="text-lg font-semibold">AI-Powered Insights</h2>
-              </div>
-              <button 
-                onClick={() => setShowAIPanel(false)}
-                className="text-white hover:bg-white/20 p-1 rounded"
-              >
-                <X className="w-5 h-5" />
-              </button>
-            </div>
-            
-            <div className="p-6 overflow-y-auto max-h-[calc(85vh-180px)]">
-              {isLoadingInsights ? (
-                <div className="flex flex-col items-center justify-center py-12">
-                  <Loader2 className="w-10 h-10 text-blue-600 animate-spin mb-4" />
-                  <p className="text-gray-500">Analyzing your messaging data...</p>
+      {/* Tabs */}
+      <Tabs value={activeTab} onValueChange={setActiveTab} className="w-full">
+        <TabsList className="bg-white border">
+          <TabsTrigger value="overview" className="gap-2 data-[state=active]:bg-gray-100">
+            <Settings className="h-4 w-4" />
+            Overview
+          </TabsTrigger>
+          <TabsTrigger value="analytics" className="gap-2">
+            <BarChart3 className="h-4 w-4" />
+            Analytics
+          </TabsTrigger>
+          <TabsTrigger value="reports" className="gap-2">
+            <FileText className="h-4 w-4" />
+            Reports
+          </TabsTrigger>
+          <TabsTrigger value="notifications" className="gap-2">
+            <Bell className="h-4 w-4" />
+            Notifications
+          </TabsTrigger>
+        </TabsList>
+
+        <TabsContent value="overview" className="space-y-6 mt-6">
+          {/* Stats Row */}
+          <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-4">
+            {/* Messages Card */}
+            <Card className="bg-white">
+              <CardContent className="p-6">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-2 text-sm text-muted-foreground">
+                    <MessageSquare className="h-4 w-4" />
+                    Total Messages
+                  </div>
+                  <Info className="h-4 w-4 text-muted-foreground" />
                 </div>
-              ) : (
+                <div className="flex items-center justify-between mt-3">
+                  <div>
+                    <p className="text-3xl font-bold">{loading ? '...' : formatNumber(stats.messagesSent)}</p>
+                    <p className="text-xs text-muted-foreground mt-1">Since last week</p>
+                  </div>
+                  <MiniSparkline data={sparklineMessages} color="#f97316" trend="up" />
+                </div>
+                <div className="flex items-center gap-2 mt-3 pt-3 border-t">
+                  <span className="text-sm text-muted-foreground">Details</span>
+                  <Badge variant="outline" className={`gap-1 ${stats.messageGrowth >= 0 ? 'text-green-600 border-green-200 bg-green-50' : 'text-red-600 border-red-200 bg-red-50'}`}>
+                    {stats.messageGrowth >= 0 ? <ArrowUpRight className="h-3 w-3" /> : <ArrowDownRight className="h-3 w-3" />}
+                    {Math.abs(stats.messageGrowth)}%
+                  </Badge>
+                </div>
+              </CardContent>
+            </Card>
+
+            {/* Calls Card */}
+            <Card className="bg-white">
+              <CardContent className="p-6">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-2 text-sm text-muted-foreground">
+                    <Phone className="h-4 w-4" />
+                    Voice Calls
+                  </div>
+                  <Info className="h-4 w-4 text-muted-foreground" />
+                </div>
+                <div className="flex items-center justify-between mt-3">
+                  <div>
+                    <p className="text-3xl font-bold">{loading ? '...' : formatNumber(stats.callsMade)}</p>
+                    <p className="text-xs text-muted-foreground mt-1">Since last week</p>
+                  </div>
+                  <MiniSparkline data={sparklineCalls} color="#ef4444" trend="down" />
+                </div>
+                <div className="flex items-center gap-2 mt-3 pt-3 border-t">
+                  <span className="text-sm text-muted-foreground">Details</span>
+                  <Badge variant="outline" className="gap-1 text-red-600 border-red-200 bg-red-50">
+                    <ArrowDownRight className="h-3 w-3" />
+                    {Math.abs(stats.callGrowth)}%
+                  </Badge>
+                </div>
+              </CardContent>
+            </Card>
+
+            {/* Delivery Rate Card */}
+            <Card className="bg-white">
+              <CardContent className="p-6">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-2 text-sm text-muted-foreground">
+                    <CheckCircle className="h-4 w-4" />
+                    Avg Delivery Rate
+                  </div>
+                  <Info className="h-4 w-4 text-muted-foreground" />
+                </div>
+                <div className="flex items-center justify-between mt-3">
+                  <div>
+                    <p className="text-3xl font-bold">{loading ? '...' : stats.inboundMessages}</p>
+                    <p className="text-xs text-muted-foreground mt-1">Since last week</p>
+                  </div>
+                  <MiniSparkline data={sparklineMessages} color="#f97316" trend="up" />
+                </div>
+                <div className="flex items-center gap-2 mt-3 pt-3 border-t">
+                  <span className="text-sm text-muted-foreground">Details</span>
+                  <Badge variant="outline" className="gap-1 text-green-600 border-green-200 bg-green-50">
+                    <ArrowUpRight className="h-3 w-3" />
+                    {stats.numberGrowth}%
+                  </Badge>
+                </div>
+              </CardContent>
+            </Card>
+
+            {/* Total Revenue / Delivery Rate */}
+            <Card className="bg-white">
+              <CardContent className="p-6">
+                <div className="text-sm text-muted-foreground">Delivery Rate</div>
+                <p className="text-3xl font-bold mt-2">{stats.deliveryRate.toFixed(1)}%</p>
+                <p className="text-xs text-green-600 mt-1">+{stats.deliveryGrowth}% from last month</p>
+                <div className="mt-4 h-16">
+                  <ResponsiveContainer width="100%" height="100%">
+                    <LineChart data={sparklineMessages.map((v: number) => ({ value: v }))}>
+                      <Line type="monotone" dataKey="value" stroke="#10b981" strokeWidth={2} dot={false} />
+                    </LineChart>
+                  </ResponsiveContainer>
+                </div>
+              </CardContent>
+            </Card>
+          </div>
+
+          {/* Main Content Row */}
+          <div className="grid gap-6 lg:grid-cols-3">
+            {/* Large Area Chart */}
+            <Card className="lg:col-span-2 bg-white">
+              <CardHeader className="flex flex-row items-center justify-between">
+                <div>
+                  <CardTitle className="text-base font-medium">
+                    Communication Activity - {chartTimeRange === 'weekly' ? 'Weekly' : 'Monthly'}
+                  </CardTitle>
+                  <CardDescription>
+                    {chartTimeRange === 'weekly' 
+                      ? 'Showing activity for the last 7 days' 
+                      : 'Showing total activity for the last 6 months'}
+                  </CardDescription>
+                </div>
+                <div className="flex gap-2">
+                  <Button 
+                    variant={chartTimeRange === 'weekly' ? 'default' : 'outline'} 
+                    size="sm"
+                    onClick={() => setChartTimeRange('weekly')}
+                  >
+                    Weekly
+                  </Button>
+                  <Button 
+                    variant={chartTimeRange === 'monthly' ? 'default' : 'outline'} 
+                    size="sm"
+                    onClick={() => setChartTimeRange('monthly')}
+                  >
+                    Monthly
+                  </Button>
+                </div>
+              </CardHeader>
+              <CardContent>
+                {loading ? (
+                  <div className="h-[300px] flex items-center justify-center">
+                    <RefreshCw className="w-8 h-8 animate-spin text-gray-400" />
+                  </div>
+                ) : (
+                  <div className="h-[300px]">
+                    <ResponsiveContainer width="100%" height="100%">
+                      <AreaChart data={chartTimeRange === 'weekly' ? weeklyChartData : sixMonthTrendData} margin={{ top: 10, right: 10, left: 0, bottom: 0 }}>
+                        <defs>
+                          <linearGradient id="colorMessages2" x1="0" y1="0" x2="0" y2="1">
+                            <stop offset="5%" stopColor="#14b8a6" stopOpacity={0.3}/>
+                            <stop offset="95%" stopColor="#14b8a6" stopOpacity={0}/>
+                          </linearGradient>
+                          <linearGradient id="colorCalls2" x1="0" y1="0" x2="0" y2="1">
+                            <stop offset="5%" stopColor="#f97316" stopOpacity={0.3}/>
+                            <stop offset="95%" stopColor="#f97316" stopOpacity={0}/>
+                          </linearGradient>
+                        </defs>
+                        <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" vertical={false} />
+                        <XAxis dataKey="name" stroke="#9ca3af" fontSize={12} tickLine={false} axisLine={false} />
+                        <YAxis stroke="#9ca3af" fontSize={12} tickLine={false} axisLine={false} />
+                        <Tooltip />
+                        <Area type="monotone" dataKey="messages" stroke="#14b8a6" strokeWidth={2} fillOpacity={1} fill="url(#colorMessages2)" name="Messages" />
+                        <Area type="monotone" dataKey="calls" stroke="#f97316" strokeWidth={2} fillOpacity={1} fill="url(#colorCalls2)" name="Calls" />
+                      </AreaChart>
+                    </ResponsiveContainer>
+                  </div>
+                )}
+              </CardContent>
+            </Card>
+
+            {/* Side Cards */}
+            <div className="space-y-6">
+              {/* Subscriptions / Messages Card */}
+              <Card className="bg-white">
+                <CardContent className="p-6">
+                  <div className="text-sm text-muted-foreground">Total Messages (6 months)</div>
+                  <p className="text-3xl font-bold mt-1">+{formatNumber(stats.totalMessagesAll)}</p>
+                  <p className="text-xs text-green-600 mt-1">
+                    {stats.messageGrowth >= 0 ? '+' : ''}{stats.messageGrowth}% from last week
+                  </p>
+                  <div className="mt-4 h-24">
+                    <ResponsiveContainer width="100%" height="100%">
+                      <BarChart data={barChartData}>
+                        <Bar dataKey="value" fill="#f97316" radius={[2, 2, 0, 0]} />
+                      </BarChart>
+                    </ResponsiveContainer>
+                  </div>
+                </CardContent>
+              </Card>
+
+              {/* Voice Calls Card */}
+              <Card className="bg-white">
+                <CardContent className="p-6">
+                  <div className="text-sm text-muted-foreground">Voice Calls (6 months)</div>
+                  <p className="text-3xl font-bold mt-1">+{formatNumber(stats.totalCallsAll)}</p>
+                  <p className="text-xs text-green-600 mt-1">
+                    {stats.callGrowth >= 0 ? '+' : ''}{stats.callGrowth}% from last week
+                  </p>
+                  <div className="mt-4 h-24">
+                    <ResponsiveContainer width="100%" height="100%">
+                      <BarChart data={barChartData.slice(0, 8)}>
+                        <Bar dataKey="value" fill="#14b8a6" radius={[2, 2, 0, 0]} />
+                      </BarChart>
+                    </ResponsiveContainer>
+                  </div>
+                </CardContent>
+              </Card>
+            </div>
+          </div>
+
+          {/* Bottom Row */}
+          <div className="grid gap-6 lg:grid-cols-3">
+            {/* Messages Table */}
+            <Card className="lg:col-span-2 bg-white">
+              <CardHeader>
+                <div className="flex items-center justify-between">
+                  <div>
+                    <CardTitle className="text-base font-medium">Recent Messages</CardTitle>
+                    <CardDescription>View your recent communications.</CardDescription>
+                  </div>
+                </div>
+              </CardHeader>
+              <CardContent>
+                <div className="flex items-center gap-4 mb-4">
+                  <Input 
+                    placeholder="Filter messages..." 
+                    className="max-w-sm"
+                    value={messageFilter}
+                    onChange={(e) => setMessageFilter(e.target.value)}
+                  />
+                  <DropdownMenu>
+                    <DropdownMenuTrigger asChild>
+                      <Button variant="outline" className="ml-auto">
+                        Columns <ChevronDown className="ml-2 h-4 w-4" />
+                      </Button>
+                    </DropdownMenuTrigger>
+                    <DropdownMenuContent>
+                      <DropdownMenuItem>Status</DropdownMenuItem>
+                      <DropdownMenuItem>To</DropdownMenuItem>
+                      <DropdownMenuItem>Message</DropdownMenuItem>
+                    </DropdownMenuContent>
+                  </DropdownMenu>
+                </div>
+                <div className="rounded-md border">
+                  <Table>
+                    <TableHeader>
+                      <TableRow>
+                        <TableHead className="w-12">
+                          <Checkbox />
+                        </TableHead>
+                        <TableHead>Status</TableHead>
+                        <TableHead>To</TableHead>
+                        <TableHead className="text-right">Message</TableHead>
+                        <TableHead className="w-12"></TableHead>
+                      </TableRow>
+                    </TableHeader>
+                    <TableBody>
+                      {loading ? (
+                        <TableRow>
+                          <TableCell colSpan={5} className="text-center py-8">
+                            <RefreshCw className="w-6 h-6 animate-spin mx-auto text-gray-400" />
+                          </TableCell>
+                        </TableRow>
+                      ) : recentMessages.length === 0 ? (
+                        <TableRow>
+                          <TableCell colSpan={5} className="text-center py-8 text-muted-foreground">
+                            No messages found
+                          </TableCell>
+                        </TableRow>
+                      ) : (
+                        recentMessages.filter(m => 
+                          messageFilter === '' || 
+                          m.to.toLowerCase().includes(messageFilter.toLowerCase()) ||
+                          m.body.toLowerCase().includes(messageFilter.toLowerCase())
+                        ).map((message) => (
+                          <TableRow key={message.id}>
+                            <TableCell>
+                              <Checkbox />
+                            </TableCell>
+                            <TableCell>{getStatusBadge(message.status)}</TableCell>
+                            <TableCell className="font-medium">{message.to}</TableCell>
+                            <TableCell className="text-right text-muted-foreground">{message.body}</TableCell>
+                            <TableCell>
+                              <Button variant="ghost" size="icon">
+                                <MoreHorizontal className="h-4 w-4" />
+                              </Button>
+                            </TableCell>
+                          </TableRow>
+                        ))
+                      )}
+                    </TableBody>
+                  </Table>
+                </div>
+              </CardContent>
+            </Card>
+
+            {/* Account Information */}
+            <Card className="bg-white">
+              <CardHeader>
+                <CardTitle className="text-base font-medium">Account Information</CardTitle>
+                <CardDescription>Your Twilio account credentials and settings.</CardDescription>
+              </CardHeader>
+              <CardContent>
                 <div className="space-y-4">
-                  {insights.map((insight, index) => (
-                    <div 
-                      key={index} 
-                      className={`p-4 rounded-lg border ${getInsightBgColor(insight.type)}`}
-                    >
-                      <div className="flex items-start">
-                        <div className="flex-shrink-0 mt-0.5">
-                          {getInsightIcon(insight.type)}
-                        </div>
-                        <div className="ml-3 flex-1">
-                          <h4 className="font-medium text-gray-900">{insight.title}</h4>
-                          <p className="text-sm text-gray-600 mt-1">{insight.description}</p>
-                          {insight.recommendation && (
-                            <p className="text-sm text-gray-500 mt-2 italic">
-                              💡 {insight.recommendation}
-                            </p>
-                          )}
-                          {insight.metric && (
-                            <span className="inline-block mt-2 text-xs bg-white/50 px-2 py-0.5 rounded">
-                              {insight.metric}
-                            </span>
-                          )}
-                        </div>
+                  {/* Account SID */}
+                  <div className="flex items-center justify-between p-3 rounded-lg border hover:bg-gray-50 transition-colors">
+                    <div className="flex items-center gap-3">
+                      <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-blue-100">
+                        <Activity className="h-4 w-4 text-blue-600" />
+                      </div>
+                      <div>
+                        <p className="text-sm font-medium">Account SID</p>
+                        <p className="text-xs text-muted-foreground font-mono">
+                          {analytics?.account?.sid?.substring(0, 16)}...
+                        </p>
                       </div>
                     </div>
-                  ))}
-                </div>
-              )}
-            </div>
+                    <Button 
+                      variant="ghost" 
+                      size="sm"
+                      onClick={() => {
+                        if (analytics?.account?.sid) {
+                          navigator.clipboard.writeText(analytics.account.sid);
+                        }
+                      }}
+                    >
+                      Copy
+                    </Button>
+                  </div>
 
-            {/* Ask AI Section */}
-            <div className="p-4 border-t bg-gray-50">
-              <div className="mb-3">
-                <label className="text-sm font-medium text-gray-700">Ask AI about your messaging performance</label>
-              </div>
-              <div className="flex space-x-2">
-                <input
-                  type="text"
-                  className="flex-1 px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
-                  placeholder="e.g., How can I improve my delivery rate?"
-                  value={question}
-                  onChange={(e) => setQuestion(e.target.value)}
-                  onKeyPress={(e) => e.key === 'Enter' && askAI()}
-                />
-                <button
-                  onClick={askAI}
-                  disabled={isAskingAI || !question.trim()}
-                  className="px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700 disabled:opacity-50 flex items-center"
-                >
-                  {isAskingAI ? (
-                    <Loader2 className="w-4 h-4 animate-spin" />
-                  ) : (
-                    <Send className="w-4 h-4" />
-                  )}
-                </button>
-              </div>
-              {aiResponse && (
-                <div className="mt-3 p-3 bg-white rounded-md border border-gray-200">
-                  <p className="text-sm text-gray-700">{aiResponse}</p>
+                  {/* Auth Token */}
+                  <div className="flex items-center justify-between p-3 rounded-lg border hover:bg-gray-50 transition-colors cursor-pointer" onClick={() => setLocation('/settings')}>
+                    <div className="flex items-center gap-3">
+                      <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-green-100">
+                        <CheckCircle className="h-4 w-4 text-green-600" />
+                      </div>
+                      <div>
+                        <p className="text-sm font-medium">Auth Token</p>
+                        <p className="text-xs text-muted-foreground font-mono">••••••••••••••••</p>
+                      </div>
+                    </div>
+                    <Button variant="ghost" size="sm">
+                      View
+                    </Button>
+                  </div>
+
+                  {/* API Keys */}
+                  <div className="flex items-center justify-between p-3 rounded-lg border hover:bg-gray-50 transition-colors cursor-pointer" onClick={() => setLocation('/api-integration')}>
+                    <div className="flex items-center gap-3">
+                      <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-purple-100">
+                        <Settings className="h-4 w-4 text-purple-600" />
+                      </div>
+                      <div>
+                        <p className="text-sm font-medium">API Keys</p>
+                        <p className="text-xs text-muted-foreground">Manage API access</p>
+                      </div>
+                    </div>
+                    <Button variant="ghost" size="sm">
+                      Manage
+                    </Button>
+                  </div>
+
+                  {/* Providers */}
+                  <div className="flex items-center justify-between p-3 rounded-lg border hover:bg-gray-50 transition-colors cursor-pointer" onClick={() => setLocation('/settings')}>
+                    <div className="flex items-center gap-3">
+                      <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-orange-100">
+                        <Users className="h-4 w-4 text-orange-600" />
+                      </div>
+                      <div>
+                        <p className="text-sm font-medium">Providers</p>
+                        <p className="text-xs text-muted-foreground">Twilio, Commio</p>
+                      </div>
+                    </div>
+                    <Button variant="ghost" size="sm">
+                      Configure
+                    </Button>
+                  </div>
                 </div>
-              )}
-            </div>
+              </CardContent>
+            </Card>
           </div>
-        </div>
-      )}
-    </div>
-  );
-}
+        </TabsContent>
 
-function StatCard({ 
-  title, 
-  value, 
-  change,
-  icon
-}: { 
-  title: string;
-  value: number | string;
-  change: number;
-  icon: React.ReactNode;
-}) {
-  const isPositive = change >= 0;
-  
-  return (
-    <div className="bg-white rounded-lg p-6 shadow-sm border border-gray-100">
-      <div className="flex justify-between items-start">
-        <div>
-          <h3 className="text-gray-500 font-normal mb-1">{title}</h3>
-          <p className="text-4xl font-bold">{value}</p>
-        </div>
-        <div className="bg-blue-50 rounded-full p-3 flex items-center justify-center">
-          {icon}
-        </div>
-      </div>
-      <div className={`flex items-center mt-4 ${isPositive ? 'text-green-500' : 'text-red-500'}`}>
-        {isPositive ? <ArrowUp className="w-4 h-4 mr-1" /> : <ArrowDown className="w-4 h-4 mr-1" />}
-        <span>{Math.abs(change)}% this week</span>
-      </div>
-    </div>
-  );
-}
+        <TabsContent value="analytics" className="mt-6">
+          <Card className="bg-white">
+            <CardContent className="p-12 text-center">
+              <BarChart3 className="h-12 w-12 mx-auto text-muted-foreground mb-4" />
+              <h3 className="text-lg font-medium">Analytics</h3>
+              <p className="text-muted-foreground mt-2">Detailed analytics coming soon.</p>
+              <Button className="mt-4" onClick={() => setLocation('/analytics')}>
+                Go to Analytics Page
+              </Button>
+            </CardContent>
+          </Card>
+        </TabsContent>
 
-/**
- * Line Chart Component - SVG-based line chart with area fill
- */
-function LineChart({ 
-  data, 
-  labels,
-  color, 
-  label 
-}: { 
-  data: number[]; 
-  labels: string[];
-  color: string; 
-  label: string;
-}) {
-  const width = 100;
-  const height = 50;
-  const padding = 2;
-  
-  // Handle empty data
-  if (data.length === 0) {
-    return (
-      <div className="h-48 flex items-center justify-center text-gray-400">
-        No data available
-      </div>
-    );
-  }
-  
-  // Calculate max value for scaling
-  const maxValue = Math.max(...data, 1);
-  
-  // Generate points for the line
-  const points = data.map((value, index) => {
-    const x = padding + (index / Math.max(data.length - 1, 1)) * (width - padding * 2);
-    const y = height - padding - (value / maxValue) * (height - padding * 2);
-    return { x, y, value };
-  });
-  
-  // Create SVG path for line
-  const linePath = points.map((point, i) => 
-    `${i === 0 ? 'M' : 'L'} ${point.x} ${point.y}`
-  ).join(' ');
-  
-  // Create SVG path for area fill
-  const areaPath = `${linePath} L ${points[points.length - 1].x} ${height - padding} L ${padding} ${height - padding} Z`;
-  
-  // Use provided labels or generate defaults
-  const displayLabels = labels.length > 0 ? labels : data.map((_, i) => i.toString());
-  
-  // For large datasets, show fewer labels
-  const labelStep = displayLabels.length > 10 ? Math.ceil(displayLabels.length / 7) : 1;
-  const visibleLabels = displayLabels.filter((_, i) => i % labelStep === 0 || i === displayLabels.length - 1);
+        <TabsContent value="reports" className="mt-6 space-y-6">
+          {/* Report Type Selection Cards */}
+          <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-4">
+            {/* Messages Report */}
+            <Card 
+              className={`bg-white cursor-pointer transition-all duration-200 hover:shadow-lg ${selectedReportType === 'messages' ? 'ring-2 ring-blue-500 shadow-lg scale-[1.02]' : 'hover:border-blue-200'}`}
+              onClick={() => setSelectedReportType('messages')}
+            >
+              <CardContent className="p-5">
+                <div className="flex flex-col items-center text-center">
+                  <div className={`h-12 w-12 rounded-xl flex items-center justify-center mb-3 transition-colors ${selectedReportType === 'messages' ? 'bg-blue-500' : 'bg-blue-100'}`}>
+                    <MessageSquare className={`h-6 w-6 ${selectedReportType === 'messages' ? 'text-white' : 'text-blue-600'}`} />
+                  </div>
+                  <h3 className="font-semibold text-sm">Messages</h3>
+                  <p className="text-xs text-muted-foreground mt-1">SMS & MMS logs</p>
+                  <div className="mt-3 pt-3 border-t w-full">
+                    <p className="text-xl font-bold text-blue-600">{formatNumber(stats.messagesSent)}</p>
+                    <p className="text-[10px] text-muted-foreground">This Month</p>
+                  </div>
+                </div>
+              </CardContent>
+            </Card>
 
-  return (
-    <div className="h-48">
-      {/* Chart header */}
-      <div className="flex justify-between items-center mb-2">
-        <div className="flex items-center">
-          <div className="w-3 h-3 rounded-full mr-2" style={{ backgroundColor: color }}></div>
-          <span className="text-sm font-medium text-gray-700">{label}</span>
-        </div>
-        <div className="text-sm text-gray-500">
-          Total: <span className="font-semibold text-gray-900">{data.reduce((a, b) => a + b, 0)}</span>
-        </div>
-      </div>
-      
-      {/* SVG Chart */}
-      <div className="relative h-32 ml-6">
-        <svg 
-          viewBox={`0 0 ${width} ${height}`} 
-          className="w-full h-full"
-          preserveAspectRatio="none"
-        >
-          {/* Grid lines */}
-          {[0, 25, 50, 75, 100].map((percent) => (
-            <line
-              key={percent}
-              x1={padding}
-              y1={height - padding - (percent / 100) * (height - padding * 2)}
-              x2={width - padding}
-              y2={height - padding - (percent / 100) * (height - padding * 2)}
-              stroke="#e5e7eb"
-              strokeWidth="0.3"
-            />
-          ))}
-          
-          {/* Area fill */}
-          <path
-            d={areaPath}
-            fill={color}
-            fillOpacity="0.15"
-          />
-          
-          {/* Line */}
-          <path
-            d={linePath}
-            fill="none"
-            stroke={color}
-            strokeWidth="1.5"
-            strokeLinecap="round"
-            strokeLinejoin="round"
-          />
-          
-          {/* Data points - only show for smaller datasets */}
-          {data.length <= 14 && points.map((point, i) => (
-            <g key={i}>
-              <circle
-                cx={point.x}
-                cy={point.y}
-                r="1.2"
-                fill="white"
-                stroke={color}
-                strokeWidth="0.8"
-              />
-              {/* Hover area for tooltip */}
-              <circle
-                cx={point.x}
-                cy={point.y}
-                r="2.5"
-                fill="transparent"
-                className="cursor-pointer"
-              >
-                <title>{`${displayLabels[i]}: ${point.value}`}</title>
-              </circle>
-            </g>
-          ))}
-        </svg>
-        
-        {/* Y-axis labels */}
-        <div className="absolute -left-6 top-0 bottom-0 flex flex-col justify-between text-xs text-gray-400">
-          <span>{maxValue}</span>
-          <span>{Math.round(maxValue / 2)}</span>
-          <span>0</span>
-        </div>
-      </div>
-      
-      {/* X-axis labels */}
-      <div className="flex justify-between text-xs text-gray-500 mt-1 ml-6">
-        {visibleLabels.map((lbl, i) => (
-          <span key={i} className="text-center">{lbl}</span>
-        ))}
-      </div>
+            {/* Calls Report */}
+            <Card 
+              className={`bg-white cursor-pointer transition-all duration-200 hover:shadow-lg ${selectedReportType === 'calls' ? 'ring-2 ring-green-500 shadow-lg scale-[1.02]' : 'hover:border-green-200'}`}
+              onClick={() => setSelectedReportType('calls')}
+            >
+              <CardContent className="p-5">
+                <div className="flex flex-col items-center text-center">
+                  <div className={`h-12 w-12 rounded-xl flex items-center justify-center mb-3 transition-colors ${selectedReportType === 'calls' ? 'bg-green-500' : 'bg-green-100'}`}>
+                    <Phone className={`h-6 w-6 ${selectedReportType === 'calls' ? 'text-white' : 'text-green-600'}`} />
+                  </div>
+                  <h3 className="font-semibold text-sm">Voice Calls</h3>
+                  <p className="text-xs text-muted-foreground mt-1">Call history</p>
+                  <div className="mt-3 pt-3 border-t w-full">
+                    <p className="text-xl font-bold text-green-600">{formatNumber(stats.callsMade)}</p>
+                    <p className="text-[10px] text-muted-foreground">This Week</p>
+                  </div>
+                </div>
+              </CardContent>
+            </Card>
+
+            {/* Usage Report */}
+            <Card 
+              className={`bg-white cursor-pointer transition-all duration-200 hover:shadow-lg ${selectedReportType === 'usage' ? 'ring-2 ring-purple-500 shadow-lg scale-[1.02]' : 'hover:border-purple-200'}`}
+              onClick={() => setSelectedReportType('usage')}
+            >
+              <CardContent className="p-5">
+                <div className="flex flex-col items-center text-center">
+                  <div className={`h-12 w-12 rounded-xl flex items-center justify-center mb-3 transition-colors ${selectedReportType === 'usage' ? 'bg-purple-500' : 'bg-purple-100'}`}>
+                    <BarChart3 className={`h-6 w-6 ${selectedReportType === 'usage' ? 'text-white' : 'text-purple-600'}`} />
+                  </div>
+                  <h3 className="font-semibold text-sm">Usage</h3>
+                  <p className="text-xs text-muted-foreground mt-1">API usage stats</p>
+                  <div className="mt-3 pt-3 border-t w-full">
+                    <p className="text-xl font-bold text-purple-600">{stats.activeNumbers}</p>
+                    <p className="text-[10px] text-muted-foreground">Active Numbers</p>
+                  </div>
+                </div>
+              </CardContent>
+            </Card>
+
+            {/* Summary Report */}
+            <Card 
+              className={`bg-white cursor-pointer transition-all duration-200 hover:shadow-lg ${selectedReportType === 'summary' ? 'ring-2 ring-orange-500 shadow-lg scale-[1.02]' : 'hover:border-orange-200'}`}
+              onClick={() => setSelectedReportType('summary')}
+            >
+              <CardContent className="p-5">
+                <div className="flex flex-col items-center text-center">
+                  <div className={`h-12 w-12 rounded-xl flex items-center justify-center mb-3 transition-colors ${selectedReportType === 'summary' ? 'bg-orange-500' : 'bg-orange-100'}`}>
+                    <FileText className={`h-6 w-6 ${selectedReportType === 'summary' ? 'text-white' : 'text-orange-600'}`} />
+                  </div>
+                  <h3 className="font-semibold text-sm">Summary</h3>
+                  <p className="text-xs text-muted-foreground mt-1">Full overview</p>
+                  <div className="mt-3 pt-3 border-t w-full">
+                    <p className="text-xl font-bold text-orange-600">{stats.deliveryRate.toFixed(0)}%</p>
+                    <p className="text-[10px] text-muted-foreground">Delivery Rate</p>
+                  </div>
+                </div>
+              </CardContent>
+            </Card>
+          </div>
+
+          {/* Report Details & Actions */}
+          <div className="grid gap-6 lg:grid-cols-3">
+            {/* Report Preview Card */}
+            <Card className="lg:col-span-2 bg-white">
+              <CardHeader className="pb-3">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-3">
+                    <div className={`h-10 w-10 rounded-lg flex items-center justify-center ${
+                      selectedReportType === 'messages' ? 'bg-blue-100' :
+                      selectedReportType === 'calls' ? 'bg-green-100' :
+                      selectedReportType === 'usage' ? 'bg-purple-100' : 'bg-orange-100'
+                    }`}>
+                      {selectedReportType === 'messages' && <MessageSquare className="h-5 w-5 text-blue-600" />}
+                      {selectedReportType === 'calls' && <Phone className="h-5 w-5 text-green-600" />}
+                      {selectedReportType === 'usage' && <BarChart3 className="h-5 w-5 text-purple-600" />}
+                      {selectedReportType === 'summary' && <FileText className="h-5 w-5 text-orange-600" />}
+                    </div>
+                    <div>
+                      <CardTitle className="text-base">
+                        {selectedReportType.charAt(0).toUpperCase() + selectedReportType.slice(1)} Report
+                      </CardTitle>
+                      <CardDescription className="text-xs">
+                        {selectedReportType === 'messages' && 'All SMS and MMS message logs'}
+                        {selectedReportType === 'calls' && 'Voice call history and duration'}
+                        {selectedReportType === 'usage' && 'API usage statistics'}
+                        {selectedReportType === 'summary' && 'Comprehensive summary'}
+                      </CardDescription>
+                    </div>
+                  </div>
+                  <Badge variant="outline" className="text-xs">
+                    {selectedReportType === 'messages' && `${analytics?.messages.thisMonth.length || 0} records`}
+                    {selectedReportType === 'calls' && `${analytics?.calls.thisMonth.length || 0} records`}
+                    {selectedReportType === 'usage' && '7 metrics'}
+                    {selectedReportType === 'summary' && 'Full export'}
+                  </Badge>
+                </div>
+              </CardHeader>
+              <CardContent className="space-y-4">
+                {/* Preview Table */}
+                <div className="border rounded-lg overflow-hidden">
+                  <div className="bg-gray-50 px-4 py-2 border-b flex items-center justify-between">
+                    <p className="text-xs font-medium text-muted-foreground">Preview</p>
+                    <p className="text-xs text-muted-foreground">Showing first 5 records</p>
+                  </div>
+                  <div className="max-h-52 overflow-auto">
+                    {selectedReportType === 'messages' && (
+                      <Table>
+                        <TableHeader>
+                          <TableRow className="bg-gray-50/50">
+                            <TableHead className="text-xs h-9">To</TableHead>
+                            <TableHead className="text-xs h-9">Status</TableHead>
+                            <TableHead className="text-xs h-9">Direction</TableHead>
+                            <TableHead className="text-xs h-9">Date</TableHead>
+                          </TableRow>
+                        </TableHeader>
+                        <TableBody>
+                          {(analytics?.messages.thisMonth || []).slice(0, 5).map((m: any, i: number) => (
+                            <TableRow key={i} className="hover:bg-gray-50">
+                              <TableCell className="text-xs font-mono py-2">{m.to}</TableCell>
+                              <TableCell className="py-2">
+                                <Badge variant={m.status === 'delivered' ? 'default' : 'secondary'} className="text-[10px] h-5">
+                                  {m.status}
+                                </Badge>
+                              </TableCell>
+                              <TableCell className="text-xs py-2">{m.direction}</TableCell>
+                              <TableCell className="text-xs text-muted-foreground py-2">{new Date(m.dateSent).toLocaleDateString()}</TableCell>
+                            </TableRow>
+                          ))}
+                          {(!analytics?.messages.thisMonth || analytics.messages.thisMonth.length === 0) && (
+                            <TableRow><TableCell colSpan={4} className="text-center text-muted-foreground py-8">No messages found</TableCell></TableRow>
+                          )}
+                        </TableBody>
+                      </Table>
+                    )}
+                    {selectedReportType === 'calls' && (
+                      <Table>
+                        <TableHeader>
+                          <TableRow className="bg-gray-50/50">
+                            <TableHead className="text-xs h-9">To</TableHead>
+                            <TableHead className="text-xs h-9">Duration</TableHead>
+                            <TableHead className="text-xs h-9">Status</TableHead>
+                            <TableHead className="text-xs h-9">Date</TableHead>
+                          </TableRow>
+                        </TableHeader>
+                        <TableBody>
+                          {(analytics?.calls.thisMonth || []).slice(0, 5).map((c: any, i: number) => (
+                            <TableRow key={i} className="hover:bg-gray-50">
+                              <TableCell className="text-xs font-mono py-2">{c.to}</TableCell>
+                              <TableCell className="text-xs py-2">{c.duration}s</TableCell>
+                              <TableCell className="py-2">
+                                <Badge variant="outline" className="text-[10px] h-5">{c.status}</Badge>
+                              </TableCell>
+                              <TableCell className="text-xs text-muted-foreground py-2">{new Date(c.startTime).toLocaleDateString()}</TableCell>
+                            </TableRow>
+                          ))}
+                          {(!analytics?.calls.thisMonth || analytics.calls.thisMonth.length === 0) && (
+                            <TableRow><TableCell colSpan={4} className="text-center text-muted-foreground py-8">No calls found</TableCell></TableRow>
+                          )}
+                        </TableBody>
+                      </Table>
+                    )}
+                    {selectedReportType === 'usage' && (
+                      <div className="p-4 grid grid-cols-2 gap-3">
+                        <div className="p-3 bg-blue-50 rounded-lg"><p className="text-xs text-muted-foreground">Messages Sent</p><p className="text-lg font-bold text-blue-600">{stats.messagesSent}</p></div>
+                        <div className="p-3 bg-green-50 rounded-lg"><p className="text-xs text-muted-foreground">Calls Made</p><p className="text-lg font-bold text-green-600">{stats.callsMade}</p></div>
+                        <div className="p-3 bg-purple-50 rounded-lg"><p className="text-xs text-muted-foreground">Active Numbers</p><p className="text-lg font-bold text-purple-600">{stats.activeNumbers}</p></div>
+                        <div className="p-3 bg-orange-50 rounded-lg"><p className="text-xs text-muted-foreground">Delivery Rate</p><p className="text-lg font-bold text-orange-600">{stats.deliveryRate}%</p></div>
+                      </div>
+                    )}
+                    {selectedReportType === 'summary' && (
+                      <div className="p-4 space-y-2">
+                        <div className="flex justify-between p-2 bg-gray-50 rounded text-xs"><span>Account SID</span><span className="font-mono">{analytics?.account?.sid?.substring(0, 20)}...</span></div>
+                        <div className="flex justify-between p-2 bg-gray-50 rounded text-xs"><span>Total Messages</span><span className="font-bold">{stats.messagesSent}</span></div>
+                        <div className="flex justify-between p-2 bg-gray-50 rounded text-xs"><span>Total Calls</span><span className="font-bold">{stats.callsMade}</span></div>
+                        <div className="flex justify-between p-2 bg-gray-50 rounded text-xs"><span>Inbound Messages</span><span className="font-bold">{stats.inboundMessages}</span></div>
+                        <div className="flex justify-between p-2 bg-gray-50 rounded text-xs"><span>Outbound Messages</span><span className="font-bold">{stats.outboundMessages}</span></div>
+                      </div>
+                    )}
+                  </div>
+                </div>
+
+                {/* Download Button */}
+                <Button 
+                  className="w-full gap-2" 
+                  disabled={isGeneratingReport}
+                  onClick={() => {
+                    setIsGeneratingReport(true);
+                    setTimeout(() => {
+                      const generators: Record<string, () => string> = {
+                        messages: generateMessagesCSV,
+                        calls: generateCallsCSV,
+                        usage: generateUsageCSV,
+                        summary: generateSummaryCSV
+                      };
+                      const filenames: Record<string, string> = {
+                        messages: 'messages-report.csv',
+                        calls: 'calls-report.csv',
+                        usage: 'usage-report.csv',
+                        summary: `summary-report-${new Date().toISOString().split('T')[0]}.csv`
+                      };
+                      downloadCSV(generators[selectedReportType](), filenames[selectedReportType]);
+                      setIsGeneratingReport(false);
+                    }, 500);
+                  }}
+                >
+                  {isGeneratingReport ? (
+                    <><RefreshCw className="h-4 w-4 animate-spin" /> Generating...</>
+                  ) : (
+                    <><Download className="h-4 w-4" /> Download {selectedReportType.charAt(0).toUpperCase() + selectedReportType.slice(1)} Report (CSV)</>
+                  )}
+                </Button>
+              </CardContent>
+            </Card>
+
+            {/* Quick Downloads */}
+            <Card className="bg-white">
+              <CardHeader className="pb-3">
+                <CardTitle className="text-base">Quick Downloads</CardTitle>
+                <CardDescription className="text-xs">Download reports instantly</CardDescription>
+              </CardHeader>
+              <CardContent className="space-y-2">
+                <Button variant="outline" className="w-full justify-start gap-3 h-12" onClick={() => { downloadCSV(generateMessagesCSV(), 'messages-report.csv'); }}>
+                  <div className="h-8 w-8 rounded-lg bg-blue-100 flex items-center justify-center"><MessageSquare className="h-4 w-4 text-blue-600" /></div>
+                  <div className="text-left"><p className="text-sm font-medium">Messages</p><p className="text-[10px] text-muted-foreground">{analytics?.messages.thisMonth.length || 0} records</p></div>
+                </Button>
+                <Button variant="outline" className="w-full justify-start gap-3 h-12" onClick={() => { downloadCSV(generateCallsCSV(), 'calls-report.csv'); }}>
+                  <div className="h-8 w-8 rounded-lg bg-green-100 flex items-center justify-center"><Phone className="h-4 w-4 text-green-600" /></div>
+                  <div className="text-left"><p className="text-sm font-medium">Voice Calls</p><p className="text-[10px] text-muted-foreground">{analytics?.calls.thisMonth.length || 0} records</p></div>
+                </Button>
+                <Button variant="outline" className="w-full justify-start gap-3 h-12" onClick={() => { downloadCSV(generateUsageCSV(), 'usage-report.csv'); }}>
+                  <div className="h-8 w-8 rounded-lg bg-purple-100 flex items-center justify-center"><BarChart3 className="h-4 w-4 text-purple-600" /></div>
+                  <div className="text-left"><p className="text-sm font-medium">Usage Stats</p><p className="text-[10px] text-muted-foreground">7 metrics</p></div>
+                </Button>
+                <Button variant="outline" className="w-full justify-start gap-3 h-12" onClick={() => { downloadCSV(generateSummaryCSV(), 'summary-report.csv'); }}>
+                  <div className="h-8 w-8 rounded-lg bg-orange-100 flex items-center justify-center"><FileText className="h-4 w-4 text-orange-600" /></div>
+                  <div className="text-left"><p className="text-sm font-medium">Full Summary</p><p className="text-[10px] text-muted-foreground">Complete export</p></div>
+                </Button>
+              </CardContent>
+            </Card>
+          </div>
+        </TabsContent>
+
+        <TabsContent value="notifications" className="mt-6">
+          <Card className="bg-white">
+            <CardContent className="p-12 text-center">
+              <Bell className="h-12 w-12 mx-auto text-muted-foreground mb-4" />
+              <h3 className="text-lg font-medium">Notifications</h3>
+              <p className="text-muted-foreground mt-2">Manage your notification preferences.</p>
+              <Button className="mt-4" onClick={() => setLocation('/settings')}>
+                Notification Settings
+              </Button>
+            </CardContent>
+          </Card>
+        </TabsContent>
+      </Tabs>
     </div>
   );
 }

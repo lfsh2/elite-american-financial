@@ -12,6 +12,7 @@
 
 import { providerFactory, type ProviderCode, type ProviderAnalytics, type Message, type Call } from '../providers';
 import { accountService } from './accountService';
+import { cacheService } from './cacheService';
 
 export interface DataContext {
   userId: number;
@@ -77,43 +78,71 @@ class DataService {
   async getAnalytics(context: DataContext): Promise<DataServiceResult> {
     const { userId, accountId, isOverviewMode } = context;
 
+    // Generate cache key based on context
+    const cacheKey = `analytics:user_${userId}:${isOverviewMode ? 'overview' : `account_${accountId}`}`;
+    
+    // Check cache first (5 minute TTL)
+    const cached = cacheService.get<DataServiceResult>(cacheKey);
+    if (cached) {
+      console.log('[DataService] Returning cached analytics for:', cacheKey);
+      return cached;
+    }
+
+    console.log('[DataService] getAnalytics called with:', { userId, accountId, isOverviewMode });
+
     // Get all accounts for user
     const { accounts: userAccounts } = await accountService.getAccountsForUser(userId);
     
+    console.log('[DataService] Found accounts:', userAccounts.length);
+    
     if (userAccounts.length === 0) {
-      // Fallback to env-based Twilio if no accounts in DB
+      console.log('[DataService] No accounts found, using fallback');
       return this.getFallbackAnalytics(context);
     }
 
     // Determine which accounts to fetch
-    const accountsToFetch = isOverviewMode || !accountId
-      ? userAccounts
-      : userAccounts.filter(a => a.id === accountId || a.id === `acc_${accountId}`);
+    let accountsToFetch = userAccounts;
+    
+    if (!isOverviewMode && accountId) {
+      // Normalize account ID for comparison
+      const normalizedId = String(accountId).replace('acc_', '');
+      accountsToFetch = userAccounts.filter(a => {
+        const accId = String(a.id).replace('acc_', '');
+        return accId === normalizedId || String(a.id) === String(accountId);
+      });
+      console.log('[DataService] Filtering for account:', accountId, '-> found:', accountsToFetch.map(a => a.name));
+    }
 
-    // Fetch analytics for each account
+    // Fetch analytics for each account in parallel for speed
     const accountAnalytics: AccountAnalytics[] = [];
     
-    for (const account of accountsToFetch) {
+    const fetchPromises = accountsToFetch.map(async (account) => {
       try {
-        // Parse numeric ID
         const numericId = parseInt(String(account.id).replace('acc_', ''));
-        if (isNaN(numericId)) continue;
+        if (isNaN(numericId)) return null;
 
         const provider = await accountService.getProviderForAccount(numericId);
-        if (!provider) continue;
+        if (!provider) return null;
 
+        console.log('[DataService] Fetching analytics from provider:', provider.code, 'for account:', account.name);
         const analytics = await provider.getAnalytics();
         
-        accountAnalytics.push({
+        return {
           accountId: account.id,
           accountName: account.name,
           provider: provider.code,
           analytics,
-        });
+        } as AccountAnalytics;
       } catch (error) {
-        console.error(`Error fetching analytics for account ${account.id}:`, error);
+        console.error(`[DataService] Error fetching analytics for account ${account.id}:`, error);
+        return null;
       }
-    }
+    });
+
+    const results = await Promise.all(fetchPromises);
+    results.forEach(result => {
+      if (result) accountAnalytics.push(result);
+    });
 
     // Aggregate metrics across all fetched accounts
     const aggregatedMetrics = this.aggregateMetrics(accountAnalytics);
@@ -122,13 +151,19 @@ class DataService {
     const messages = this.mergeMessages(accountAnalytics);
     const calls = this.mergeCalls(accountAnalytics);
 
-    return {
+    const result: DataServiceResult = {
       context,
       accounts: accountAnalytics,
       aggregatedMetrics,
       messages,
       calls,
     };
+
+    // Cache the result for 5 minutes
+    cacheService.set(cacheKey, result, 5 * 60 * 1000);
+    console.log('[DataService] Cached analytics for:', cacheKey);
+
+    return result;
   }
 
   /**
@@ -150,14 +185,21 @@ class DataService {
    * Fallback to environment-based Twilio config
    */
   private async getFallbackAnalytics(context: DataContext): Promise<DataServiceResult> {
+    console.log('[DataService] Using FALLBACK analytics (env-based Twilio)');
     const provider = providerFactory.createFromEnv();
     
     if (!provider) {
+      console.log('[DataService] No env provider available, returning empty result');
       return this.getEmptyResult(context);
     }
 
     try {
+      console.log('[DataService] Fetching from env-based provider:', provider.code);
       const analytics = await provider.getAnalytics();
+      console.log('[DataService] Fallback got analytics:', {
+        messagesThisMonth: analytics.messages.thisMonth.length,
+        callsThisMonth: analytics.calls.thisMonth.length,
+      });
       
       const accountAnalytics: AccountAnalytics[] = [{
         accountId: 'acc_master_twilio',

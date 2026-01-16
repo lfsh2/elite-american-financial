@@ -68,7 +68,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
           username,
           firstName: username === 'admin' ? 'Admin' : 'Test',
           lastName: 'User',
-          email: `${username}@unicomms.io`,
+          email: `${username}@eliteamericanfinancials.com`,
           role: username === 'admin' ? 'admin' : 'user',
           credits: username === 'admin' ? 10000 : 1000,
         };

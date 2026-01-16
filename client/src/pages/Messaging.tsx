@@ -1,35 +1,73 @@
-import React, { useState } from 'react';
-import { useAuth } from '../hooks/use-auth';
-import { useTwilioAnalytics, formatPhoneNumber, formatNumber } from '../hooks/useTwilioData';
+import React, { useState, useMemo } from 'react';
+import { useTwilioAnalytics, formatPhoneNumber } from '../hooks/useTwilioData';
 import { 
   MessageSquare, 
   Send, 
   Search, 
-  Filter, 
-  Phone, 
-  ChevronDown,
-  Table2,
-  BarChart3,
-  Settings,
   RefreshCw,
-  Loader2,
   CheckCircle,
   XCircle,
-  Clock
+  Clock,
+  Filter,
+  MoreHorizontal,
+  ArrowUpDown
 } from 'lucide-react';
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
+import { Button } from '@/components/ui/button';
+import { Input } from '@/components/ui/input';
+import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs';
+import { Badge } from '@/components/ui/badge';
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from '@/components/ui/table';
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuLabel,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from '@/components/ui/dropdown-menu';
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+  DialogTrigger,
+} from '@/components/ui/dialog';
+import { Label } from '@/components/ui/label';
+import { Textarea } from '@/components/ui/textarea';
+
+interface Message {
+  sid: string;
+  from: string;
+  to: string;
+  body: string;
+  status: string;
+  dateSent: string;
+  direction: string;
+}
 
 export default function Messaging() {
-  const { user } = useAuth();
-  const { analytics, loading, error, refresh } = useTwilioAnalytics();
+  const { analytics, loading, refresh } = useTwilioAnalytics();
   const [activeTab, setActiveTab] = useState('inbox');
   const [searchQuery, setSearchQuery] = useState('');
+  const [newMessageOpen, setNewMessageOpen] = useState(false);
+  const [previewMessage, setPreviewMessage] = useState<Message | null>(null);
+  const [sortField, setSortField] = useState<'date' | 'from' | 'to'>('date');
+  const [sortOrder, setSortOrder] = useState<'asc' | 'desc'>('desc');
 
-  // Real messages from Twilio
   const messages = analytics?.messages.thisMonth || [];
   const inboundMessages = messages.filter(m => m.direction === 'inbound');
   const outboundMessages = messages.filter(m => m.direction === 'outbound-api' || m.direction === 'outbound-call');
   
-  // Metrics from real data
   const metrics = analytics?.metrics || {
     totalMessagesSentToday: 0,
     totalMessagesReceivedToday: 0,
@@ -38,286 +76,359 @@ export default function Messaging() {
     failedToday: 0
   };
 
+  const filteredMessages = useMemo(() => {
+    let msgs = activeTab === 'inbox' ? inboundMessages : 
+                activeTab === 'sent' ? outboundMessages : messages;
+    
+    if (searchQuery) {
+      msgs = msgs.filter(m => 
+        m.from.includes(searchQuery) || 
+        m.to.includes(searchQuery) || 
+        m.body.toLowerCase().includes(searchQuery.toLowerCase())
+      );
+    }
+
+    return msgs.sort((a, b) => {
+      const aVal = sortField === 'date' ? new Date(a.dateSent).getTime() :
+                   sortField === 'from' ? a.from : a.to;
+      const bVal = sortField === 'date' ? new Date(b.dateSent).getTime() :
+                   sortField === 'from' ? b.from : b.to;
+      
+      if (sortOrder === 'asc') {
+        return aVal > bVal ? 1 : -1;
+      } else {
+        return aVal < bVal ? 1 : -1;
+      }
+    });
+  }, [activeTab, inboundMessages, outboundMessages, messages, searchQuery, sortField, sortOrder]);
+
+  const getStatusBadge = (status: string) => {
+    switch (status) {
+      case 'delivered':
+        return <Badge className="bg-green-100 text-green-800 hover:bg-green-100"><CheckCircle className="w-3 h-3 mr-1" />Delivered</Badge>;
+      case 'failed':
+      case 'undelivered':
+        return <Badge className="bg-red-100 text-red-800 hover:bg-red-100"><XCircle className="w-3 h-3 mr-1" />Failed</Badge>;
+      case 'sent':
+      case 'queued':
+      case 'sending':
+        return <Badge className="bg-yellow-100 text-yellow-800 hover:bg-yellow-100"><Clock className="w-3 h-3 mr-1" />Pending</Badge>;
+      default:
+        return <Badge variant="outline">{status}</Badge>;
+    }
+  };
+
+  const toggleSort = (field: 'date' | 'from' | 'to') => {
+    if (sortField === field) {
+      setSortOrder(sortOrder === 'asc' ? 'desc' : 'asc');
+    } else {
+      setSortField(field);
+      setSortOrder('desc');
+    }
+  };
+
+  if (loading) {
+    return (
+      <div className="flex-1 space-y-4 p-8 pt-6">
+        <div className="flex items-center justify-center h-96">
+          <div className="text-center">
+            <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600 mx-auto"></div>
+            <p className="mt-4 text-muted-foreground">Loading messages...</p>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
   return (
-    <div className="p-8 max-w-7xl mx-auto">
-      <div className="mb-6 flex justify-between items-center">
+    <div className="flex-1 space-y-4 p-8 pt-6">
+      <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-2xl font-bold mb-2">Messaging</h1>
-          <p className="text-gray-500">Send and receive messages through your SyncGrid numbers</p>
+          <h2 className="text-3xl font-bold tracking-tight">Messaging</h2>
+          <p className="text-muted-foreground">
+            Send and receive messages through your Elite Financial numbers
+          </p>
         </div>
-        <button className="bg-blue-600 text-white px-4 py-2 rounded-md flex items-center hover:bg-blue-700 transition-colors">
-          <Send size={16} className="mr-2" />
-          New Message
-        </button>
-      </div>
-
-      {/* Tabs */}
-      <div className="border-b border-gray-200 mb-6">
-        <div className="flex -mb-px">
-          <button 
-            className={`px-4 py-2 font-medium text-sm mr-4 ${
-              activeTab === 'inbox' 
-                ? 'text-blue-600 border-b-2 border-blue-600' 
-                : 'text-gray-500 hover:text-gray-700'
-            }`}
-            onClick={() => setActiveTab('inbox')}
-          >
-            Inbox
-          </button>
-          <button 
-            className={`px-4 py-2 font-medium text-sm mr-4 ${
-              activeTab === 'sent' 
-                ? 'text-blue-600 border-b-2 border-blue-600' 
-                : 'text-gray-500 hover:text-gray-700'
-            }`}
-            onClick={() => setActiveTab('sent')}
-          >
-            Sent
-          </button>
-          <button 
-            className={`px-4 py-2 font-medium text-sm mr-4 ${
-              activeTab === 'analytics' 
-                ? 'text-blue-600 border-b-2 border-blue-600' 
-                : 'text-gray-500 hover:text-gray-700'
-            }`}
-            onClick={() => setActiveTab('analytics')}
-          >
-            Analytics
-          </button>
-          <button 
-            className={`px-4 py-2 font-medium text-sm ${
-              activeTab === 'settings' 
-                ? 'text-blue-600 border-b-2 border-blue-600' 
-                : 'text-gray-500 hover:text-gray-700'
-            }`}
-            onClick={() => setActiveTab('settings')}
-          >
-            Settings
-          </button>
-        </div>
-      </div>
-
-      {/* Message Analytics Section */}
-      {activeTab === 'analytics' && (
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-6">
-          {/* Outgoing Messages */}
-          <div className="bg-white rounded-lg shadow-sm border border-gray-100 overflow-hidden">
-            <div className="p-4 border-b border-gray-100 flex justify-between items-center">
-              <h3 className="text-lg font-medium">Outgoing Messages</h3>
-              <button onClick={refresh} className="text-gray-500 hover:text-gray-700">
-                <RefreshCw size={16} className={loading ? 'animate-spin' : ''} />
-              </button>
-            </div>
-            
-            <div className="p-4">
-              {loading ? (
-                <div className="flex items-center justify-center h-56">
-                  <Loader2 className="w-8 h-8 text-blue-500 animate-spin" />
+        <div className="flex items-center space-x-2">
+          <Button variant="outline" size="sm" onClick={refresh}>
+            <RefreshCw className={`mr-2 h-4 w-4 ${loading ? 'animate-spin' : ''}`} />
+            Refresh
+          </Button>
+          <Dialog open={newMessageOpen} onOpenChange={setNewMessageOpen}>
+            <DialogTrigger asChild>
+              <Button size="sm">
+                <Send className="mr-2 h-4 w-4" />
+                New Message
+              </Button>
+            </DialogTrigger>
+            <DialogContent className="sm:max-w-[525px]">
+              <DialogHeader>
+                <DialogTitle>Send New Message</DialogTitle>
+                <DialogDescription>
+                  Send an SMS message to a phone number
+                </DialogDescription>
+              </DialogHeader>
+              <div className="grid gap-4 py-4">
+                <div className="grid gap-2">
+                  <Label htmlFor="from">From Number</Label>
+                  <Input id="from" placeholder="+1 (555) 000-0000" />
                 </div>
-              ) : (
-                <>
-                  {/* Stats Grid */}
-                  <div className="grid grid-cols-2 gap-4 mb-4">
-                    <div className="p-4 bg-green-50 rounded-lg">
-                      <h4 className="text-sm text-gray-500 mb-1">Sent Today</h4>
-                      <p className="text-2xl font-bold">{metrics.totalMessagesSentToday}</p>
-                    </div>
-                    <div className="p-4 bg-blue-50 rounded-lg">
-                      <h4 className="text-sm text-gray-500 mb-1">This Month</h4>
-                      <p className="text-2xl font-bold">{formatNumber(metrics.totalMessagesSentThisMonth)}</p>
-                    </div>
-                  </div>
-                  
-                  {/* Status summary */}
-                  <div className="grid grid-cols-2 gap-4">
-                    <div className="border border-gray-100 rounded-md p-4">
-                      <div className="flex items-center mb-2">
-                        <CheckCircle className="w-4 h-4 text-green-500 mr-2" />
-                        <span className="text-sm text-gray-600">Delivered</span>
-                      </div>
-                      <div className="text-2xl font-bold">{metrics.deliveryRateToday}%</div>
-                    </div>
-                    <div className="border border-gray-100 rounded-md p-4">
-                      <div className="flex items-center mb-2">
-                        <XCircle className="w-4 h-4 text-red-500 mr-2" />
-                        <span className="text-sm text-gray-600">Failed</span>
-                      </div>
-                      <div className="text-2xl font-bold">{metrics.failedToday}</div>
-                    </div>
-                  </div>
-                </>
-              )}
+                <div className="grid gap-2">
+                  <Label htmlFor="to">To Number</Label>
+                  <Input id="to" placeholder="+1 (555) 000-0000" />
+                </div>
+                <div className="grid gap-2">
+                  <Label htmlFor="message">Message</Label>
+                  <Textarea id="message" placeholder="Type your message here..." rows={4} />
+                </div>
+              </div>
+              <DialogFooter>
+                <Button type="submit">
+                  <Send className="mr-2 h-4 w-4" />
+                  Send Message
+                </Button>
+              </DialogFooter>
+            </DialogContent>
+          </Dialog>
+        </div>
+      </div>
+
+      <div className="grid gap-4 md:grid-cols-4">
+        <Card>
+          <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+            <CardTitle className="text-sm font-medium">Sent Today</CardTitle>
+            <Send className="h-4 w-4 text-muted-foreground" />
+          </CardHeader>
+          <CardContent>
+            <div className="text-2xl font-bold">{metrics.totalMessagesSentToday}</div>
+            <p className="text-xs text-muted-foreground">Outbound messages</p>
+          </CardContent>
+        </Card>
+
+        <Card>
+          <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+            <CardTitle className="text-sm font-medium">Received Today</CardTitle>
+            <MessageSquare className="h-4 w-4 text-muted-foreground" />
+          </CardHeader>
+          <CardContent>
+            <div className="text-2xl font-bold">{metrics.totalMessagesReceivedToday}</div>
+            <p className="text-xs text-muted-foreground">Inbound messages</p>
+          </CardContent>
+        </Card>
+
+        <Card>
+          <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+            <CardTitle className="text-sm font-medium">Delivery Rate</CardTitle>
+            <CheckCircle className="h-4 w-4 text-muted-foreground" />
+          </CardHeader>
+          <CardContent>
+            <div className="text-2xl font-bold">{metrics.deliveryRateToday.toFixed(1)}%</div>
+            <p className="text-xs text-muted-foreground">Successfully delivered</p>
+          </CardContent>
+        </Card>
+
+        <Card>
+          <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+            <CardTitle className="text-sm font-medium">Failed Today</CardTitle>
+            <XCircle className="h-4 w-4 text-muted-foreground" />
+          </CardHeader>
+          <CardContent>
+            <div className="text-2xl font-bold">{metrics.failedToday}</div>
+            <p className="text-xs text-muted-foreground">Delivery failures</p>
+          </CardContent>
+        </Card>
+      </div>
+
+      <Card>
+        <CardHeader>
+          <div className="flex items-center justify-between">
+            <div>
+              <CardTitle>Messages</CardTitle>
+              <CardDescription>View and manage your SMS messages</CardDescription>
+            </div>
+            <div className="flex items-center space-x-2">
+              <div className="relative">
+                <Search className="absolute left-2 top-2.5 h-4 w-4 text-muted-foreground" />
+                <Input
+                  placeholder="Search messages..."
+                  className="pl-8 w-[250px]"
+                  value={searchQuery}
+                  onChange={(e) => setSearchQuery(e.target.value)}
+                />
+              </div>
+              <Button variant="outline" size="sm">
+                <Filter className="h-4 w-4" />
+              </Button>
             </div>
           </div>
-          
-          {/* Conversation Metrics */}
-          <div className="bg-white rounded-lg shadow-sm border border-gray-100 overflow-hidden">
-            <div className="p-4 border-b border-gray-100">
-              <h3 className="text-lg font-medium">Conversation Metrics</h3>
-            </div>
-            
-            <div className="p-4">
-              <div className="grid grid-cols-2 gap-4 mb-4">
-                <div className="p-4 bg-blue-50 rounded-lg">
-                  <h4 className="text-sm text-gray-500 mb-1">Received Today</h4>
-                  <p className="text-2xl font-bold">{metrics.totalMessagesReceivedToday}</p>
+        </CardHeader>
+        <CardContent>
+          <Tabs value={activeTab} onValueChange={setActiveTab}>
+            <TabsList>
+              <TabsTrigger value="inbox">Inbox ({inboundMessages.length})</TabsTrigger>
+              <TabsTrigger value="sent">Sent ({outboundMessages.length})</TabsTrigger>
+              <TabsTrigger value="all">All ({messages.length})</TabsTrigger>
+            </TabsList>
+            <TabsContent value={activeTab} className="mt-4">
+              <div className="rounded-md border">
+                <Table>
+                  <TableHeader>
+                    <TableRow>
+                      <TableHead className="cursor-pointer" onClick={() => toggleSort('from')}>
+                        <div className="flex items-center">
+                          From
+                          <ArrowUpDown className="ml-2 h-4 w-4" />
+                        </div>
+                      </TableHead>
+                      <TableHead className="cursor-pointer" onClick={() => toggleSort('to')}>
+                        <div className="flex items-center">
+                          To
+                          <ArrowUpDown className="ml-2 h-4 w-4" />
+                        </div>
+                      </TableHead>
+                      <TableHead>Message</TableHead>
+                      <TableHead>Status</TableHead>
+                      <TableHead className="cursor-pointer" onClick={() => toggleSort('date')}>
+                        <div className="flex items-center">
+                          Date
+                          <ArrowUpDown className="ml-2 h-4 w-4" />
+                        </div>
+                      </TableHead>
+                      <TableHead className="w-[50px]"></TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {filteredMessages.length === 0 ? (
+                      <TableRow>
+                        <TableCell colSpan={6} className="text-center py-8 text-muted-foreground">
+                          No messages found
+                        </TableCell>
+                      </TableRow>
+                    ) : (
+                      filteredMessages.slice(0, 50).map((message) => (
+                        <TableRow 
+                          key={message.sid}
+                          className="cursor-pointer hover:bg-muted/50"
+                          onClick={() => setPreviewMessage(message)}
+                        >
+                          <TableCell className="font-medium">
+                            {formatPhoneNumber(message.from)}
+                          </TableCell>
+                          <TableCell>{formatPhoneNumber(message.to)}</TableCell>
+                          <TableCell className="max-w-md truncate">
+                            {message.body}
+                          </TableCell>
+                          <TableCell>{getStatusBadge(message.status)}</TableCell>
+                          <TableCell className="text-sm text-muted-foreground">
+                            {new Date(message.dateSent).toLocaleString()}
+                          </TableCell>
+                          <TableCell onClick={(e) => e.stopPropagation()}>
+                            <DropdownMenu>
+                              <DropdownMenuTrigger asChild>
+                                <Button variant="ghost" size="sm">
+                                  <MoreHorizontal className="h-4 w-4" />
+                                </Button>
+                              </DropdownMenuTrigger>
+                              <DropdownMenuContent align="end">
+                                <DropdownMenuLabel>Actions</DropdownMenuLabel>
+                                <DropdownMenuItem onClick={() => setPreviewMessage(message)}>
+                                  View Details
+                                </DropdownMenuItem>
+                                <DropdownMenuItem>Reply</DropdownMenuItem>
+                                <DropdownMenuSeparator />
+                                <DropdownMenuItem className="text-red-600">Delete</DropdownMenuItem>
+                              </DropdownMenuContent>
+                            </DropdownMenu>
+                          </TableCell>
+                        </TableRow>
+                      ))
+                    )}
+                  </TableBody>
+                </Table>
+              </div>
+              {filteredMessages.length > 50 && (
+                <div className="mt-4 text-center text-sm text-muted-foreground">
+                  Showing 50 of {filteredMessages.length} messages
                 </div>
-                <div className="p-4 bg-blue-50 rounded-lg">
-                  <h4 className="text-sm text-gray-500 mb-1">Delivery Rate</h4>
-                  <p className="text-2xl font-bold">{metrics.deliveryRateToday}%</p>
+              )}
+            </TabsContent>
+          </Tabs>
+        </CardContent>
+      </Card>
+
+      {/* Message Preview Modal */}
+      <Dialog open={!!previewMessage} onOpenChange={() => setPreviewMessage(null)}>
+        <DialogContent className="sm:max-w-[600px]">
+          <DialogHeader>
+            <DialogTitle>Message Details</DialogTitle>
+            <DialogDescription>
+              Complete information about this message
+            </DialogDescription>
+          </DialogHeader>
+          {previewMessage && (
+            <div className="space-y-4">
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <Label className="text-sm font-medium text-muted-foreground">From</Label>
+                  <p className="text-sm font-medium mt-1">{formatPhoneNumber(previewMessage.from)}</p>
+                </div>
+                <div>
+                  <Label className="text-sm font-medium text-muted-foreground">To</Label>
+                  <p className="text-sm font-medium mt-1">{formatPhoneNumber(previewMessage.to)}</p>
                 </div>
               </div>
               
               <div className="grid grid-cols-2 gap-4">
-                <div className="p-4 bg-green-50 rounded-lg">
-                  <h4 className="text-sm text-gray-500 mb-1">Total Outbound</h4>
-                  <p className="text-2xl font-bold">{outboundMessages.length}</p>
+                <div>
+                  <Label className="text-sm font-medium text-muted-foreground">Status</Label>
+                  <div className="mt-1">{getStatusBadge(previewMessage.status)}</div>
                 </div>
-                <div className="p-4 bg-purple-50 rounded-lg">
-                  <h4 className="text-sm text-gray-500 mb-1">Total Inbound</h4>
-                  <p className="text-2xl font-bold">{inboundMessages.length}</p>
+                <div>
+                  <Label className="text-sm font-medium text-muted-foreground">Direction</Label>
+                  <p className="text-sm font-medium mt-1 capitalize">
+                    {previewMessage.direction === 'inbound' ? 'Inbound' : 'Outbound'}
+                  </p>
                 </div>
               </div>
-            </div>
-          </div>
-        </div>
-      )}
 
-      {/* Message List Section - For Inbox and Sent tabs */}
-      {(activeTab === 'inbox' || activeTab === 'sent') && (
-        <div className="bg-white rounded-lg border border-gray-200 overflow-hidden">
-          {/* Search and filter bar */}
-          <div className="p-4 border-b border-gray-200 flex flex-wrap gap-4">
-            <div className="relative flex-grow max-w-md">
-              <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 text-gray-400" size={18} />
-              <input 
-                type="text" 
-                placeholder="Search messages..." 
-                className="pl-10 pr-4 py-2 border border-gray-300 rounded-md w-full focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-                value={searchQuery}
-                onChange={(e) => setSearchQuery(e.target.value)}
-              />
-            </div>
-            <button onClick={refresh} className="flex items-center px-3 py-2 border border-gray-300 rounded-md text-gray-700 hover:bg-gray-50">
-              <RefreshCw size={18} className={`mr-2 ${loading ? 'animate-spin' : ''}`} />
-              Refresh
-            </button>
-          </div>
+              <div>
+                <Label className="text-sm font-medium text-muted-foreground">Date & Time</Label>
+                <p className="text-sm font-medium mt-1">
+                  {new Date(previewMessage.dateSent).toLocaleString('en-US', {
+                    weekday: 'long',
+                    year: 'numeric',
+                    month: 'long',
+                    day: 'numeric',
+                    hour: '2-digit',
+                    minute: '2-digit',
+                    second: '2-digit'
+                  })}
+                </p>
+              </div>
 
-          {/* Loading State */}
-          {loading && (
-            <div className="flex items-center justify-center py-12">
-              <Loader2 className="w-8 h-8 text-blue-500 animate-spin mr-3" />
-              <span className="text-gray-500">Loading messages from Twilio...</span>
+              <div>
+                <Label className="text-sm font-medium text-muted-foreground">Message ID</Label>
+                <p className="text-xs font-mono mt-1 text-muted-foreground">{previewMessage.sid}</p>
+              </div>
+
+              <div>
+                <Label className="text-sm font-medium text-muted-foreground">Message Content</Label>
+                <div className="mt-2 p-4 bg-muted rounded-lg">
+                  <p className="text-sm whitespace-pre-wrap">{previewMessage.body}</p>
+                </div>
+              </div>
             </div>
           )}
-
-          {/* Messages Table */}
-          {!loading && (
-            <div className="overflow-x-auto">
-              <table className="w-full">
-                <thead className="bg-gray-50">
-                  <tr>
-                    <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">From</th>
-                    <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">To</th>
-                    <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Message</th>
-                    <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Status</th>
-                    <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Date</th>
-                  </tr>
-                </thead>
-                <tbody className="bg-white divide-y divide-gray-200">
-                  {(activeTab === 'inbox' ? inboundMessages : outboundMessages)
-                    .filter(msg => !searchQuery || 
-                      msg.body?.toLowerCase().includes(searchQuery.toLowerCase()) ||
-                      msg.from?.includes(searchQuery) ||
-                      msg.to?.includes(searchQuery)
-                    )
-                    .slice(0, 50)
-                    .map((message, index) => (
-                      <tr key={message.sid || index} className="hover:bg-gray-50 cursor-pointer">
-                        <td className="px-6 py-4 whitespace-nowrap text-sm">{formatPhoneNumber(message.from)}</td>
-                        <td className="px-6 py-4 whitespace-nowrap text-sm">{formatPhoneNumber(message.to)}</td>
-                        <td className="px-6 py-4">
-                          <div className="text-sm text-gray-900 truncate max-w-xs">{message.body || '(No content)'}</div>
-                        </td>
-                        <td className="px-6 py-4 whitespace-nowrap">
-                          <span className={`px-2 inline-flex text-xs leading-5 font-semibold rounded-full ${
-                            message.status === 'delivered' ? 'bg-green-100 text-green-800' :
-                            message.status === 'sent' ? 'bg-blue-100 text-blue-800' :
-                            message.status === 'failed' || message.status === 'undelivered' ? 'bg-red-100 text-red-800' :
-                            'bg-gray-100 text-gray-800'
-                          }`}>
-                            {message.status}
-                          </span>
-                        </td>
-                        <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
-                          {new Date(message.dateSent).toLocaleString()}
-                        </td>
-                      </tr>
-                    ))}
-                  {(activeTab === 'inbox' ? inboundMessages : outboundMessages).length === 0 && (
-                    <tr>
-                      <td colSpan={5} className="px-6 py-12 text-center text-gray-500">
-                        No messages found
-                      </td>
-                    </tr>
-                  )}
-                </tbody>
-              </table>
-            </div>
-          )}
-        </div>
-      )}
-
-      {/* Settings Tab */}
-      {activeTab === 'settings' && (
-        <div className="bg-white rounded-lg border border-gray-200 overflow-hidden">
-          <div className="p-6">
-            <h3 className="text-xl font-semibold mb-4">Messaging Settings</h3>
-            
-            <div className="mb-8">
-              <h4 className="text-lg font-medium mb-4">Compliance Settings</h4>
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                <div className="border border-gray-200 rounded-lg p-4">
-                  <h5 className="font-medium mb-2">A2P 10DLC Registration</h5>
-                  <p className="text-sm text-gray-600 mb-4">Register your brand and campaigns for high-volume messaging</p>
-                  <button className="text-blue-600 hover:text-blue-800 text-sm font-medium">
-                    Manage Registration →
-                  </button>
-                </div>
-                
-                <div className="border border-gray-200 rounded-lg p-4">
-                  <h5 className="font-medium mb-2">Opt-out Management</h5>
-                  <p className="text-sm text-gray-600 mb-4">Configure auto-response for opt-out keywords</p>
-                  <button className="text-blue-600 hover:text-blue-800 text-sm font-medium">
-                    Configure Settings →
-                  </button>
-                </div>
-              </div>
-            </div>
-            
-            <div>
-              <h4 className="text-lg font-medium mb-4">Message Templates</h4>
-              <div className="border border-gray-200 rounded-lg p-4">
-                <div className="flex justify-between items-start mb-4">
-                  <div>
-                    <h5 className="font-medium">Saved Templates</h5>
-                    <p className="text-sm text-gray-600">Create reusable message templates</p>
-                  </div>
-                  <button className="bg-blue-600 text-white px-3 py-1 rounded-md text-sm hover:bg-blue-700">
-                    New Template
-                  </button>
-                </div>
-                
-                {/* Template list placeholder */}
-                <div className="text-sm text-gray-500 italic">
-                  No templates created yet. Create your first template to speed up messaging.
-                </div>
-              </div>
-            </div>
-          </div>
-        </div>
-      )}
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setPreviewMessage(null)}>
+              Close
+            </Button>
+            <Button>
+              Reply
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

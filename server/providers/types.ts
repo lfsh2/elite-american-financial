@@ -16,6 +16,8 @@ export interface ProviderCredentials {
   authToken: string;
   apiKey?: string;
   apiSecret?: string;
+  apiUsername?: string;
+  apiPassword?: string;
 }
 
 export interface DateRange {
@@ -172,21 +174,33 @@ export interface AccountInfo {
 }
 
 export interface ProviderMetrics {
-  // Messages
+  // Messages - Current
   totalMessagesSentToday: number;
   totalMessagesSentThisWeek: number;
   totalMessagesSentThisMonth: number;
   totalMessagesReceivedToday: number;
   
-  // Calls
+  // Messages - Historical (for comparison)
+  totalMessagesSentYesterday?: number;
+  totalMessagesSentLastWeek?: number;
+  totalMessagesSentLastMonth?: number;
+  
+  // Calls - Current
   totalCallsToday: number;
   totalCallsThisWeek: number;
   totalCallDurationToday: number;
+  
+  // Calls - Historical (for comparison)
+  totalCallsYesterday?: number;
+  totalCallsLastWeek?: number;
+  totalCallsThisMonth?: number;
+  totalCallsLastMonth?: number;
   
   // Costs
   totalSpendToday: number;
   totalSpendThisWeek: number;
   totalSpendThisMonth: number;
+  totalSpendLastMonth?: number;
   
   // Delivery
   deliveryRate: number;
@@ -198,13 +212,21 @@ export interface ProviderAnalytics {
   phoneNumbers: PhoneNumber[];
   messages: {
     today: Message[];
+    yesterday?: Message[];
     thisWeek: Message[];
+    lastWeek?: Message[];
     thisMonth: Message[];
+    lastMonth?: Message[];
+    all?: Message[]; // Full historical data for charts
   };
   calls: {
     today: Call[];
+    yesterday?: Call[];
     thisWeek: Call[];
+    lastWeek?: Call[];
     thisMonth: Call[];
+    lastMonth?: Call[];
+    all?: Call[]; // Full historical data for charts
   };
   usage: UsageRecord[];
   metrics: ProviderMetrics;

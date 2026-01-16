@@ -41,7 +41,7 @@ export async function generateMessagingInsights(stats: MessagingStats): Promise<
   console.log('Generating AI insights using OpenAI API...');
   
   try {
-    const prompt = `You are an AI analytics assistant for a business messaging platform called SyncGrid. Analyze the following messaging statistics and provide 4-5 actionable insights.
+    const prompt = `You are an AI analytics assistant for a business messaging platform called Elite Financial. Analyze the following messaging statistics and provide 4-5 actionable insights.
 
 Statistics:
 - Messages Sent: ${stats.messagesSent}
@@ -114,7 +114,7 @@ export async function generateCustomInsight(question: string, stats: MessagingSt
       messages: [
         {
           role: 'system',
-          content: `You are an AI analytics assistant for SyncGrid, a business messaging platform. You help users understand their messaging performance and provide actionable recommendations. Be concise and helpful.
+          content: `You are an AI analytics assistant for Elite Financial, a business messaging platform. You help users understand their messaging performance and provide actionable recommendations. Be concise and helpful.
 
 Current Statistics:
 - Messages Sent: ${stats.messagesSent}
@@ -234,7 +234,7 @@ export async function chatWithAI(message: string, userId?: number): Promise<stri
     // Fetch real-time business intelligence data
     const biReport = await businessIntelligenceService.generateAISummary(userId);
     
-    const systemPrompt = `You are SyncGrid AI, a senior business intelligence assistant for a business messaging and communication platform. You provide executive-level insights, KPI analysis, and actionable recommendations.
+    const systemPrompt = `You are Elite Financial AI, a senior business intelligence assistant for a business messaging and communication platform. You provide executive-level insights, KPI analysis, and actionable recommendations.
 
 ${biReport}
 

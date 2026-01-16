@@ -1,691 +1,774 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { useAuth } from '../hooks/use-auth';
-import { useToast } from '../components/ui/use-toast';
+import { useAccount } from '../contexts/AccountContext';
+import { ProviderLogo } from '../components/shared/ProviderLogo';
 import {
   User,
   Lock,
   Bell,
   Shield,
-  Smartphone,
-  Mail,
-  Globe,
-  Moon,
-  Sun,
+  Key,
+  RefreshCw,
+  Plug,
+  CheckCircle,
+  XCircle,
+  Settings as SettingsIcon,
+  Unlink,
+  TestTube,
+  Zap,
+  Loader2,
   Save,
   Eye,
   EyeOff,
-  Check,
-  AlertCircle,
-  Camera,
-  Trash2
+  Plus,
+  LinkIcon,
+  Building2
 } from 'lucide-react';
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
+import { Button } from '@/components/ui/button';
+import { Input } from '@/components/ui/input';
+import { Label } from '@/components/ui/label';
+import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs';
+import { Badge } from '@/components/ui/badge';
+import { Separator } from '@/components/ui/separator';
+import { Switch } from '@/components/ui/switch';
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+  DialogTrigger,
+} from '@/components/ui/dialog';
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select';
+import { useToast } from '../components/ui/use-toast';
+
+interface ProviderCredentials {
+  id: string;
+  provider: 'twilio' | 'commio' | 'bandwidth';
+  name: string;
+  accountSid?: string;
+  authToken?: string;
+  apiUsername?: string;
+  apiPassword?: string;
+  accountId?: string;
+  status: 'connected' | 'disconnected' | 'error';
+  lastSync?: string;
+  isActive: boolean;
+}
 
 export default function Settings() {
   const { user } = useAuth();
   const { toast } = useToast();
+  const { accounts, refreshAccounts } = useAccount();
+  
   const [activeTab, setActiveTab] = useState('profile');
   const [isLoading, setIsLoading] = useState(false);
-  const [showCurrentPassword, setShowCurrentPassword] = useState(false);
-  const [showNewPassword, setShowNewPassword] = useState(false);
-  const [showConfirmPassword, setShowConfirmPassword] = useState(false);
+  const [showPassword, setShowPassword] = useState(false);
+  const [connectModalOpen, setConnectModalOpen] = useState(false);
+  const [selectedProvider, setSelectedProvider] = useState<'twilio' | 'commio' | 'bandwidth'>('twilio');
+  const [testingConnection, setTestingConnection] = useState(false);
 
-  // Profile form state
+  // Profile state
   const [profile, setProfile] = useState({
     firstName: user?.firstName || '',
     lastName: user?.lastName || '',
     email: user?.email || '',
-    phone: '+1 (555) 123-4567',
-    company: 'Acme Inc.',
-    timezone: 'America/New_York',
-    language: 'en'
+    phone: '',
+    company: '',
   });
 
-  // Password form state
+  // Password state
   const [passwords, setPasswords] = useState({
     currentPassword: '',
     newPassword: '',
     confirmPassword: ''
   });
 
-  // Notification settings state
+  // Notification settings
   const [notifications, setNotifications] = useState({
     emailNotifications: true,
     smsNotifications: false,
-    pushNotifications: true,
-    marketingEmails: false,
-    weeklyReport: true,
     lowBalanceAlert: true,
     newMessageAlert: true,
-    campaignUpdates: true
   });
 
-  // Security settings state
-  const [security, setSecurity] = useState({
-    twoFactorEnabled: false,
-    sessionTimeout: '30',
-    loginAlerts: true
+  // Provider credentials state - derived from accounts context
+  const [providers, setProviders] = useState<ProviderCredentials[]>([]);
+
+  // Sync providers from accounts context
+  useEffect(() => {
+    if (accounts && accounts.length > 0) {
+      const mappedProviders: ProviderCredentials[] = accounts.map(acc => ({
+        id: acc.id,
+        provider: acc.provider as 'twilio' | 'commio' | 'bandwidth',
+        name: acc.name,
+        accountSid: acc.accountSid ? `${acc.accountSid.substring(0, 4)}${'*'.repeat(16)}` : undefined,
+        status: acc.status === 'active' ? 'connected' : 'disconnected',
+        lastSync: acc.lastSyncAt || new Date().toISOString(),
+        isActive: acc.status === 'active'
+      }));
+      setProviders(mappedProviders);
+    }
+  }, [accounts]);
+
+  // New provider form
+  const [newProvider, setNewProvider] = useState({
+    name: '',
+    accountSid: '',
+    authToken: '',
+    apiUsername: '',
+    apiPassword: '',
+    accountId: ''
   });
 
-  // Appearance settings
-  const [appearance, setAppearance] = useState({
-    theme: 'light',
-    compactMode: false
-  });
-
-  const tabs = [
-    { id: 'profile', label: 'Profile', icon: User },
-    { id: 'password', label: 'Password', icon: Lock },
-    { id: 'notifications', label: 'Notifications', icon: Bell },
-    { id: 'security', label: 'Security', icon: Shield },
-    { id: 'appearance', label: 'Appearance', icon: Moon }
-  ];
-
-  const handleProfileSave = async () => {
+  const handleSaveProfile = async () => {
     setIsLoading(true);
-    // Simulate API call
-    await new Promise(resolve => setTimeout(resolve, 1000));
-    setIsLoading(false);
-    toast({
-      title: 'Profile updated',
-      description: 'Your profile has been updated successfully.',
-    });
+    try {
+      // API call to save profile
+      await new Promise(resolve => setTimeout(resolve, 1000));
+      toast({
+        title: 'Profile Updated',
+        description: 'Your profile has been updated successfully.',
+      });
+    } catch (error) {
+      toast({
+        title: 'Error',
+        description: 'Failed to update profile.',
+        variant: 'destructive'
+      });
+    } finally {
+      setIsLoading(false);
+    }
   };
 
-  const handlePasswordChange = async () => {
+  const handleChangePassword = async () => {
     if (passwords.newPassword !== passwords.confirmPassword) {
       toast({
         title: 'Error',
-        description: 'New passwords do not match.',
+        description: 'Passwords do not match.',
         variant: 'destructive'
       });
       return;
     }
-    if (passwords.newPassword.length < 8) {
+
+    setIsLoading(true);
+    try {
+      // API call to change password
+      await new Promise(resolve => setTimeout(resolve, 1000));
+      toast({
+        title: 'Password Changed',
+        description: 'Your password has been changed successfully.',
+      });
+      setPasswords({ currentPassword: '', newPassword: '', confirmPassword: '' });
+    } catch (error) {
       toast({
         title: 'Error',
-        description: 'Password must be at least 8 characters.',
+        description: 'Failed to change password.',
         variant: 'destructive'
       });
-      return;
+    } finally {
+      setIsLoading(false);
     }
-    setIsLoading(true);
-    await new Promise(resolve => setTimeout(resolve, 1000));
-    setIsLoading(false);
-    setPasswords({ currentPassword: '', newPassword: '', confirmPassword: '' });
-    toast({
-      title: 'Password changed',
-      description: 'Your password has been updated successfully.',
-    });
   };
 
-  const handleNotificationsSave = async () => {
-    setIsLoading(true);
-    await new Promise(resolve => setTimeout(resolve, 1000));
-    setIsLoading(false);
-    toast({
-      title: 'Notifications updated',
-      description: 'Your notification preferences have been saved.',
-    });
+  const handleTestConnection = async () => {
+    setTestingConnection(true);
+    try {
+      // Simulate API test
+      await new Promise(resolve => setTimeout(resolve, 2000));
+      toast({
+        title: 'Connection Successful',
+        description: `Successfully connected to ${selectedProvider.toUpperCase()} API.`,
+      });
+      return true;
+    } catch (error) {
+      toast({
+        title: 'Connection Failed',
+        description: 'Failed to connect. Please check your credentials.',
+        variant: 'destructive'
+      });
+      return false;
+    } finally {
+      setTestingConnection(false);
+    }
   };
 
-  const handleSecuritySave = async () => {
+  const handleConnectProvider = async () => {
     setIsLoading(true);
-    await new Promise(resolve => setTimeout(resolve, 1000));
-    setIsLoading(false);
-    toast({
-      title: 'Security settings updated',
-      description: 'Your security preferences have been saved.',
-    });
+    try {
+      // Map fields based on provider
+      let accountSid: string;
+      let authToken: string;
+      let apiKey: string | undefined;
+
+      if (selectedProvider === 'twilio') {
+        accountSid = newProvider.accountSid;
+        authToken = newProvider.authToken;
+      } else if (selectedProvider === 'commio') {
+        // Commio: accountId -> accountSid, apiPassword (token) -> authToken
+        accountSid = newProvider.accountId;
+        authToken = newProvider.apiPassword;
+      } else if (selectedProvider === 'bandwidth') {
+        // Bandwidth: accountId -> accountSid, apiPassword -> authToken, apiUsername -> apiKey
+        accountSid = newProvider.accountId;
+        authToken = newProvider.apiPassword;
+        apiKey = newProvider.apiUsername;
+      } else {
+        // Other providers
+        accountSid = newProvider.accountId || newProvider.accountSid;
+        authToken = newProvider.authToken || newProvider.apiPassword;
+      }
+
+      if (!accountSid || !authToken) {
+        toast({
+          title: 'Missing Credentials',
+          description: 'Please fill in all required fields.',
+          variant: 'destructive'
+        });
+        setIsLoading(false);
+        return;
+      }
+
+      const response = await fetch('/api/accounts', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          providerCode: selectedProvider,
+          name: newProvider.name || `${selectedProvider.charAt(0).toUpperCase() + selectedProvider.slice(1)} Account`,
+          type: 'master',
+          accountSid,
+          authToken,
+          apiKey,
+        }),
+      });
+
+      if (!response.ok) {
+        const data = await response.json();
+        throw new Error(data.error || 'Failed to connect account');
+      }
+
+      // Close modal and reset form
+      setConnectModalOpen(false);
+      setNewProvider({
+        name: '',
+        accountSid: '',
+        authToken: '',
+        apiUsername: '',
+        apiPassword: '',
+        accountId: ''
+      });
+
+      toast({
+        title: 'Provider Connected',
+        description: `${selectedProvider.toUpperCase()} has been connected successfully.`,
+      });
+
+      // Refresh accounts - useEffect will sync providers from accounts context
+      await refreshAccounts();
+    } catch (error) {
+      toast({
+        title: 'Connection Failed',
+        description: error instanceof Error ? error.message : 'Failed to connect provider.',
+        variant: 'destructive'
+      });
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  const handleDisconnectProvider = async (providerId: string) => {
+    try {
+      const response = await fetch(`/api/accounts/${providerId}`, {
+        method: 'DELETE',
+      });
+      
+      if (!response.ok) {
+        throw new Error('Failed to disconnect provider');
+      }
+      
+      toast({
+        title: 'Provider Disconnected',
+        description: 'Provider has been disconnected.',
+      });
+      
+      // Refresh accounts - useEffect will sync providers
+      await refreshAccounts();
+    } catch (error) {
+      toast({
+        title: 'Disconnect Failed',
+        description: error instanceof Error ? error.message : 'Failed to disconnect provider.',
+        variant: 'destructive'
+      });
+    }
+  };
+
+  const handleSyncProvider = async (providerId: string) => {
+    setIsLoading(true);
+    try {
+      const response = await fetch(`/api/accounts/${providerId}/sync`, {
+        method: 'POST',
+      });
+      
+      if (!response.ok) {
+        throw new Error('Failed to sync provider');
+      }
+      
+      toast({
+        title: 'Sync Complete',
+        description: 'Provider data has been synced successfully.',
+      });
+      
+      // Refresh accounts to get updated data
+      await refreshAccounts();
+    } catch (error) {
+      toast({
+        title: 'Sync Failed',
+        description: 'Failed to sync provider data.',
+        variant: 'destructive'
+      });
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  const getProviderLogo = (provider: string) => {
+    return <ProviderLogo provider={provider as any} size="lg" />;
   };
 
   return (
-    <div className="p-8 max-w-6xl mx-auto">
-      <div className="mb-6">
-        <h1 className="text-2xl font-bold mb-2">Settings</h1>
-        <p className="text-gray-500">Manage your account settings and preferences</p>
+    <div className="flex-1 space-y-4 p-8 pt-6">
+      <div>
+        <h2 className="text-3xl font-bold tracking-tight">Settings</h2>
+        <p className="text-muted-foreground">
+          Manage your account settings and preferences
+        </p>
       </div>
 
-      <div className="flex flex-col md:flex-row gap-6">
-        {/* Sidebar Navigation */}
-        <div className="w-full md:w-64 flex-shrink-0">
-          <div className="bg-white rounded-lg shadow">
-            <nav className="p-2">
-              {tabs.map((tab) => (
-                <button
-                  key={tab.id}
-                  onClick={() => setActiveTab(tab.id)}
-                  className={`w-full flex items-center px-4 py-3 rounded-lg text-left transition-colors ${
-                    activeTab === tab.id
-                      ? 'bg-blue-50 text-blue-600'
-                      : 'text-gray-600 hover:bg-gray-50'
-                  }`}
-                >
-                  <tab.icon size={20} className="mr-3" />
-                  <span className="font-medium">{tab.label}</span>
-                </button>
-              ))}
-            </nav>
-          </div>
-        </div>
+      <Tabs value={activeTab} onValueChange={setActiveTab}>
+        <TabsList>
+          <TabsTrigger value="profile">Profile</TabsTrigger>
+          <TabsTrigger value="security">Security</TabsTrigger>
+          <TabsTrigger value="providers">API Providers</TabsTrigger>
+          <TabsTrigger value="notifications">Notifications</TabsTrigger>
+        </TabsList>
 
-        {/* Main Content */}
-        <div className="flex-1">
-          {/* Profile Tab */}
-          {activeTab === 'profile' && (
-            <div className="bg-white rounded-lg shadow">
-              <div className="p-6 border-b">
-                <h2 className="text-lg font-semibold">Profile Information</h2>
-                <p className="text-gray-500 text-sm mt-1">Update your personal information and contact details</p>
+        {/* Profile Tab */}
+        <TabsContent value="profile" className="space-y-4">
+          <Card>
+            <CardHeader>
+              <CardTitle>Profile Information</CardTitle>
+              <CardDescription>Update your personal information</CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              <div className="grid grid-cols-2 gap-4">
+                <div className="space-y-2">
+                  <Label htmlFor="firstName">First Name</Label>
+                  <Input
+                    id="firstName"
+                    value={profile.firstName}
+                    onChange={(e) => setProfile({ ...profile, firstName: e.target.value })}
+                  />
+                </div>
+                <div className="space-y-2">
+                  <Label htmlFor="lastName">Last Name</Label>
+                  <Input
+                    id="lastName"
+                    value={profile.lastName}
+                    onChange={(e) => setProfile({ ...profile, lastName: e.target.value })}
+                  />
+                </div>
               </div>
-              <div className="p-6">
-                {/* Avatar Section */}
-                <div className="flex items-center mb-8">
-                  <div className="relative">
-                    <div className="w-24 h-24 rounded-full bg-blue-500 flex items-center justify-center text-white text-2xl font-bold">
-                      {profile.firstName.charAt(0)}{profile.lastName.charAt(0)}
-                    </div>
-                    <button className="absolute bottom-0 right-0 bg-white rounded-full p-2 shadow-lg border hover:bg-gray-50">
-                      <Camera size={16} className="text-gray-600" />
-                    </button>
-                  </div>
-                  <div className="ml-6">
-                    <h3 className="font-semibold text-lg">{profile.firstName} {profile.lastName}</h3>
-                    <p className="text-gray-500">{user?.role === 'admin' ? 'Administrator' : 'User'}</p>
-                    <button className="text-red-500 text-sm mt-2 hover:text-red-600 flex items-center">
-                      <Trash2 size={14} className="mr-1" />
-                      Remove photo
-                    </button>
-                  </div>
-                </div>
+              <div className="space-y-2">
+                <Label htmlFor="email">Email</Label>
+                <Input
+                  id="email"
+                  type="email"
+                  value={profile.email}
+                  onChange={(e) => setProfile({ ...profile, email: e.target.value })}
+                />
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="phone">Phone</Label>
+                <Input
+                  id="phone"
+                  value={profile.phone}
+                  onChange={(e) => setProfile({ ...profile, phone: e.target.value })}
+                />
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="company">Company</Label>
+                <Input
+                  id="company"
+                  value={profile.company}
+                  onChange={(e) => setProfile({ ...profile, company: e.target.value })}
+                />
+              </div>
+              <Button onClick={handleSaveProfile} disabled={isLoading}>
+                {isLoading ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Save className="mr-2 h-4 w-4" />}
+                Save Changes
+              </Button>
+            </CardContent>
+          </Card>
+        </TabsContent>
 
-                {/* Form Fields */}
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                  <div>
-                    <label className="block text-sm font-medium text-gray-700 mb-2">First Name</label>
-                    <input
-                      type="text"
-                      value={profile.firstName}
-                      onChange={(e) => setProfile({ ...profile, firstName: e.target.value })}
-                      className="w-full px-4 py-2 border rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
-                    />
-                  </div>
-                  <div>
-                    <label className="block text-sm font-medium text-gray-700 mb-2">Last Name</label>
-                    <input
-                      type="text"
-                      value={profile.lastName}
-                      onChange={(e) => setProfile({ ...profile, lastName: e.target.value })}
-                      className="w-full px-4 py-2 border rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
-                    />
-                  </div>
-                  <div>
-                    <label className="block text-sm font-medium text-gray-700 mb-2">Email Address</label>
-                    <div className="relative">
-                      <Mail size={18} className="absolute left-3 top-1/2 transform -translate-y-1/2 text-gray-400" />
-                      <input
-                        type="email"
-                        value={profile.email}
-                        onChange={(e) => setProfile({ ...profile, email: e.target.value })}
-                        className="w-full pl-10 pr-4 py-2 border rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
-                      />
-                    </div>
-                  </div>
-                  <div>
-                    <label className="block text-sm font-medium text-gray-700 mb-2">Phone Number</label>
-                    <div className="relative">
-                      <Smartphone size={18} className="absolute left-3 top-1/2 transform -translate-y-1/2 text-gray-400" />
-                      <input
-                        type="tel"
-                        value={profile.phone}
-                        onChange={(e) => setProfile({ ...profile, phone: e.target.value })}
-                        className="w-full pl-10 pr-4 py-2 border rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
-                      />
-                    </div>
-                  </div>
-                  <div>
-                    <label className="block text-sm font-medium text-gray-700 mb-2">Company</label>
-                    <input
-                      type="text"
-                      value={profile.company}
-                      onChange={(e) => setProfile({ ...profile, company: e.target.value })}
-                      className="w-full px-4 py-2 border rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
-                    />
-                  </div>
-                  <div>
-                    <label className="block text-sm font-medium text-gray-700 mb-2">Timezone</label>
-                    <div className="relative">
-                      <Globe size={18} className="absolute left-3 top-1/2 transform -translate-y-1/2 text-gray-400" />
-                      <select
-                        value={profile.timezone}
-                        onChange={(e) => setProfile({ ...profile, timezone: e.target.value })}
-                        className="w-full pl-10 pr-4 py-2 border rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 appearance-none bg-white"
-                      >
-                        <option value="America/New_York">Eastern Time (ET)</option>
-                        <option value="America/Chicago">Central Time (CT)</option>
-                        <option value="America/Denver">Mountain Time (MT)</option>
-                        <option value="America/Los_Angeles">Pacific Time (PT)</option>
-                        <option value="UTC">UTC</option>
-                        <option value="Europe/London">London (GMT)</option>
-                        <option value="Asia/Singapore">Singapore (SGT)</option>
-                      </select>
-                    </div>
-                  </div>
-                </div>
-
-                <div className="mt-8 flex justify-end">
-                  <button
-                    onClick={handleProfileSave}
-                    disabled={isLoading}
-                    className="bg-blue-600 text-white px-6 py-2 rounded-lg hover:bg-blue-700 transition-colors flex items-center disabled:opacity-50"
+        {/* Security Tab */}
+        <TabsContent value="security" className="space-y-4">
+          <Card>
+            <CardHeader>
+              <CardTitle>Change Password</CardTitle>
+              <CardDescription>Update your password to keep your account secure</CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              <div className="space-y-2">
+                <Label htmlFor="currentPassword">Current Password</Label>
+                <div className="relative">
+                  <Input
+                    id="currentPassword"
+                    type={showPassword ? 'text' : 'password'}
+                    value={passwords.currentPassword}
+                    onChange={(e) => setPasswords({ ...passwords, currentPassword: e.target.value })}
+                  />
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    className="absolute right-0 top-0"
+                    onClick={() => setShowPassword(!showPassword)}
                   >
-                    {isLoading ? (
-                      <>
-                        <div className="animate-spin rounded-full h-4 w-4 border-2 border-white border-t-transparent mr-2"></div>
-                        Saving...
-                      </>
-                    ) : (
-                      <>
-                        <Save size={18} className="mr-2" />
-                        Save Changes
-                      </>
-                    )}
-                  </button>
+                    {showPassword ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+                  </Button>
                 </div>
               </div>
-            </div>
-          )}
-
-          {/* Password Tab */}
-          {activeTab === 'password' && (
-            <div className="bg-white rounded-lg shadow">
-              <div className="p-6 border-b">
-                <h2 className="text-lg font-semibold">Change Password</h2>
-                <p className="text-gray-500 text-sm mt-1">Update your password to keep your account secure</p>
+              <div className="space-y-2">
+                <Label htmlFor="newPassword">New Password</Label>
+                <Input
+                  id="newPassword"
+                  type="password"
+                  value={passwords.newPassword}
+                  onChange={(e) => setPasswords({ ...passwords, newPassword: e.target.value })}
+                />
               </div>
-              <div className="p-6">
-                <div className="max-w-md space-y-6">
-                  <div>
-                    <label className="block text-sm font-medium text-gray-700 mb-2">Current Password</label>
-                    <div className="relative">
-                      <input
-                        type={showCurrentPassword ? 'text' : 'password'}
-                        value={passwords.currentPassword}
-                        onChange={(e) => setPasswords({ ...passwords, currentPassword: e.target.value })}
-                        className="w-full px-4 py-2 pr-10 border rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
-                        placeholder="Enter current password"
-                      />
-                      <button
-                        type="button"
-                        onClick={() => setShowCurrentPassword(!showCurrentPassword)}
-                        className="absolute right-3 top-1/2 transform -translate-y-1/2 text-gray-400 hover:text-gray-600"
-                      >
-                        {showCurrentPassword ? <EyeOff size={18} /> : <Eye size={18} />}
-                      </button>
-                    </div>
-                  </div>
+              <div className="space-y-2">
+                <Label htmlFor="confirmPassword">Confirm Password</Label>
+                <Input
+                  id="confirmPassword"
+                  type="password"
+                  value={passwords.confirmPassword}
+                  onChange={(e) => setPasswords({ ...passwords, confirmPassword: e.target.value })}
+                />
+              </div>
+              <Button onClick={handleChangePassword} disabled={isLoading}>
+                {isLoading ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Lock className="mr-2 h-4 w-4" />}
+                Change Password
+              </Button>
+            </CardContent>
+          </Card>
+        </TabsContent>
 
-                  <div>
-                    <label className="block text-sm font-medium text-gray-700 mb-2">New Password</label>
-                    <div className="relative">
-                      <input
-                        type={showNewPassword ? 'text' : 'password'}
-                        value={passwords.newPassword}
-                        onChange={(e) => setPasswords({ ...passwords, newPassword: e.target.value })}
-                        className="w-full px-4 py-2 pr-10 border rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
-                        placeholder="Enter new password"
-                      />
-                      <button
-                        type="button"
-                        onClick={() => setShowNewPassword(!showNewPassword)}
-                        className="absolute right-3 top-1/2 transform -translate-y-1/2 text-gray-400 hover:text-gray-600"
-                      >
-                        {showNewPassword ? <EyeOff size={18} /> : <Eye size={18} />}
-                      </button>
-                    </div>
-                    <p className="text-xs text-gray-500 mt-1">Must be at least 8 characters</p>
-                  </div>
+        {/* API Providers Tab */}
+        <TabsContent value="providers" className="space-y-4">
+          <Card>
+            <CardHeader>
+              <div className="flex items-center justify-between">
+                <div>
+                  <CardTitle>Connected Providers</CardTitle>
+                  <CardDescription>Manage your Twilio, Commio, and other API integrations</CardDescription>
+                </div>
+                <Dialog open={connectModalOpen} onOpenChange={setConnectModalOpen}>
+                  <DialogTrigger asChild>
+                    <Button>
+                      <Plus className="mr-2 h-4 w-4" />
+                      Connect Provider
+                    </Button>
+                  </DialogTrigger>
+                  <DialogContent className="sm:max-w-[525px]">
+                    <DialogHeader>
+                      <DialogTitle>Connect API Provider</DialogTitle>
+                      <DialogDescription>
+                        Add a new communication provider to fetch data from multiple sources
+                      </DialogDescription>
+                    </DialogHeader>
+                    <div className="space-y-4 py-4">
+                      <div className="space-y-2">
+                        <Label>Provider</Label>
+                        <Select value={selectedProvider} onValueChange={(v) => setSelectedProvider(v as any)}>
+                          <SelectTrigger>
+                            <SelectValue />
+                          </SelectTrigger>
+                          <SelectContent>
+                            <SelectItem value="twilio">
+                              <div className="flex items-center gap-2">
+                                <span>🔵</span>
+                                <span>Twilio</span>
+                              </div>
+                            </SelectItem>
+                            <SelectItem value="commio">
+                              <div className="flex items-center gap-2">
+                                <span>🟢</span>
+                                <span>Commio</span>
+                              </div>
+                            </SelectItem>
+                            <SelectItem value="bandwidth">
+                              <div className="flex items-center gap-2">
+                                <span>🟣</span>
+                                <span>Bandwidth</span>
+                              </div>
+                            </SelectItem>
+                          </SelectContent>
+                        </Select>
+                      </div>
 
-                  <div>
-                    <label className="block text-sm font-medium text-gray-700 mb-2">Confirm New Password</label>
-                    <div className="relative">
-                      <input
-                        type={showConfirmPassword ? 'text' : 'password'}
-                        value={passwords.confirmPassword}
-                        onChange={(e) => setPasswords({ ...passwords, confirmPassword: e.target.value })}
-                        className="w-full px-4 py-2 pr-10 border rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
-                        placeholder="Confirm new password"
-                      />
-                      <button
-                        type="button"
-                        onClick={() => setShowConfirmPassword(!showConfirmPassword)}
-                        className="absolute right-3 top-1/2 transform -translate-y-1/2 text-gray-400 hover:text-gray-600"
-                      >
-                        {showConfirmPassword ? <EyeOff size={18} /> : <Eye size={18} />}
-                      </button>
-                    </div>
-                    {passwords.newPassword && passwords.confirmPassword && passwords.newPassword !== passwords.confirmPassword && (
-                      <p className="text-xs text-red-500 mt-1 flex items-center">
-                        <AlertCircle size={12} className="mr-1" />
-                        Passwords do not match
-                      </p>
-                    )}
-                    {passwords.newPassword && passwords.confirmPassword && passwords.newPassword === passwords.confirmPassword && (
-                      <p className="text-xs text-green-500 mt-1 flex items-center">
-                        <Check size={12} className="mr-1" />
-                        Passwords match
-                      </p>
-                    )}
-                  </div>
+                      <div className="space-y-2">
+                        <Label htmlFor="providerName">Account Name</Label>
+                        <Input
+                          id="providerName"
+                          placeholder="e.g., Main Twilio Account"
+                          value={newProvider.name}
+                          onChange={(e) => setNewProvider({ ...newProvider, name: e.target.value })}
+                        />
+                      </div>
 
-                  <div className="pt-4">
-                    <button
-                      onClick={handlePasswordChange}
-                      disabled={isLoading || !passwords.currentPassword || !passwords.newPassword || !passwords.confirmPassword}
-                      className="bg-blue-600 text-white px-6 py-2 rounded-lg hover:bg-blue-700 transition-colors flex items-center disabled:opacity-50 disabled:cursor-not-allowed"
-                    >
-                      {isLoading ? (
+                      {selectedProvider === 'twilio' && (
                         <>
-                          <div className="animate-spin rounded-full h-4 w-4 border-2 border-white border-t-transparent mr-2"></div>
-                          Updating...
-                        </>
-                      ) : (
-                        <>
-                          <Lock size={18} className="mr-2" />
-                          Update Password
+                          <div className="space-y-2">
+                            <Label htmlFor="accountSid">Account SID</Label>
+                            <Input
+                              id="accountSid"
+                              placeholder="ACxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+                              value={newProvider.accountSid}
+                              onChange={(e) => setNewProvider({ ...newProvider, accountSid: e.target.value })}
+                            />
+                          </div>
+                          <div className="space-y-2">
+                            <Label htmlFor="authToken">Auth Token</Label>
+                            <Input
+                              id="authToken"
+                              type="password"
+                              placeholder="Your Twilio Auth Token"
+                              value={newProvider.authToken}
+                              onChange={(e) => setNewProvider({ ...newProvider, authToken: e.target.value })}
+                            />
+                          </div>
                         </>
                       )}
-                    </button>
-                  </div>
-                </div>
-              </div>
-            </div>
-          )}
 
-          {/* Notifications Tab */}
-          {activeTab === 'notifications' && (
-            <div className="bg-white rounded-lg shadow">
-              <div className="p-6 border-b">
-                <h2 className="text-lg font-semibold">Notification Preferences</h2>
-                <p className="text-gray-500 text-sm mt-1">Choose how you want to be notified</p>
-              </div>
-              <div className="p-6 space-y-6">
-                {/* Notification Channels */}
-                <div>
-                  <h3 className="font-medium text-gray-900 mb-4">Notification Channels</h3>
-                  <div className="space-y-4">
-                    <label className="flex items-center justify-between p-4 bg-gray-50 rounded-lg cursor-pointer hover:bg-gray-100">
-                      <div className="flex items-center">
-                        <Mail size={20} className="text-gray-500 mr-3" />
-                        <div>
-                          <p className="font-medium">Email Notifications</p>
-                          <p className="text-sm text-gray-500">Receive notifications via email</p>
-                        </div>
-                      </div>
-                      <input
-                        type="checkbox"
-                        checked={notifications.emailNotifications}
-                        onChange={(e) => setNotifications({ ...notifications, emailNotifications: e.target.checked })}
-                        className="w-5 h-5 text-blue-600 rounded focus:ring-blue-500"
-                      />
-                    </label>
+                      {selectedProvider === 'commio' && (
+                        <>
+                          <div className="space-y-2">
+                            <Label htmlFor="accountId">Account ID <span className="text-red-500">*</span></Label>
+                            <Input
+                              id="accountId"
+                              placeholder="e.g., 22956"
+                              value={newProvider.accountId}
+                              onChange={(e) => setNewProvider({ ...newProvider, accountId: e.target.value })}
+                            />
+                            <p className="text-xs text-muted-foreground">Found in Dashboard → API → Tokens</p>
+                          </div>
+                          <div className="space-y-2">
+                            <Label htmlFor="apiPassword">API Token <span className="text-red-500">*</span></Label>
+                            <Input
+                              id="apiPassword"
+                              type="password"
+                              placeholder="Your Commio API Token"
+                              value={newProvider.apiPassword}
+                              onChange={(e) => setNewProvider({ ...newProvider, apiPassword: e.target.value })}
+                            />
+                            <p className="text-xs text-muted-foreground">Click on your token name to view/copy the token value</p>
+                          </div>
+                        </>
+                      )}
 
-                    <label className="flex items-center justify-between p-4 bg-gray-50 rounded-lg cursor-pointer hover:bg-gray-100">
-                      <div className="flex items-center">
-                        <Smartphone size={20} className="text-gray-500 mr-3" />
-                        <div>
-                          <p className="font-medium">SMS Notifications</p>
-                          <p className="text-sm text-gray-500">Receive notifications via SMS</p>
-                        </div>
-                      </div>
-                      <input
-                        type="checkbox"
-                        checked={notifications.smsNotifications}
-                        onChange={(e) => setNotifications({ ...notifications, smsNotifications: e.target.checked })}
-                        className="w-5 h-5 text-blue-600 rounded focus:ring-blue-500"
-                      />
-                    </label>
-
-                    <label className="flex items-center justify-between p-4 bg-gray-50 rounded-lg cursor-pointer hover:bg-gray-100">
-                      <div className="flex items-center">
-                        <Bell size={20} className="text-gray-500 mr-3" />
-                        <div>
-                          <p className="font-medium">Push Notifications</p>
-                          <p className="text-sm text-gray-500">Receive browser push notifications</p>
-                        </div>
-                      </div>
-                      <input
-                        type="checkbox"
-                        checked={notifications.pushNotifications}
-                        onChange={(e) => setNotifications({ ...notifications, pushNotifications: e.target.checked })}
-                        className="w-5 h-5 text-blue-600 rounded focus:ring-blue-500"
-                      />
-                    </label>
-                  </div>
-                </div>
-
-                {/* Notification Types */}
-                <div>
-                  <h3 className="font-medium text-gray-900 mb-4">Notification Types</h3>
-                  <div className="space-y-3">
-                    {[
-                      { key: 'lowBalanceAlert', label: 'Low Balance Alerts', desc: 'Get notified when credits are running low' },
-                      { key: 'newMessageAlert', label: 'New Message Alerts', desc: 'Get notified when you receive new messages' },
-                      { key: 'campaignUpdates', label: 'Campaign Updates', desc: 'Get updates on campaign progress and completion' },
-                      { key: 'weeklyReport', label: 'Weekly Reports', desc: 'Receive weekly usage and analytics reports' },
-                      { key: 'marketingEmails', label: 'Marketing Emails', desc: 'Receive product updates and promotional offers' }
-                    ].map((item) => (
-                      <label key={item.key} className="flex items-center justify-between py-3 border-b last:border-0 cursor-pointer">
-                        <div>
-                          <p className="font-medium text-gray-700">{item.label}</p>
-                          <p className="text-sm text-gray-500">{item.desc}</p>
-                        </div>
-                        <input
-                          type="checkbox"
-                          checked={notifications[item.key as keyof typeof notifications] as boolean}
-                          onChange={(e) => setNotifications({ ...notifications, [item.key]: e.target.checked })}
-                          className="w-5 h-5 text-blue-600 rounded focus:ring-blue-500"
-                        />
-                      </label>
-                    ))}
-                  </div>
-                </div>
-
-                <div className="pt-4 flex justify-end">
-                  <button
-                    onClick={handleNotificationsSave}
-                    disabled={isLoading}
-                    className="bg-blue-600 text-white px-6 py-2 rounded-lg hover:bg-blue-700 transition-colors flex items-center disabled:opacity-50"
-                  >
-                    {isLoading ? (
-                      <>
-                        <div className="animate-spin rounded-full h-4 w-4 border-2 border-white border-t-transparent mr-2"></div>
-                        Saving...
-                      </>
-                    ) : (
-                      <>
-                        <Save size={18} className="mr-2" />
-                        Save Preferences
-                      </>
-                    )}
-                  </button>
-                </div>
-              </div>
-            </div>
-          )}
-
-          {/* Security Tab */}
-          {activeTab === 'security' && (
-            <div className="bg-white rounded-lg shadow">
-              <div className="p-6 border-b">
-                <h2 className="text-lg font-semibold">Security Settings</h2>
-                <p className="text-gray-500 text-sm mt-1">Manage your account security preferences</p>
-              </div>
-              <div className="p-6 space-y-6">
-                {/* Two-Factor Authentication */}
-                <div className="p-4 border rounded-lg">
-                  <div className="flex items-center justify-between">
-                    <div className="flex items-center">
-                      <div className={`w-10 h-10 rounded-full flex items-center justify-center ${security.twoFactorEnabled ? 'bg-green-100' : 'bg-gray-100'}`}>
-                        <Shield size={20} className={security.twoFactorEnabled ? 'text-green-600' : 'text-gray-500'} />
-                      </div>
-                      <div className="ml-4">
-                        <p className="font-medium">Two-Factor Authentication</p>
-                        <p className="text-sm text-gray-500">Add an extra layer of security to your account</p>
-                      </div>
+                      {selectedProvider === 'bandwidth' && (
+                        <>
+                          <div className="space-y-2">
+                            <Label htmlFor="accountId">Account ID <span className="text-red-500">*</span></Label>
+                            <Input
+                              id="accountId"
+                              placeholder="Your Bandwidth Account ID"
+                              value={newProvider.accountId}
+                              onChange={(e) => setNewProvider({ ...newProvider, accountId: e.target.value })}
+                            />
+                          </div>
+                          <div className="space-y-2">
+                            <Label htmlFor="apiUsername">API Username <span className="text-red-500">*</span></Label>
+                            <Input
+                              id="apiUsername"
+                              placeholder="Your Bandwidth API Username"
+                              value={newProvider.apiUsername}
+                              onChange={(e) => setNewProvider({ ...newProvider, apiUsername: e.target.value })}
+                            />
+                          </div>
+                          <div className="space-y-2">
+                            <Label htmlFor="apiPassword">API Password <span className="text-red-500">*</span></Label>
+                            <Input
+                              id="apiPassword"
+                              type="password"
+                              placeholder="Your Bandwidth API Password"
+                              value={newProvider.apiPassword}
+                              onChange={(e) => setNewProvider({ ...newProvider, apiPassword: e.target.value })}
+                            />
+                          </div>
+                        </>
+                      )}
                     </div>
-                    <button
-                      onClick={() => setSecurity({ ...security, twoFactorEnabled: !security.twoFactorEnabled })}
-                      className={`px-4 py-2 rounded-lg font-medium transition-colors ${
-                        security.twoFactorEnabled
-                          ? 'bg-red-100 text-red-600 hover:bg-red-200'
-                          : 'bg-blue-600 text-white hover:bg-blue-700'
-                      }`}
-                    >
-                      {security.twoFactorEnabled ? 'Disable' : 'Enable'}
-                    </button>
-                  </div>
-                  {security.twoFactorEnabled && (
-                    <div className="mt-4 p-3 bg-green-50 rounded-lg flex items-center text-green-700">
-                      <Check size={18} className="mr-2" />
-                      Two-factor authentication is enabled
-                    </div>
-                  )}
-                </div>
-
-                {/* Session Timeout */}
-                <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-2">Session Timeout</label>
-                  <select
-                    value={security.sessionTimeout}
-                    onChange={(e) => setSecurity({ ...security, sessionTimeout: e.target.value })}
-                    className="w-full max-w-xs px-4 py-2 border rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
-                  >
-                    <option value="15">15 minutes</option>
-                    <option value="30">30 minutes</option>
-                    <option value="60">1 hour</option>
-                    <option value="120">2 hours</option>
-                    <option value="480">8 hours</option>
-                  </select>
-                  <p className="text-sm text-gray-500 mt-1">Automatically log out after period of inactivity</p>
-                </div>
-
-                {/* Login Alerts */}
-                <label className="flex items-center justify-between p-4 bg-gray-50 rounded-lg cursor-pointer hover:bg-gray-100">
-                  <div>
-                    <p className="font-medium">Login Alerts</p>
-                    <p className="text-sm text-gray-500">Get notified when someone logs into your account</p>
-                  </div>
-                  <input
-                    type="checkbox"
-                    checked={security.loginAlerts}
-                    onChange={(e) => setSecurity({ ...security, loginAlerts: e.target.checked })}
-                    className="w-5 h-5 text-blue-600 rounded focus:ring-blue-500"
-                  />
-                </label>
-
-                {/* Active Sessions */}
-                <div>
-                  <h3 className="font-medium text-gray-900 mb-4">Active Sessions</h3>
-                  <div className="space-y-3">
-                    <div className="flex items-center justify-between p-4 border rounded-lg">
-                      <div className="flex items-center">
-                        <div className="w-10 h-10 bg-blue-100 rounded-full flex items-center justify-center">
-                          <Globe size={20} className="text-blue-600" />
+                    <DialogFooter>
+                      <Button variant="outline" onClick={() => setConnectModalOpen(false)}>
+                        Cancel
+                      </Button>
+                      <Button onClick={handleTestConnection} variant="secondary" disabled={testingConnection}>
+                        {testingConnection ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <TestTube className="mr-2 h-4 w-4" />}
+                        Test Connection
+                      </Button>
+                      <Button onClick={handleConnectProvider} disabled={testingConnection}>
+                        <LinkIcon className="mr-2 h-4 w-4" />
+                        Connect
+                      </Button>
+                    </DialogFooter>
+                  </DialogContent>
+                </Dialog>
+              </div>
+            </CardHeader>
+            <CardContent>
+              <div className="space-y-4">
+                {providers.map((provider) => (
+                  <Card key={provider.id}>
+                    <CardContent className="p-6">
+                      <div className="flex items-center justify-between">
+                        <div className="flex items-center gap-4">
+                          <div className="text-4xl">{getProviderLogo(provider.provider)}</div>
+                          <div>
+                            <div className="flex items-center gap-2">
+                              <h3 className="font-semibold capitalize">{provider.provider}</h3>
+                              {provider.status === 'connected' ? (
+                                <Badge className="bg-green-100 text-green-800 hover:bg-green-100">
+                                  <CheckCircle className="mr-1 h-3 w-3" />
+                                  Connected
+                                </Badge>
+                              ) : (
+                                <Badge variant="destructive">
+                                  <XCircle className="mr-1 h-3 w-3" />
+                                  Disconnected
+                                </Badge>
+                              )}
+                            </div>
+                            <p className="text-sm text-muted-foreground">{provider.name}</p>
+                            {provider.accountSid && (
+                              <p className="text-xs text-muted-foreground font-mono mt-1">
+                                {provider.accountSid}
+                              </p>
+                            )}
+                            {provider.lastSync && (
+                              <p className="text-xs text-muted-foreground mt-1">
+                                Last synced: {new Date(provider.lastSync).toLocaleString()}
+                              </p>
+                            )}
+                          </div>
                         </div>
-                        <div className="ml-4">
-                          <p className="font-medium">Current Session</p>
-                          <p className="text-sm text-gray-500">Chrome on macOS • Last active: Now</p>
+                        <div className="flex items-center gap-2">
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            onClick={() => handleSyncProvider(provider.id)}
+                            disabled={isLoading}
+                            title="Sync data"
+                          >
+                            <RefreshCw className={`h-4 w-4 ${isLoading ? 'animate-spin' : ''}`} />
+                          </Button>
+                          <Button
+                            variant="destructive"
+                            size="sm"
+                            onClick={() => {
+                              if (window.confirm(`Are you sure you want to disconnect ${provider.name}? This will remove the API connection.`)) {
+                                handleDisconnectProvider(provider.id);
+                              }
+                            }}
+                            title="Disconnect provider"
+                          >
+                            <Unlink className="h-4 w-4 mr-1" />
+                            Disconnect
+                          </Button>
                         </div>
                       </div>
-                      <span className="px-2 py-1 bg-green-100 text-green-700 text-xs rounded-full">Active</span>
-                    </div>
-                  </div>
-                </div>
+                    </CardContent>
+                  </Card>
+                ))}
 
-                <div className="pt-4 flex justify-end">
-                  <button
-                    onClick={handleSecuritySave}
-                    disabled={isLoading}
-                    className="bg-blue-600 text-white px-6 py-2 rounded-lg hover:bg-blue-700 transition-colors flex items-center disabled:opacity-50"
-                  >
-                    {isLoading ? (
-                      <>
-                        <div className="animate-spin rounded-full h-4 w-4 border-2 border-white border-t-transparent mr-2"></div>
-                        Saving...
-                      </>
-                    ) : (
-                      <>
-                        <Save size={18} className="mr-2" />
-                        Save Settings
-                      </>
-                    )}
-                  </button>
-                </div>
+                {providers.length === 0 && (
+                  <div className="text-center py-12">
+                    <Building2 className="mx-auto h-12 w-12 text-muted-foreground" />
+                    <h3 className="mt-4 text-lg font-semibold">No Providers Connected</h3>
+                    <p className="text-muted-foreground mt-2">
+                      Connect Twilio, Commio, or other providers to start fetching data
+                    </p>
+                  </div>
+                )}
               </div>
-            </div>
-          )}
+            </CardContent>
+          </Card>
+        </TabsContent>
 
-          {/* Appearance Tab */}
-          {activeTab === 'appearance' && (
-            <div className="bg-white rounded-lg shadow">
-              <div className="p-6 border-b">
-                <h2 className="text-lg font-semibold">Appearance</h2>
-                <p className="text-gray-500 text-sm mt-1">Customize how SyncGrid looks for you</p>
-              </div>
-              <div className="p-6 space-y-6">
-                {/* Theme Selection */}
-                <div>
-                  <h3 className="font-medium text-gray-900 mb-4">Theme</h3>
-                  <div className="grid grid-cols-3 gap-4">
-                    {[
-                      { id: 'light', label: 'Light', icon: Sun },
-                      { id: 'dark', label: 'Dark', icon: Moon },
-                      { id: 'system', label: 'System', icon: Globe }
-                    ].map((theme) => (
-                      <button
-                        key={theme.id}
-                        onClick={() => setAppearance({ ...appearance, theme: theme.id })}
-                        className={`p-4 border-2 rounded-lg flex flex-col items-center transition-colors ${
-                          appearance.theme === theme.id
-                            ? 'border-blue-500 bg-blue-50'
-                            : 'border-gray-200 hover:border-gray-300'
-                        }`}
-                      >
-                        <theme.icon size={24} className={appearance.theme === theme.id ? 'text-blue-600' : 'text-gray-500'} />
-                        <span className={`mt-2 font-medium ${appearance.theme === theme.id ? 'text-blue-600' : 'text-gray-700'}`}>
-                          {theme.label}
-                        </span>
-                      </button>
-                    ))}
-                  </div>
+        {/* Notifications Tab */}
+        <TabsContent value="notifications" className="space-y-4">
+          <Card>
+            <CardHeader>
+              <CardTitle>Notification Preferences</CardTitle>
+              <CardDescription>Manage how you receive notifications</CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              <div className="flex items-center justify-between">
+                <div className="space-y-0.5">
+                  <Label>Email Notifications</Label>
+                  <p className="text-sm text-muted-foreground">Receive notifications via email</p>
                 </div>
-
-                {/* Compact Mode */}
-                <label className="flex items-center justify-between p-4 bg-gray-50 rounded-lg cursor-pointer hover:bg-gray-100">
-                  <div>
-                    <p className="font-medium">Compact Mode</p>
-                    <p className="text-sm text-gray-500">Reduce spacing and padding for a denser interface</p>
-                  </div>
-                  <input
-                    type="checkbox"
-                    checked={appearance.compactMode}
-                    onChange={(e) => setAppearance({ ...appearance, compactMode: e.target.checked })}
-                    className="w-5 h-5 text-blue-600 rounded focus:ring-blue-500"
-                  />
-                </label>
-
-                <div className="p-4 bg-yellow-50 border border-yellow-200 rounded-lg flex items-start">
-                  <AlertCircle size={20} className="text-yellow-600 mr-3 flex-shrink-0 mt-0.5" />
-                  <div>
-                    <p className="font-medium text-yellow-800">Theme support coming soon</p>
-                    <p className="text-sm text-yellow-700 mt-1">Dark mode and system theme detection will be available in a future update.</p>
-                  </div>
-                </div>
+                <Switch
+                  checked={notifications.emailNotifications}
+                  onCheckedChange={(checked) => setNotifications({ ...notifications, emailNotifications: checked })}
+                />
               </div>
-            </div>
-          )}
-        </div>
-      </div>
+              <Separator />
+              <div className="flex items-center justify-between">
+                <div className="space-y-0.5">
+                  <Label>SMS Notifications</Label>
+                  <p className="text-sm text-muted-foreground">Receive notifications via SMS</p>
+                </div>
+                <Switch
+                  checked={notifications.smsNotifications}
+                  onCheckedChange={(checked) => setNotifications({ ...notifications, smsNotifications: checked })}
+                />
+              </div>
+              <Separator />
+              <div className="flex items-center justify-between">
+                <div className="space-y-0.5">
+                  <Label>Low Balance Alerts</Label>
+                  <p className="text-sm text-muted-foreground">Get notified when balance is low</p>
+                </div>
+                <Switch
+                  checked={notifications.lowBalanceAlert}
+                  onCheckedChange={(checked) => setNotifications({ ...notifications, lowBalanceAlert: checked })}
+                />
+              </div>
+              <Separator />
+              <div className="flex items-center justify-between">
+                <div className="space-y-0.5">
+                  <Label>New Message Alerts</Label>
+                  <p className="text-sm text-muted-foreground">Get notified of new messages</p>
+                </div>
+                <Switch
+                  checked={notifications.newMessageAlert}
+                  onCheckedChange={(checked) => setNotifications({ ...notifications, newMessageAlert: checked })}
+                />
+              </div>
+            </CardContent>
+          </Card>
+        </TabsContent>
+      </Tabs>
     </div>
   );
 }

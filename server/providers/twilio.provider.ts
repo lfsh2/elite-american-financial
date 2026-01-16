@@ -183,27 +183,35 @@ export class TwilioProvider implements ICommunicationProvider {
   }
 
   async getMessages(dateRange: DateRange): Promise<Message[]> {
+    const allMessages: Message[] = [];
+    
+    // Use list with higher limit and iterate through all results
     const messages = await this.client.messages.list({
       dateSentAfter: dateRange.startDate,
       dateSentBefore: dateRange.endDate,
-      limit: 500,
+      limit: 100000, // Fetch up to 100k messages for complete historical data
     });
 
-    return messages.map(m => ({
-      sid: m.sid,
-      from: m.from,
-      to: m.to,
-      body: m.body,
-      status: m.status as any,
-      direction: m.direction as any,
-      dateSent: m.dateSent?.toISOString() || m.dateCreated.toISOString(),
-      dateCreated: m.dateCreated.toISOString(),
-      price: m.price || undefined,
-      priceUnit: m.priceUnit || undefined,
-      numSegments: m.numSegments || undefined,
-      errorCode: m.errorCode?.toString() || undefined,
-      errorMessage: m.errorMessage || undefined,
-    }));
+    for (const m of messages) {
+      allMessages.push({
+        sid: m.sid,
+        from: m.from,
+        to: m.to,
+        body: m.body,
+        status: m.status as any,
+        direction: m.direction as any,
+        dateSent: m.dateSent?.toISOString() || m.dateCreated.toISOString(),
+        dateCreated: m.dateCreated.toISOString(),
+        price: m.price || undefined,
+        priceUnit: m.priceUnit || undefined,
+        numSegments: m.numSegments || undefined,
+        errorCode: m.errorCode?.toString() || undefined,
+        errorMessage: m.errorMessage || undefined,
+      });
+    }
+
+    console.log(`[TwilioProvider] Fetched ${allMessages.length} messages`);
+    return allMessages;
   }
 
   async getMessage(sid: string): Promise<Message | null> {
@@ -243,7 +251,7 @@ export class TwilioProvider implements ICommunicationProvider {
         callParams.twiml = options.twiml;
       } else {
         // Default TwiML
-        callParams.twiml = '<Response><Say>Hello from SyncGrid</Say></Response>';
+        callParams.twiml = '<Response><Say>Hello from Elite Financial</Say></Response>';
       }
 
       if (options.statusCallback) callParams.statusCallback = options.statusCallback;
@@ -270,8 +278,10 @@ export class TwilioProvider implements ICommunicationProvider {
     const calls = await this.client.calls.list({
       startTimeAfter: dateRange.startDate,
       startTimeBefore: dateRange.endDate,
-      limit: 500,
+      limit: 5000, // Fetch up to 5k calls
     });
+    
+    console.log(`[TwilioProvider] Fetched ${calls.length} calls`);
 
     return calls.map(c => ({
       sid: c.sid,
@@ -336,47 +346,104 @@ export class TwilioProvider implements ICommunicationProvider {
     const startOfWeek = new Date(startOfDay);
     startOfWeek.setDate(startOfWeek.getDate() - startOfWeek.getDay());
     const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
+    
+    // Fetch last 6 months (180 days) for historical charts
+    const sixMonthsAgo = new Date(now);
+    sixMonthsAgo.setMonth(sixMonthsAgo.getMonth() - 6);
+    const lastMonth = new Date(now.getFullYear(), now.getMonth() - 1, 1);
+    const endOfLastMonth = new Date(now.getFullYear(), now.getMonth(), 0);
+    const yesterday = new Date(startOfDay);
+    yesterday.setDate(yesterday.getDate() - 1);
+    const lastWeekStart = new Date(startOfWeek);
+    lastWeekStart.setDate(lastWeekStart.getDate() - 7);
+    const lastWeekEnd = new Date(startOfWeek);
+    lastWeekEnd.setDate(lastWeekEnd.getDate() - 1);
 
-    // Fetch all data in parallel
-    const [account, phoneNumbers, messagesMonth, callsMonth, usageMonth] = await Promise.all([
+    // Fetch all data in parallel - 6 months for historical charts
+    const [account, phoneNumbers, messagesAll, callsAll, usageAll] = await Promise.all([
       this.getAccountInfo(),
       this.getPhoneNumbers(),
-      this.getMessages({ startDate: startOfMonth, endDate: now }),
-      this.getCalls({ startDate: startOfMonth, endDate: now }),
-      this.getUsage({ startDate: startOfMonth, endDate: now }),
+      this.getMessages({ startDate: sixMonthsAgo, endDate: now }),
+      this.getCalls({ startDate: sixMonthsAgo, endDate: now }),
+      this.getUsage({ startDate: sixMonthsAgo, endDate: now }),
     ]);
 
     // Filter messages by time period
-    const messagesToday = messagesMonth.filter(m => new Date(m.dateSent) >= startOfDay);
-    const messagesThisWeek = messagesMonth.filter(m => new Date(m.dateSent) >= startOfWeek);
+    const messagesToday = messagesAll.filter(m => new Date(m.dateSent) >= startOfDay);
+    const messagesYesterday = messagesAll.filter(m => {
+      const d = new Date(m.dateSent);
+      return d >= yesterday && d < startOfDay;
+    });
+    const messagesThisWeek = messagesAll.filter(m => new Date(m.dateSent) >= startOfWeek);
+    const messagesLastWeek = messagesAll.filter(m => {
+      const d = new Date(m.dateSent);
+      return d >= lastWeekStart && d <= lastWeekEnd;
+    });
+    const messagesThisMonth = messagesAll.filter(m => new Date(m.dateSent) >= startOfMonth);
+    const messagesLastMonth = messagesAll.filter(m => {
+      const d = new Date(m.dateSent);
+      return d >= lastMonth && d <= endOfLastMonth;
+    });
 
     // Filter calls by time period
-    const callsToday = callsMonth.filter(c => new Date(c.startTime) >= startOfDay);
-    const callsThisWeek = callsMonth.filter(c => new Date(c.startTime) >= startOfWeek);
+    const callsToday = callsAll.filter(c => new Date(c.startTime) >= startOfDay);
+    const callsYesterday = callsAll.filter(c => {
+      const d = new Date(c.startTime);
+      return d >= yesterday && d < startOfDay;
+    });
+    const callsThisWeek = callsAll.filter(c => new Date(c.startTime) >= startOfWeek);
+    const callsLastWeek = callsAll.filter(c => {
+      const d = new Date(c.startTime);
+      return d >= lastWeekStart && d <= lastWeekEnd;
+    });
+    const callsThisMonth = callsAll.filter(c => new Date(c.startTime) >= startOfMonth);
+    const callsLastMonth = callsAll.filter(c => {
+      const d = new Date(c.startTime);
+      return d >= lastMonth && d <= endOfLastMonth;
+    });
 
     // Calculate metrics
     const outboundToday = messagesToday.filter(m => m.direction.startsWith('outbound'));
+    const outboundYesterday = messagesYesterday.filter(m => m.direction.startsWith('outbound'));
     const outboundWeek = messagesThisWeek.filter(m => m.direction.startsWith('outbound'));
-    const outboundMonth = messagesMonth.filter(m => m.direction.startsWith('outbound'));
+    const outboundLastWeek = messagesLastWeek.filter(m => m.direction.startsWith('outbound'));
+    const outboundMonth = messagesThisMonth.filter(m => m.direction.startsWith('outbound'));
+    const outboundLastMonth = messagesLastMonth.filter(m => m.direction.startsWith('outbound'));
     const inboundToday = messagesToday.filter(m => m.direction === 'inbound');
 
     const deliveredMonth = outboundMonth.filter(m => m.status === 'delivered').length;
     const failedMonth = outboundMonth.filter(m => m.status === 'failed' || m.status === 'undelivered').length;
 
-    const totalSpend = usageMonth.reduce((sum, u) => sum + u.price, 0);
+    // Calculate usage for different periods
+    const usageThisMonth = usageAll.filter(u => new Date(u.startDate) >= startOfMonth);
+    const usageLastMonth = usageAll.filter(u => {
+      const d = new Date(u.startDate);
+      return d >= lastMonth && d <= endOfLastMonth;
+    });
+    const totalSpendMonth = usageThisMonth.reduce((sum, u) => sum + u.price, 0);
+    const totalSpendLastMonth = usageLastMonth.reduce((sum, u) => sum + u.price, 0);
+    
     const callDurationToday = callsToday.reduce((sum, c) => sum + parseInt(c.duration || '0'), 0);
 
     const metrics: ProviderMetrics = {
       totalMessagesSentToday: outboundToday.length,
+      totalMessagesSentYesterday: outboundYesterday.length,
       totalMessagesSentThisWeek: outboundWeek.length,
+      totalMessagesSentLastWeek: outboundLastWeek.length,
       totalMessagesSentThisMonth: outboundMonth.length,
+      totalMessagesSentLastMonth: outboundLastMonth.length,
       totalMessagesReceivedToday: inboundToday.length,
       totalCallsToday: callsToday.length,
+      totalCallsYesterday: callsYesterday.length,
       totalCallsThisWeek: callsThisWeek.length,
+      totalCallsLastWeek: callsLastWeek.length,
+      totalCallsThisMonth: callsThisMonth.length,
+      totalCallsLastMonth: callsLastMonth.length,
       totalCallDurationToday: callDurationToday,
-      totalSpendToday: 0, // Would need daily usage query
+      totalSpendToday: 0,
       totalSpendThisWeek: 0,
-      totalSpendThisMonth: totalSpend,
+      totalSpendThisMonth: totalSpendMonth,
+      totalSpendLastMonth: totalSpendLastMonth,
       deliveryRate: outboundMonth.length > 0 ? (deliveredMonth / outboundMonth.length) * 100 : 100,
       failureRate: outboundMonth.length > 0 ? (failedMonth / outboundMonth.length) * 100 : 0,
     };
@@ -386,15 +453,23 @@ export class TwilioProvider implements ICommunicationProvider {
       phoneNumbers,
       messages: {
         today: messagesToday,
+        yesterday: messagesYesterday,
         thisWeek: messagesThisWeek,
-        thisMonth: messagesMonth,
+        lastWeek: messagesLastWeek,
+        thisMonth: messagesThisMonth,
+        lastMonth: messagesLastMonth,
+        all: messagesAll, // Full 6 months for charts
       },
       calls: {
         today: callsToday,
+        yesterday: callsYesterday,
         thisWeek: callsThisWeek,
-        thisMonth: callsMonth,
+        lastWeek: callsLastWeek,
+        thisMonth: callsThisMonth,
+        lastMonth: callsLastMonth,
+        all: callsAll, // Full 6 months for charts
       },
-      usage: usageMonth,
+      usage: usageAll,
       metrics,
     };
   }

@@ -38,9 +38,13 @@ export class BandwidthProvider implements ICommunicationProvider {
   private voiceUrl = 'https://voice.bandwidth.com/api/v2';
 
   constructor(credentials: ProviderCredentials) {
+    // Bandwidth credentials mapping:
+    // accountSid -> Account ID
+    // authToken -> API Password/Token
+    // apiKey -> API Username (for Basic Auth)
     this.accountId = credentials.accountSid;
-    this.apiToken = credentials.authToken;
-    this.apiSecret = credentials.apiSecret || '';
+    this.apiToken = credentials.apiKey || credentials.authToken;
+    this.apiSecret = credentials.authToken;
   }
 
   /**

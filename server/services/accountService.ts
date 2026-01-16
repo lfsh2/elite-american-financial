@@ -49,7 +49,9 @@ class AccountService {
    * Get provider by code
    */
   async getProviderByCode(code: string): Promise<Provider | null> {
+    console.log('Looking up provider:', code);
     const result = await db.select().from(providers).where(eq(providers.code, code));
+    console.log('Provider lookup result:', result[0] ? 'found' : 'not found');
     return result[0] || null;
   }
 

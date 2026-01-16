@@ -90,7 +90,7 @@ export default function Billing() {
       <div className="mb-6 flex justify-between items-center">
         <div>
           <h1 className="text-2xl font-bold mb-2">Billing & Credits</h1>
-          <p className="text-gray-500">Manage your SyncGrid credits and payment settings</p>
+          <p className="text-gray-500">Manage your Elite Financial credits and payment settings</p>
         </div>
         <div className="flex space-x-3">
           <button 
@@ -570,7 +570,7 @@ export default function Billing() {
                 </div>
                 <div className="ml-3">
                   <p className="text-sm text-blue-700">
-                    Credits will be added to your account immediately and can be used for all SyncGrid services.
+                    Credits will be added to your account immediately and can be used for all Elite Financial services.
                   </p>
                 </div>
               </div>

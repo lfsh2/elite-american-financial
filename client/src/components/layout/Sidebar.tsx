@@ -1,181 +1,259 @@
-import { useState, useEffect } from "react";
-import { Link, useLocation } from "wouter";
-import { cn } from "@/lib/utils";
-import { useAuth } from "@/hooks/use-auth";
-import { Progress } from "@/components/ui/progress";
+import React, { memo, useMemo } from 'react';
+import { Link, useLocation } from 'wouter';
+import { cn } from '@/lib/utils';
+import { useAuth } from '@/hooks/use-auth';
+import { useAccount } from '@/contexts/AccountContext';
+import { useTwilioAnalytics } from '@/hooks/useTwilioData';
+import { ProviderLogo } from '@/components/shared/ProviderLogo';
+import { Button } from '@/components/ui/button';
+import { ScrollArea } from '@/components/ui/scroll-area';
+import { Separator } from '@/components/ui/separator';
 import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select';
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuLabel,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from '@/components/ui/dropdown-menu';
+import {
+  LayoutDashboard,
   MessageSquare,
   Phone,
-  Mail,
-  BarChart3,
+  TrendingUp,
   Megaphone,
-  Clock,
+  Hash,
   Users,
-  UserPlus,
+  Building2,
   CreditCard,
   Settings,
-  PhoneCall,
-  Link as LinkIcon,
-} from "lucide-react";
+  Plug,
+  ClipboardList,
+  Shield,
+  ChevronRight,
+  LogOut,
+  User,
+  HelpCircle,
+  Bell,
+} from 'lucide-react';
 
-interface SidebarProps {
-  className?: string;
+interface NavItem {
+  title: string;
+  href: string;
+  icon: React.ElementType;
+  badge?: number;
 }
 
-export function Sidebar({ className }: SidebarProps) {
+const adminItems: NavItem[] = [
+  { title: 'Users', href: '/users', icon: Users },
+  { title: 'Sub-Accounts', href: '/subaccounts', icon: Building2 },
+  { title: 'API & Integrations', href: '/api-integration', icon: Plug },
+  // { title: 'Compliance', href: '/compliance', icon: Shield }, // Hidden temporarily
+  { title: 'Activity Logs', href: '/logs', icon: ClipboardList },
+  // { title: 'Billing', href: '/billing', icon: CreditCard }, // Hidden temporarily
+  { title: 'Settings', href: '/settings', icon: Settings },
+];
+
+export const Sidebar = memo(function Sidebar() {
   const [location] = useLocation();
   const { user } = useAuth();
-  const [isMobileOpen, setIsMobileOpen] = useState(false);
+  const { analytics } = useTwilioAnalytics();
+  const { currentAccount, accounts, selectAccount, isOverviewMode, selectOverview } = useAccount();
 
-  // Close mobile sidebar when location changes
-  useEffect(() => {
-    setIsMobileOpen(false);
-  }, [location]);
+  // Memoize inbox count calculation
+  const inboxCount = useMemo(() => {
+    return analytics?.messages.thisMonth.filter(m => m.direction === 'inbound').length || 0;
+  }, [analytics?.messages.thisMonth]);
+
+  // Memoize nav items to prevent recreation on every render
+  const navItems: NavItem[] = useMemo(() => [
+    { title: 'Dashboard', href: '/dashboard', icon: LayoutDashboard },
+    { title: 'Analytics', href: '/analytics', icon: TrendingUp },
+    { title: 'Messaging', href: '/messaging', icon: MessageSquare, badge: inboxCount },
+    { title: 'Voice Calls', href: '/voice', icon: Phone },
+    { title: 'Campaigns', href: '/campaigns', icon: Megaphone },
+    { title: 'Phone Numbers', href: '/phone-numbers', icon: Hash },
+  ], [inboxCount]);
 
   if (!user) return null;
 
-  const sidebarLinks = [
-    { href: "/", label: "Dashboard", icon: <BarChart3 className="h-5 w-5" /> },
-    { href: "/sms", label: "SMS Inbox", icon: <MessageSquare className="h-5 w-5" /> },
-    { href: "/campaigns", label: "Campaigns", icon: <Megaphone className="h-5 w-5" /> },
-    { href: "/voice", label: "Voice Calls", icon: <Phone className="h-5 w-5" /> },
-    { href: "/email", label: "Email", icon: <Mail className="h-5 w-5" /> },
-    { href: "/phone-numbers", label: "Phone Numbers", icon: <PhoneCall className="h-5 w-5" /> },
-    { href: "/logs", label: "Logs", icon: <Clock className="h-5 w-5" /> },
-  ];
-
-  const adminLinks = [
-    { href: "/users", label: "Users", icon: <Users className="h-5 w-5" /> },
-    { href: "/subaccounts", label: "Sub-accounts", icon: <UserPlus className="h-5 w-5" /> },
-    { href: "/billing", label: "Billing", icon: <CreditCard className="h-5 w-5" /> },
-    { href: "/settings", label: "Settings", icon: <Settings className="h-5 w-5" /> },
-  ];
-
-  // Calculate credit usage percentage
-  const creditLimit = 1000;
-  const usagePercentage = Math.min(100, Math.max(0, (user.credits / creditLimit) * 100));
-
   return (
-    <>
-      {/* Mobile sidebar backdrop */}
-      {isMobileOpen && (
-        <div 
-          className="fixed inset-0 z-40 bg-black/50 md:hidden" 
-          onClick={() => setIsMobileOpen(false)}
-        />
-      )}
-
-      {/* Sidebar */}
-      <div 
-        className={cn(
-          "fixed inset-y-0 left-0 z-50 w-64 flex-col bg-white border-r border-neutral-200 md:relative md:flex transform transition-transform duration-200 ease-in-out",
-          isMobileOpen ? "translate-x-0" : "-translate-x-full md:translate-x-0",
-          className
-        )}
-      >
-        <div className="flex flex-col flex-grow pt-5 overflow-y-auto hide-scrollbar">
-          {/* Logo */}
-          <div className="flex items-center flex-shrink-0 px-4">
-            <div className="flex items-center space-x-2">
-              <img src="/images/textflow-modern-logo.svg" alt="SyncGrid" className="h-9 w-9" />
-              <span className="text-lg font-extrabold bg-clip-text text-transparent bg-gradient-to-r from-blue-600 to-indigo-700">SyncGrid</span>
+    <div className="hidden border-r bg-white md:block w-64">
+      <div className="flex h-full max-h-screen flex-col gap-2">
+        {/* Logo */}
+        <div className="flex h-16 items-center justify-center border-b px-4">
+          <Link href="/dashboard">
+            <div className="flex items-center justify-center cursor-pointer">
+              <img 
+                src="/elite-financial-logo.png" 
+                alt="Elite Financial" 
+                className="h-12 object-contain"
+              />
             </div>
-          </div>
+          </Link>
+        </div>
 
-          {/* Navigation */}
-          <nav className="flex-1 px-2 pb-4 space-y-1 mt-6">
-            {sidebarLinks.map((link) => (
-              <div key={link.href}>
-                <a 
-                  href={link.href}
-                  className={cn(
-                    "group flex items-center px-2 py-2 text-sm font-medium rounded-md w-full text-left",
-                    location === link.href
-                      ? "bg-primary-50 text-primary"
-                      : "text-neutral-600 hover:bg-primary-50 hover:text-primary"
-                  )}
-                >
-                  <span className={cn(
-                    "mr-3",
-                    location === link.href
-                      ? "text-primary"
-                      : "text-neutral-400 group-hover:text-primary"
-                  )}>
-                    {link.icon}
-                  </span>
-                  {link.label}
-                </a>
-              </div>
-            ))}
-            
-            {/* Admin Section */}
-            <div className="pt-4 border-t border-neutral-200">
-              <div className="px-2 mb-2 text-xs font-semibold text-neutral-400 uppercase tracking-wider">
-                Admin
-              </div>
-              {adminLinks.map((link) => (
-                <div key={link.href}>
-                  <a 
-                    href={link.href}
+        {/* Account Switcher */}
+        <div className="px-3 pt-4 pb-2">
+          <Select
+            value={isOverviewMode ? 'overview' : currentAccount?.id || ''}
+            onValueChange={(value) => {
+              if (value === 'overview') {
+                selectOverview();
+              } else {
+                selectAccount(value);
+              }
+            }}
+          >
+            <SelectTrigger className="w-full">
+              <SelectValue placeholder="Select account">
+                {isOverviewMode ? (
+                  <span className="font-medium">All Accounts</span>
+                ) : (
+                  <div className="flex items-center gap-2">
+                    {currentAccount?.provider && (
+                      <ProviderLogo provider={currentAccount.provider} size="sm" />
+                    )}
+                    <span className="font-medium">{currentAccount?.name || 'Select Account'}</span>
+                  </div>
+                )}
+              </SelectValue>
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="overview">
+                <div className="flex items-center gap-2">
+                  <span className="font-medium">All Accounts</span>
+                  <span className="text-xs text-muted-foreground">Overview</span>
+                </div>
+              </SelectItem>
+              <Separator className="my-1" />
+              {accounts.map((account) => (
+                <SelectItem key={account.id} value={account.id}>
+                  <div className="flex items-center gap-2">
+                    <ProviderLogo provider={account.provider} size="sm" />
+                    <span className="font-medium">{account.name}</span>
+                  </div>
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </div>
+
+        {/* Navigation */}
+        <ScrollArea className="flex-1 px-3">
+          <div className="space-y-1 py-2">
+            {navItems.map((item) => {
+              const Icon = item.icon;
+              const isActive = location === item.href;
+              
+              return (
+                <Link key={item.href} href={item.href}>
+                  <Button
+                    variant={isActive ? 'secondary' : 'ghost'}
                     className={cn(
-                      "group flex items-center px-2 py-2 text-sm font-medium rounded-md w-full text-left",
-                      location === link.href
-                        ? "bg-primary-50 text-primary"
-                        : "text-neutral-600 hover:bg-primary-50 hover:text-primary"
+                      'w-full justify-start gap-3 px-3',
+                      isActive && 'bg-blue-50 text-blue-700 hover:bg-blue-100 hover:text-blue-800'
                     )}
                   >
-                    <span className={cn(
-                      "mr-3",
-                      location === link.href
-                        ? "text-primary"
-                        : "text-neutral-400 group-hover:text-primary"
-                    )}>
-                      {link.icon}
-                    </span>
-                    {link.label}
-                  </a>
-                </div>
-              ))}
-            </div>
-          </nav>
-          
-          {/* Credit Usage */}
-          <div className="px-4 pb-4">
-            <div className="p-4 bg-neutral-50 rounded-lg">
-              <div className="flex justify-between items-center mb-2">
-                <h3 className="text-sm font-medium text-neutral-700">Credits Usage</h3>
-                <span className="text-xs text-neutral-500">{user.credits} / {creditLimit}</span>
-              </div>
-              <Progress value={usagePercentage} className="h-2 bg-neutral-200" />
-              <div className="mt-2">
-                <a 
-                  href="/billing"
-                  className="text-xs text-primary hover:text-primary-700 font-medium bg-transparent border-none cursor-pointer p-0"
-                >
-                  Buy more credits
-                </a>
-              </div>
-            </div>
+                    <Icon className="h-4 w-4" />
+                    <span className="flex-1 text-left">{item.title}</span>
+                    {item.badge && (
+                      <span className="ml-auto flex h-5 w-5 items-center justify-center rounded-full bg-blue-600 text-xs font-medium text-white">
+                        {item.badge}
+                      </span>
+                    )}
+                  </Button>
+                </Link>
+              );
+            })}
           </div>
+
+          <Separator className="my-3" />
+
+          <div className="space-y-1 py-2">
+            <div className="px-3 py-2">
+              <h2 className="mb-2 px-2 text-xs font-semibold tracking-tight text-gray-500 uppercase">
+                Administration
+              </h2>
+            </div>
+            {adminItems.map((item) => {
+              const Icon = item.icon;
+              const isActive = location === item.href;
+              
+              return (
+                <Link key={item.href} href={item.href}>
+                  <Button
+                    variant={isActive ? 'secondary' : 'ghost'}
+                    className={cn(
+                      'w-full justify-start gap-3 px-3',
+                      isActive && 'bg-blue-50 text-blue-700 hover:bg-blue-100 hover:text-blue-800'
+                    )}
+                  >
+                    <Icon className="h-4 w-4" />
+                    <span className="flex-1 text-left">{item.title}</span>
+                  </Button>
+                </Link>
+              );
+            })}
+          </div>
+        </ScrollArea>
+
+        {/* User Profile with Dropdown */}
+        <div className="border-t p-3">
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <div className="flex items-center gap-3 rounded-xl p-3 hover:bg-gradient-to-r hover:from-blue-50 hover:to-indigo-50 transition-all duration-200 cursor-pointer group border border-transparent hover:border-blue-100 hover:shadow-sm">
+                <div className="relative">
+                  <div className="flex h-10 w-10 items-center justify-center rounded-full bg-gradient-to-br from-blue-600 to-indigo-600 text-white font-semibold text-sm shadow-md group-hover:shadow-lg transition-shadow">
+                    {user.firstName?.[0] || 'U'}
+                  </div>
+                  <div className="absolute -bottom-0.5 -right-0.5 h-3 w-3 rounded-full bg-green-500 border-2 border-white"></div>
+                </div>
+                <div className="flex-1 min-w-0">
+                  <p className="text-sm font-semibold text-gray-900 truncate group-hover:text-blue-700 transition-colors">
+                    {user.firstName} {user.lastName}
+                  </p>
+                  <p className="text-xs text-gray-500 truncate">{user.email}</p>
+                </div>
+                <ChevronRight className="h-4 w-4 text-gray-400 group-hover:text-blue-500 group-hover:translate-x-0.5 transition-all" />
+              </div>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end" className="w-56">
+              <DropdownMenuLabel>
+                <div className="flex flex-col space-y-1">
+                  <p className="text-sm font-medium">{user.firstName} {user.lastName}</p>
+                  <p className="text-xs text-muted-foreground">{user.email}</p>
+                </div>
+              </DropdownMenuLabel>
+              <DropdownMenuSeparator />
+              <DropdownMenuItem className="cursor-pointer">
+                <User className="mr-2 h-4 w-4" />
+                <span>Profile Settings</span>
+              </DropdownMenuItem>
+              <DropdownMenuItem className="cursor-pointer">
+                <Bell className="mr-2 h-4 w-4" />
+                <span>Notifications</span>
+              </DropdownMenuItem>
+              <DropdownMenuItem className="cursor-pointer">
+                <HelpCircle className="mr-2 h-4 w-4" />
+                <span>Help & Support</span>
+              </DropdownMenuItem>
+              <DropdownMenuSeparator />
+              <DropdownMenuItem className="cursor-pointer text-red-600 focus:text-red-600 focus:bg-red-50">
+                <LogOut className="mr-2 h-4 w-4" />
+                <span>Log out</span>
+              </DropdownMenuItem>
+            </DropdownMenuContent>
+          </DropdownMenu>
         </div>
       </div>
-
-      {/* Mobile menu button - visible on small screens */}
-      <button
-        type="button"
-        className="fixed z-50 p-2 m-2 text-neutral-500 rounded-md md:hidden hover:text-neutral-900 focus:outline-none"
-        onClick={() => setIsMobileOpen(!isMobileOpen)}
-      >
-        {isMobileOpen ? (
-          <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
-          </svg>
-        ) : (
-          <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 6h16M4 12h16M4 18h16" />
-          </svg>
-        )}
-      </button>
-    </>
+    </div>
   );
-}
+});

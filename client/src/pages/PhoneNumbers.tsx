@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useMemo } from 'react';
 import { useAuth } from '../hooks/use-auth';
 import { useAccountPhoneNumbers } from '../hooks/useTwilioData';
 import { useAccount } from '../contexts/AccountContext';
@@ -6,74 +6,160 @@ import {
   Phone, 
   Plus, 
   Search, 
-  Filter, 
-  ChevronDown, 
-  Check,
-  X,
-  Download,
   RefreshCw,
-  Settings,
-  Tag,
-  Globe,
+  Filter,
   MoreHorizontal,
-  FileText,
-  Search as SearchIcon,
-  AlertTriangle,
+  ArrowUpDown,
+  CheckCircle,
+  XCircle,
+  MessageSquare,
+  PhoneCall,
+  Image as ImageIcon,
+  Globe,
   ShoppingCart,
-  CreditCard,
-  ChevronRight,
-  ArrowRight,
-  ShieldCheck,
   Loader2
 } from 'lucide-react';
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
+import { Button } from '@/components/ui/button';
+import { Input } from '@/components/ui/input';
+import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs';
+import { Badge } from '@/components/ui/badge';
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from '@/components/ui/table';
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuLabel,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from '@/components/ui/dropdown-menu';
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from '@/components/ui/dialog';
+import { Label } from '@/components/ui/label';
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select';
+import { Checkbox } from '@/components/ui/checkbox';
+import { useToast } from '../components/ui/use-toast';
+
+interface PhoneNumber {
+  id: string;
+  phoneNumber: string;
+  friendlyName: string;
+  capabilities: {
+    voice: boolean;
+    sms: boolean;
+    mms: boolean;
+  };
+  status: string;
+  dateCreated: string;
+}
+
+interface AvailableNumber {
+  number: string;
+  capabilities: {
+    voice: boolean;
+    sms: boolean;
+    mms: boolean;
+  };
+  region: string;
+  monthlyPrice: number;
+}
 
 export default function PhoneNumbers() {
   const { user } = useAuth();
+  const { toast } = useToast();
   const { currentAccount, isOverviewMode } = useAccount();
-  const { phoneNumbers: rawPhoneNumbers, loading, error, refresh } = useAccountPhoneNumbers();
+  const { phoneNumbers: rawPhoneNumbers, loading, refresh } = useAccountPhoneNumbers();
   const [activeTab, setActiveTab] = useState('active');
   const [searchQuery, setSearchQuery] = useState('');
   const [showBuyNumberModal, setShowBuyNumberModal] = useState(false);
-  const [numberSearchResults, setNumberSearchResults] = useState<any[]>([]);
+  const [previewNumber, setPreviewNumber] = useState<PhoneNumber | null>(null);
+  const [sortField, setSortField] = useState<'number' | 'name' | 'date'>('date');
+  const [sortOrder, setSortOrder] = useState<'asc' | 'desc'>('desc');
+  
+  // Buy Number Modal State
+  const [numberSearchResults, setNumberSearchResults] = useState<AvailableNumber[]>([]);
   const [isSearching, setIsSearching] = useState(false);
   const [searchArea, setSearchArea] = useState('');
   const [numberType, setNumberType] = useState('local');
-  const [capabilities, setCapabilities] = useState<string[]>(['voice', 'sms']);
+  const [selectedCapabilities, setSelectedCapabilities] = useState<string[]>(['voice', 'sms']);
 
-  // Transform API phone numbers to display format
   const phoneNumbers = rawPhoneNumbers.map((pn, index) => ({
-    id: pn.id || index,
-    number: pn.phoneNumber,
+    id: pn.id || index.toString(),
+    phoneNumber: pn.phoneNumber,
     friendlyName: pn.friendlyName || pn.phoneNumber,
     capabilities: pn.capabilities || { voice: false, sms: false, mms: false },
     status: pn.status || 'active',
-    region: 'US', // Could be enhanced with Twilio lookup
-    monthlyPrice: 1.00, // Default price, could be fetched from Twilio
-    purchaseDate: pn.dateCreated || new Date().toISOString(),
+    dateCreated: pn.dateCreated || new Date().toISOString(),
   }));
 
-  // Filter by search query
-  const filteredNumbers = phoneNumbers.filter(pn => 
-    pn.number.toLowerCase().includes(searchQuery.toLowerCase()) ||
-    pn.friendlyName.toLowerCase().includes(searchQuery.toLowerCase())
-  );
+  const stats = {
+    totalNumbers: phoneNumbers.length,
+    voiceEnabled: phoneNumbers.filter(p => p.capabilities.voice).length,
+    smsEnabled: phoneNumbers.filter(p => p.capabilities.sms).length,
+    mmsEnabled: phoneNumbers.filter(p => p.capabilities.mms).length,
+  };
 
-  // Helper function for number formatting
+  const filteredNumbers = useMemo(() => {
+    let numbers = phoneNumbers.filter(pn => 
+      pn.phoneNumber.toLowerCase().includes(searchQuery.toLowerCase()) ||
+      pn.friendlyName.toLowerCase().includes(searchQuery.toLowerCase())
+    );
+
+    return numbers.sort((a, b) => {
+      const aVal = sortField === 'number' ? a.phoneNumber :
+                   sortField === 'name' ? a.friendlyName :
+                   new Date(a.dateCreated).getTime();
+      const bVal = sortField === 'number' ? b.phoneNumber :
+                   sortField === 'name' ? b.friendlyName :
+                   new Date(b.dateCreated).getTime();
+      
+      if (sortOrder === 'asc') {
+        return aVal > bVal ? 1 : -1;
+      } else {
+        return aVal < bVal ? 1 : -1;
+      }
+    });
+  }, [phoneNumbers, searchQuery, sortField, sortOrder]);
+
   const formatPhoneNumber = (number: string) => {
-    // Format as (XXX) XXX-XXXX if US/Canada number
     if (number.startsWith('+1') && number.length === 12) {
       return `(${number.substring(2, 5)}) ${number.substring(5, 8)}-${number.substring(8)}`;
     }
     return number;
   };
 
-  // Mock function to search for available numbers
+  const toggleSort = (field: 'number' | 'name' | 'date') => {
+    if (sortField === field) {
+      setSortOrder(sortOrder === 'asc' ? 'desc' : 'asc');
+    } else {
+      setSortField(field);
+      setSortOrder('desc');
+    }
+  };
+
   const searchForNumbers = () => {
     setIsSearching(true);
     
-    // Simulate API call delay
     setTimeout(() => {
-      // Generate mock results
       const results = Array.from({ length: 10 }, (_, i) => {
         const areaCode = searchArea || '855';
         const randomSuffix = Math.floor(100000 + Math.random() * 900000).toString();
@@ -82,9 +168,9 @@ export default function PhoneNumbers() {
         return {
           number,
           capabilities: {
-            voice: capabilities.includes('voice'),
-            sms: capabilities.includes('sms'),
-            mms: capabilities.includes('sms'), // MMS typically comes with SMS
+            voice: selectedCapabilities.includes('voice'),
+            sms: selectedCapabilities.includes('sms'),
+            mms: selectedCapabilities.includes('sms'),
           },
           region: 'US',
           monthlyPrice: 1.00
@@ -96,469 +182,433 @@ export default function PhoneNumbers() {
     }, 1000);
   };
 
+  const handlePurchaseNumber = (number: string) => {
+    toast({
+      title: 'Number Purchased',
+      description: `Successfully purchased ${formatPhoneNumber(number)}`,
+    });
+    setShowBuyNumberModal(false);
+    setNumberSearchResults([]);
+    refresh();
+  };
+
+  const getCapabilityBadges = (capabilities: { voice: boolean; sms: boolean; mms: boolean }) => {
+    return (
+      <div className="flex gap-1">
+        {capabilities.voice && (
+          <Badge variant="outline" className="text-xs">
+            <PhoneCall className="w-3 h-3 mr-1" />
+            Voice
+          </Badge>
+        )}
+        {capabilities.sms && (
+          <Badge variant="outline" className="text-xs">
+            <MessageSquare className="w-3 h-3 mr-1" />
+            SMS
+          </Badge>
+        )}
+        {capabilities.mms && (
+          <Badge variant="outline" className="text-xs">
+            <ImageIcon className="w-3 h-3 mr-1" />
+            MMS
+          </Badge>
+        )}
+      </div>
+    );
+  };
+
+  if (loading) {
+    return (
+      <div className="flex-1 space-y-4 p-8 pt-6">
+        <div className="flex items-center justify-center h-96">
+          <div className="text-center">
+            <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600 mx-auto"></div>
+            <p className="mt-4 text-muted-foreground">Loading phone numbers...</p>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
   return (
-    <div className="p-8 max-w-7xl mx-auto">
-      <div className="mb-6 flex justify-between items-center">
+    <div className="flex-1 space-y-4 p-8 pt-6">
+      <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-2xl font-bold mb-2">Phone Numbers</h1>
-          <p className="text-gray-500">Manage your SyncGrid phone numbers</p>
+          <h2 className="text-3xl font-bold tracking-tight">Phone Numbers</h2>
+          <p className="text-muted-foreground">
+            Manage your Elite Financial phone numbers
+          </p>
         </div>
-        <button 
-          className="bg-blue-600 text-white px-4 py-2 rounded-md flex items-center hover:bg-blue-700 transition-colors"
-          onClick={() => setShowBuyNumberModal(true)}
-        >
-          <Plus size={16} className="mr-2" />
-          Buy a Number
-        </button>
-      </div>
-
-      {/* Tabs */}
-      <div className="border-b border-gray-200 mb-6">
-        <div className="flex -mb-px">
-          <button 
-            className={`px-4 py-2 font-medium text-sm mr-4 ${
-              activeTab === 'active' 
-                ? 'text-blue-600 border-b-2 border-blue-600' 
-                : 'text-gray-500 hover:text-gray-700'
-            }`}
-            onClick={() => setActiveTab('active')}
-          >
-            Active Numbers
-          </button>
-          <button 
-            className={`px-4 py-2 font-medium text-sm mr-4 ${
-              activeTab === 'porting' 
-                ? 'text-blue-600 border-b-2 border-blue-600' 
-                : 'text-gray-500 hover:text-gray-700'
-            }`}
-            onClick={() => setActiveTab('porting')}
-          >
-            Porting Status
-          </button>
-          <button 
-            className={`px-4 py-2 font-medium text-sm ${
-              activeTab === 'usage' 
-                ? 'text-blue-600 border-b-2 border-blue-600' 
-                : 'text-gray-500 hover:text-gray-700'
-            }`}
-            onClick={() => setActiveTab('usage')}
-          >
-            Usage
-          </button>
+        <div className="flex items-center space-x-2">
+          <Button variant="outline" size="sm" onClick={refresh}>
+            <RefreshCw className={`mr-2 h-4 w-4 ${loading ? 'animate-spin' : ''}`} />
+            Refresh
+          </Button>
+          <Button size="sm" onClick={() => setShowBuyNumberModal(true)}>
+            <ShoppingCart className="mr-2 h-4 w-4" />
+            Buy Number
+          </Button>
         </div>
       </div>
 
-      {/* Active Numbers Tab */}
-      {activeTab === 'active' && (
-        <div className="bg-white rounded-lg border border-gray-200 overflow-hidden">
-          {/* Search and filter bar */}
-          <div className="p-4 border-b border-gray-200 flex flex-wrap gap-4">
-            <div className="relative flex-grow max-w-md">
-              <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 text-gray-400" size={18} />
-              <input 
-                type="text" 
-                placeholder="Search phone numbers..." 
-                className="pl-10 pr-4 py-2 border border-gray-300 rounded-md w-full focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-                value={searchQuery}
-                onChange={(e) => setSearchQuery(e.target.value)}
-              />
+      <div className="grid gap-4 md:grid-cols-4">
+        <Card>
+          <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+            <CardTitle className="text-sm font-medium">Total Numbers</CardTitle>
+            <Phone className="h-4 w-4 text-muted-foreground" />
+          </CardHeader>
+          <CardContent>
+            <div className="text-2xl font-bold">{stats.totalNumbers}</div>
+            <p className="text-xs text-muted-foreground">Active phone numbers</p>
+          </CardContent>
+        </Card>
+
+        <Card>
+          <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+            <CardTitle className="text-sm font-medium">Voice Enabled</CardTitle>
+            <PhoneCall className="h-4 w-4 text-muted-foreground" />
+          </CardHeader>
+          <CardContent>
+            <div className="text-2xl font-bold">{stats.voiceEnabled}</div>
+            <p className="text-xs text-muted-foreground">Can make/receive calls</p>
+          </CardContent>
+        </Card>
+
+        <Card>
+          <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+            <CardTitle className="text-sm font-medium">SMS Enabled</CardTitle>
+            <MessageSquare className="h-4 w-4 text-muted-foreground" />
+          </CardHeader>
+          <CardContent>
+            <div className="text-2xl font-bold">{stats.smsEnabled}</div>
+            <p className="text-xs text-muted-foreground">Can send/receive SMS</p>
+          </CardContent>
+        </Card>
+
+        <Card>
+          <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+            <CardTitle className="text-sm font-medium">MMS Enabled</CardTitle>
+            <ImageIcon className="h-4 w-4 text-muted-foreground" />
+          </CardHeader>
+          <CardContent>
+            <div className="text-2xl font-bold">{stats.mmsEnabled}</div>
+            <p className="text-xs text-muted-foreground">Can send/receive MMS</p>
+          </CardContent>
+        </Card>
+      </div>
+
+      <Card>
+        <CardHeader>
+          <div className="flex items-center justify-between">
+            <div>
+              <CardTitle>Phone Numbers</CardTitle>
+              <CardDescription>View and manage your phone numbers</CardDescription>
             </div>
-            <button className="flex items-center px-3 py-2 border border-gray-300 rounded-md text-gray-700 hover:bg-gray-50">
-              <Filter size={18} className="mr-2" />
-              Filter
-              <ChevronDown size={16} className="ml-1" />
-            </button>
-            <button className="flex items-center px-3 py-2 border border-gray-300 rounded-md text-gray-700 hover:bg-gray-50">
-              <Download size={18} className="mr-2" />
-              Export
-            </button>
-            <button 
-              className="flex items-center px-3 py-2 border border-gray-300 rounded-md text-gray-700 hover:bg-gray-50"
-              onClick={refresh}
-              disabled={loading}
-            >
-              <RefreshCw size={18} className={loading ? 'animate-spin' : ''} />
-            </button>
+            <div className="flex items-center space-x-2">
+              <div className="relative">
+                <Search className="absolute left-2 top-2.5 h-4 w-4 text-muted-foreground" />
+                <Input
+                  placeholder="Search numbers..."
+                  className="pl-8 w-[250px]"
+                  value={searchQuery}
+                  onChange={(e) => setSearchQuery(e.target.value)}
+                />
+              </div>
+              <Button variant="outline" size="sm">
+                <Filter className="h-4 w-4" />
+              </Button>
+            </div>
           </div>
-
-          {/* Loading State */}
-          {loading && (
-            <div className="p-12 text-center">
-              <Loader2 className="w-8 h-8 animate-spin text-blue-600 mx-auto mb-4" />
-              <p className="text-gray-500">Loading phone numbers...</p>
-            </div>
-          )}
-
-          {/* Error State */}
-          {error && !loading && (
-            <div className="p-12 text-center">
-              <AlertTriangle className="w-8 h-8 text-red-500 mx-auto mb-4" />
-              <p className="text-red-600 mb-4">{error}</p>
-              <button 
-                onClick={refresh}
-                className="text-blue-600 hover:text-blue-800"
-              >
-                Try again
-              </button>
-            </div>
-          )}
-
-          {/* Empty State */}
-          {!loading && !error && filteredNumbers.length === 0 && (
-            <div className="p-12 text-center">
-              <Phone className="w-12 h-12 text-gray-300 mx-auto mb-4" />
-              <h3 className="text-lg font-medium text-gray-900 mb-2">No phone numbers found</h3>
-              <p className="text-gray-500 mb-4">
-                {searchQuery ? 'Try adjusting your search.' : 'Get started by purchasing a phone number.'}
-              </p>
-              <button 
-                onClick={() => setShowBuyNumberModal(true)}
-                className="bg-blue-600 text-white px-4 py-2 rounded-md hover:bg-blue-700"
-              >
-                Buy a Number
-              </button>
-            </div>
-          )}
-
-          {/* Phone Numbers Table */}
-          {!loading && !error && filteredNumbers.length > 0 && (
-            <div className="overflow-x-auto">
-              <table className="w-full">
-                <thead className="bg-gray-50">
-                  <tr>
-                    <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Phone Number</th>
-                    <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Friendly Name</th>
-                    <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Capabilities</th>
-                    <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Status</th>
-                    <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Purchase Date</th>
-                    <th className="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">Actions</th>
-                  </tr>
-                </thead>
-                <tbody className="bg-white divide-y divide-gray-200">
-                  {filteredNumbers.map(number => (
-                    <tr key={number.id} className="hover:bg-gray-50">
-                      <td className="px-6 py-4 whitespace-nowrap font-medium">{formatPhoneNumber(number.number)}</td>
-                      <td className="px-6 py-4 whitespace-nowrap">{number.friendlyName}</td>
-                      <td className="px-6 py-4 whitespace-nowrap">
-                        <div className="flex space-x-2">
-                          {number.capabilities.voice && (
-                            <span className="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-blue-100 text-blue-800">
-                              Voice
-                            </span>
-                          )}
-                          {number.capabilities.sms && (
-                            <span className="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-green-100 text-green-800">
-                              SMS
-                            </span>
-                          )}
-                          {number.capabilities.mms && (
-                            <span className="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-purple-100 text-purple-800">
-                              MMS
-                            </span>
-                          )}
+        </CardHeader>
+        <CardContent>
+          <Tabs value={activeTab} onValueChange={setActiveTab}>
+            <TabsList>
+              <TabsTrigger value="active">Active Numbers ({phoneNumbers.length})</TabsTrigger>
+              <TabsTrigger value="porting">Porting Status</TabsTrigger>
+              <TabsTrigger value="usage">Usage</TabsTrigger>
+            </TabsList>
+            <TabsContent value={activeTab} className="mt-4">
+              <div className="rounded-md border">
+                <Table>
+                  <TableHeader>
+                    <TableRow>
+                      <TableHead className="cursor-pointer" onClick={() => toggleSort('number')}>
+                        <div className="flex items-center">
+                          Phone Number
+                          <ArrowUpDown className="ml-2 h-4 w-4" />
                         </div>
-                      </td>
-                      <td className="px-6 py-4 whitespace-nowrap">
-                        <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium ${
-                          number.status === 'active' ? 'bg-green-100 text-green-800' : 'bg-gray-100 text-gray-800'
-                        }`}>
-                          {number.status}
-                        </span>
-                      </td>
-                      <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
-                        {new Date(number.purchaseDate).toLocaleDateString()}
-                      </td>
-                      <td className="px-6 py-4 whitespace-nowrap text-right text-sm font-medium">
-                        <div className="flex justify-end space-x-2">
-                          <button className="text-blue-600 hover:text-blue-900 mr-2">
-                            <Settings size={16} />
-                          </button>
-                          <button className="text-blue-600 hover:text-blue-900">
-                            <MoreHorizontal size={16} />
-                          </button>
+                      </TableHead>
+                      <TableHead className="cursor-pointer" onClick={() => toggleSort('name')}>
+                        <div className="flex items-center">
+                          Friendly Name
+                          <ArrowUpDown className="ml-2 h-4 w-4" />
                         </div>
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          )}
-        </div>
-      )}
+                      </TableHead>
+                      <TableHead>Capabilities</TableHead>
+                      <TableHead>Status</TableHead>
+                      <TableHead className="cursor-pointer" onClick={() => toggleSort('date')}>
+                        <div className="flex items-center">
+                          Purchase Date
+                          <ArrowUpDown className="ml-2 h-4 w-4" />
+                        </div>
+                      </TableHead>
+                      <TableHead className="w-[50px]"></TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {filteredNumbers.length === 0 ? (
+                      <TableRow>
+                        <TableCell colSpan={6} className="text-center py-8 text-muted-foreground">
+                          No phone numbers found
+                        </TableCell>
+                      </TableRow>
+                    ) : (
+                      filteredNumbers.map((number) => (
+                        <TableRow 
+                          key={number.id}
+                          className="cursor-pointer hover:bg-muted/50"
+                          onClick={() => setPreviewNumber(number)}
+                        >
+                          <TableCell className="font-medium font-mono">
+                            {formatPhoneNumber(number.phoneNumber)}
+                          </TableCell>
+                          <TableCell>{number.friendlyName}</TableCell>
+                          <TableCell>{getCapabilityBadges(number.capabilities)}</TableCell>
+                          <TableCell>
+                            <Badge className="bg-green-100 text-green-800 hover:bg-green-100">
+                              <CheckCircle className="w-3 h-3 mr-1" />
+                              Active
+                            </Badge>
+                          </TableCell>
+                          <TableCell className="text-sm text-muted-foreground">
+                            {new Date(number.dateCreated).toLocaleDateString()}
+                          </TableCell>
+                          <TableCell onClick={(e) => e.stopPropagation()}>
+                            <DropdownMenu>
+                              <DropdownMenuTrigger asChild>
+                                <Button variant="ghost" size="sm">
+                                  <MoreHorizontal className="h-4 w-4" />
+                                </Button>
+                              </DropdownMenuTrigger>
+                              <DropdownMenuContent align="end">
+                                <DropdownMenuLabel>Actions</DropdownMenuLabel>
+                                <DropdownMenuItem onClick={() => setPreviewNumber(number)}>
+                                  View Details
+                                </DropdownMenuItem>
+                                <DropdownMenuItem>Configure</DropdownMenuItem>
+                                <DropdownMenuItem>Release Number</DropdownMenuItem>
+                                <DropdownMenuSeparator />
+                                <DropdownMenuItem className="text-red-600">Delete</DropdownMenuItem>
+                              </DropdownMenuContent>
+                            </DropdownMenu>
+                          </TableCell>
+                        </TableRow>
+                      ))
+                    )}
+                  </TableBody>
+                </Table>
+              </div>
+            </TabsContent>
+          </Tabs>
+        </CardContent>
+      </Card>
 
-      {/* Porting Status Tab */}
-      {activeTab === 'porting' && (
-        <div className="bg-white rounded-lg border border-gray-200 overflow-hidden p-8 text-center">
-          <div className="max-w-md mx-auto">
-            <div className="mb-4">
-              <Phone className="w-12 h-12 text-gray-300 mx-auto" />
-            </div>
-            <h3 className="text-lg font-medium mb-2">No Port Requests</h3>
-            <p className="text-gray-500 mb-6">You haven't submitted any requests to port existing phone numbers to SyncGrid.</p>
-            
-            <div className="bg-blue-50 border border-blue-100 rounded-lg p-4 text-left">
-              <h4 className="text-blue-800 font-medium flex items-center mb-2">
-                <ShieldCheck className="w-5 h-5 mr-2 text-blue-500" />
-                Port Your Existing Numbers
-              </h4>
-              <p className="text-blue-600 text-sm mb-4">
-                Transfer your existing phone numbers from another provider to SyncGrid.
-              </p>
-              <button className="bg-blue-600 text-white px-4 py-2 rounded-md hover:bg-blue-700 transition-colors">
-                Start Porting Process
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* Usage Tab */}
-      {activeTab === 'usage' && (
-        <div className="bg-white rounded-lg border border-gray-200 overflow-hidden">
-          <div className="p-4 border-b border-gray-200">
-            <h3 className="text-lg font-medium">Phone Number Usage</h3>
-            <p className="text-sm text-gray-500 mt-1">Track usage metrics for your phone numbers</p>
-          </div>
-          
-          <div className="p-6">
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-6 mb-6">
-              <div className="bg-blue-50 rounded-lg p-4 border border-blue-100">
-                <h4 className="text-sm text-gray-600 mb-1">Total Active Numbers</h4>
-                <p className="text-2xl font-bold text-blue-800">{filteredNumbers.length}</p>
+      {/* Number Details Modal */}
+      <Dialog open={!!previewNumber} onOpenChange={() => setPreviewNumber(null)}>
+        <DialogContent className="sm:max-w-[600px]">
+          <DialogHeader>
+            <DialogTitle>Phone Number Details</DialogTitle>
+            <DialogDescription>
+              Complete information about this phone number
+            </DialogDescription>
+          </DialogHeader>
+          {previewNumber && (
+            <div className="space-y-4">
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <Label className="text-sm font-medium text-muted-foreground">Phone Number</Label>
+                  <p className="text-sm font-medium font-mono mt-1">
+                    {formatPhoneNumber(previewNumber.phoneNumber)}
+                  </p>
+                </div>
+                <div>
+                  <Label className="text-sm font-medium text-muted-foreground">Friendly Name</Label>
+                  <p className="text-sm font-medium mt-1">{previewNumber.friendlyName}</p>
+                </div>
               </div>
               
-              <div className="bg-blue-50 rounded-lg p-4 border border-blue-100">
-                <h4 className="text-sm text-gray-600 mb-1">Voice Enabled</h4>
-                <p className="text-2xl font-bold text-blue-800">
-                  {filteredNumbers.filter(num => num.capabilities.voice).length}/{filteredNumbers.length}
-                </p>
+              <div>
+                <Label className="text-sm font-medium text-muted-foreground">Capabilities</Label>
+                <div className="mt-1">{getCapabilityBadges(previewNumber.capabilities)}</div>
               </div>
-              
-              <div className="bg-blue-50 rounded-lg p-4 border border-blue-100">
-                <h4 className="text-sm text-gray-600 mb-1">SMS Enabled</h4>
-                <p className="text-2xl font-bold text-blue-800">
-                  {filteredNumbers.filter(num => num.capabilities.sms).length}/{filteredNumbers.length}
-                </p>
-              </div>
-            </div>
-            
-            {loading ? (
-              <div className="p-12 text-center">
-                <Loader2 className="w-8 h-8 animate-spin text-blue-600 mx-auto" />
-              </div>
-            ) : (
-              <div className="border border-gray-200 rounded-lg overflow-hidden">
-                <div className="p-4 border-b border-gray-200 bg-gray-50">
-                  <h4 className="font-medium">Phone Numbers ({filteredNumbers.length})</h4>
-                </div>
-                
-                <table className="w-full">
-                  <thead className="bg-gray-50">
-                    <tr>
-                      <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Phone Number</th>
-                      <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Friendly Name</th>
-                      <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Capabilities</th>
-                      <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Created</th>
-                    </tr>
-                  </thead>
-                  <tbody className="bg-white divide-y divide-gray-200">
-                    {filteredNumbers.map(number => (
-                      <tr key={number.id} className="hover:bg-gray-50">
-                        <td className="px-6 py-4 whitespace-nowrap font-medium">{formatPhoneNumber(number.number)}</td>
-                        <td className="px-6 py-4 whitespace-nowrap text-gray-600">{number.friendlyName}</td>
-                        <td className="px-6 py-4 whitespace-nowrap">
-                          <div className="flex space-x-1">
-                            {number.capabilities.voice && <span className="text-blue-600">📞</span>}
-                            {number.capabilities.sms && <span className="text-green-600">💬</span>}
-                            {number.capabilities.mms && <span className="text-purple-600">📷</span>}
-                          </div>
-                        </td>
-                        <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
-                          {new Date(number.purchaseDate).toLocaleDateString()}
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            )}
-          </div>
-        </div>
-      )}
 
-      {/* Buy Number Modal */}
-      {showBuyNumberModal && (
-        <div className="fixed inset-0 flex items-center justify-center z-50 bg-black bg-opacity-50">
-          <div className="bg-white rounded-lg p-6 w-full max-w-3xl max-h-[90vh] overflow-y-auto">
-            <div className="flex justify-between items-center mb-4">
-              <h3 className="text-lg font-medium">Buy a New Phone Number</h3>
-              <button 
-                className="text-gray-400 hover:text-gray-500"
-                onClick={() => {
-                  setShowBuyNumberModal(false);
-                  setNumberSearchResults([]);
-                }}
-              >
-                &times;
-              </button>
-            </div>
-            
-            <div className="mb-6">
-              <div className="bg-blue-50 border border-blue-100 rounded-lg p-4 mb-6">
-                <h4 className="text-blue-800 font-medium flex items-center mb-2">
-                  <ShieldCheck className="w-5 h-5 mr-2 text-blue-500" />
-                  Get a New Phone Number
-                </h4>
-                <p className="text-blue-600 text-sm">
-                  Search for available phone numbers by area code, region, or features. All numbers include automatic compliance management.
-                </p>
-              </div>
-              
-              <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-4">
+              <div className="grid grid-cols-2 gap-4">
                 <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-2">Number Type</label>
-                  <select 
-                    className="border border-gray-300 rounded-md w-full p-2 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-                    value={numberType}
-                    onChange={(e) => setNumberType(e.target.value)}
-                  >
-                    <option value="local">Local</option>
-                    <option value="tollfree">Toll-Free</option>
-                    <option value="mobile">Mobile</option>
-                  </select>
-                </div>
-                
-                <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-2">Area Code/Location</label>
-                  <input 
-                    type="text" 
-                    placeholder="Enter area code (e.g., 855)"
-                    className="border border-gray-300 rounded-md w-full p-2 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-                    value={searchArea}
-                    onChange={(e) => setSearchArea(e.target.value)}
-                  />
-                </div>
-                
-                <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-2">Capabilities</label>
-                  <div className="flex space-x-4">
-                    <label className="flex items-center">
-                      <input 
-                        type="checkbox" 
-                        className="h-4 w-4 text-blue-600 focus:ring-blue-500 border-gray-300 rounded"
-                        checked={capabilities.includes('voice')}
-                        onChange={(e) => {
-                          if (e.target.checked) {
-                            setCapabilities([...capabilities, 'voice']);
-                          } else {
-                            setCapabilities(capabilities.filter(c => c !== 'voice'));
-                          }
-                        }}
-                      />
-                      <span className="ml-2 text-sm text-gray-700">Voice</span>
-                    </label>
-                    <label className="flex items-center">
-                      <input 
-                        type="checkbox" 
-                        className="h-4 w-4 text-blue-600 focus:ring-blue-500 border-gray-300 rounded"
-                        checked={capabilities.includes('sms')}
-                        onChange={(e) => {
-                          if (e.target.checked) {
-                            setCapabilities([...capabilities, 'sms']);
-                          } else {
-                            setCapabilities(capabilities.filter(c => c !== 'sms'));
-                          }
-                        }}
-                      />
-                      <span className="ml-2 text-sm text-gray-700">SMS</span>
-                    </label>
+                  <Label className="text-sm font-medium text-muted-foreground">Status</Label>
+                  <div className="mt-1">
+                    <Badge className="bg-green-100 text-green-800 hover:bg-green-100">
+                      <CheckCircle className="w-3 h-3 mr-1" />
+                      Active
+                    </Badge>
                   </div>
                 </div>
+                <div>
+                  <Label className="text-sm font-medium text-muted-foreground">Purchase Date</Label>
+                  <p className="text-sm font-medium mt-1">
+                    {new Date(previewNumber.dateCreated).toLocaleDateString('en-US', {
+                      year: 'numeric',
+                      month: 'long',
+                      day: 'numeric'
+                    })}
+                  </p>
+                </div>
               </div>
-              
-              <button 
-                className="bg-blue-600 text-white px-4 py-2 rounded-md flex items-center hover:bg-blue-700 transition-colors w-full justify-center"
-                onClick={searchForNumbers}
-                disabled={isSearching}
-              >
-                {isSearching ? (
-                  <>
-                    <RefreshCw size={16} className="mr-2 animate-spin" />
-                    Searching...
-                  </>
-                ) : (
-                  <>
-                    <SearchIcon size={16} className="mr-2" />
-                    Search Available Numbers
-                  </>
-                )}
-              </button>
-            </div>
-            
-            {/* Search Results */}
-            {numberSearchResults.length > 0 && (
+
               <div>
-                <h4 className="font-medium mb-3">Available Phone Numbers</h4>
-                <div className="border border-gray-200 rounded-lg overflow-hidden mb-4">
-                  <table className="w-full">
-                    <thead className="bg-gray-50">
-                      <tr>
-                        <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Phone Number</th>
-                        <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Capabilities</th>
-                        <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Region</th>
-                        <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Monthly Price</th>
-                        <th className="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">Actions</th>
-                      </tr>
-                    </thead>
-                    <tbody className="bg-white divide-y divide-gray-200">
-                      {numberSearchResults.map((number, index) => (
-                        <tr key={index} className="hover:bg-gray-50">
-                          <td className="px-6 py-4 whitespace-nowrap font-medium">{formatPhoneNumber(number.number)}</td>
-                          <td className="px-6 py-4 whitespace-nowrap">
-                            <div className="flex space-x-2">
-                              {number.capabilities.voice && (
-                                <span className="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-blue-100 text-blue-800">
-                                  Voice
-                                </span>
-                              )}
-                              {number.capabilities.sms && (
-                                <span className="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-green-100 text-green-800">
-                                  SMS
-                                </span>
-                              )}
-                              {number.capabilities.mms && (
-                                <span className="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-purple-100 text-purple-800">
-                                  MMS
-                                </span>
-                              )}
-                            </div>
-                          </td>
-                          <td className="px-6 py-4 whitespace-nowrap">{number.region}</td>
-                          <td className="px-6 py-4 whitespace-nowrap">${number.monthlyPrice.toFixed(2)}/mo</td>
-                          <td className="px-6 py-4 whitespace-nowrap text-right text-sm font-medium">
-                            <button className="bg-blue-600 text-white px-3 py-1 rounded-md hover:bg-blue-700 transition-colors text-sm">
-                              Buy
-                            </button>
-                          </td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
+                <Label className="text-sm font-medium text-muted-foreground">Number ID</Label>
+                <p className="text-xs font-mono mt-1 text-muted-foreground">{previewNumber.id}</p>
+              </div>
+            </div>
+          )}
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setPreviewNumber(null)}>
+              Close
+            </Button>
+            <Button>
+              Configure Number
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Buy Number Modal */}
+      <Dialog open={showBuyNumberModal} onOpenChange={setShowBuyNumberModal}>
+        <DialogContent className="sm:max-w-[700px]">
+          <DialogHeader>
+            <DialogTitle>Buy a Phone Number</DialogTitle>
+            <DialogDescription>
+              Search for available phone numbers to purchase
+            </DialogDescription>
+          </DialogHeader>
+          
+          <div className="space-y-4">
+            <div className="grid grid-cols-2 gap-4">
+              <div>
+                <Label>Area Code</Label>
+                <Input
+                  placeholder="e.g., 855, 212, 415"
+                  value={searchArea}
+                  onChange={(e) => setSearchArea(e.target.value)}
+                />
+              </div>
+              <div>
+                <Label>Number Type</Label>
+                <Select value={numberType} onValueChange={setNumberType}>
+                  <SelectTrigger>
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="local">Local</SelectItem>
+                    <SelectItem value="tollfree">Toll-Free</SelectItem>
+                    <SelectItem value="mobile">Mobile</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+            </div>
+
+            <div>
+              <Label>Required Capabilities</Label>
+              <div className="flex gap-4 mt-2">
+                <div className="flex items-center space-x-2">
+                  <Checkbox
+                    id="voice"
+                    checked={selectedCapabilities.includes('voice')}
+                    onCheckedChange={(checked) => {
+                      if (checked) {
+                        setSelectedCapabilities([...selectedCapabilities, 'voice']);
+                      } else {
+                        setSelectedCapabilities(selectedCapabilities.filter(c => c !== 'voice'));
+                      }
+                    }}
+                  />
+                  <label htmlFor="voice" className="text-sm">Voice</label>
                 </div>
-                
-                <div className="bg-gray-50 p-4 rounded-lg border border-gray-200">
-                  <h5 className="font-medium text-sm mb-2">Need a specific number?</h5>
-                  <p className="text-sm text-gray-600 mb-3">Try adjusting your search criteria or contact support for help finding the perfect number for your business.</p>
-                  <button className="text-blue-600 hover:text-blue-800 text-sm font-medium flex items-center">
-                    Contact Support <ArrowRight size={14} className="ml-1" />
-                  </button>
+                <div className="flex items-center space-x-2">
+                  <Checkbox
+                    id="sms"
+                    checked={selectedCapabilities.includes('sms')}
+                    onCheckedChange={(checked) => {
+                      if (checked) {
+                        setSelectedCapabilities([...selectedCapabilities, 'sms']);
+                      } else {
+                        setSelectedCapabilities(selectedCapabilities.filter(c => c !== 'sms'));
+                      }
+                    }}
+                  />
+                  <label htmlFor="sms" className="text-sm">SMS/MMS</label>
                 </div>
+              </div>
+            </div>
+
+            <Button onClick={searchForNumbers} disabled={isSearching} className="w-full">
+              {isSearching ? (
+                <>
+                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                  Searching...
+                </>
+              ) : (
+                <>
+                  <Search className="mr-2 h-4 w-4" />
+                  Search Numbers
+                </>
+              )}
+            </Button>
+
+            {numberSearchResults.length > 0 && (
+              <div className="border rounded-md max-h-[300px] overflow-y-auto">
+                <Table>
+                  <TableHeader>
+                    <TableRow>
+                      <TableHead>Number</TableHead>
+                      <TableHead>Capabilities</TableHead>
+                      <TableHead>Price/mo</TableHead>
+                      <TableHead></TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {numberSearchResults.map((result, index) => (
+                      <TableRow key={index}>
+                        <TableCell className="font-mono font-medium">
+                          {formatPhoneNumber(result.number)}
+                        </TableCell>
+                        <TableCell>{getCapabilityBadges(result.capabilities)}</TableCell>
+                        <TableCell>${result.monthlyPrice.toFixed(2)}</TableCell>
+                        <TableCell>
+                          <Button 
+                            size="sm" 
+                            onClick={() => handlePurchaseNumber(result.number)}
+                          >
+                            Buy
+                          </Button>
+                        </TableCell>
+                      </TableRow>
+                    ))}
+                  </TableBody>
+                </Table>
               </div>
             )}
           </div>
-        </div>
-      )}
+
+          <DialogFooter>
+            <Button variant="outline" onClick={() => {
+              setShowBuyNumberModal(false);
+              setNumberSearchResults([]);
+            }}>
+              Cancel
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

@@ -9,7 +9,7 @@ export class SendGridService {
 
   constructor() {
     this.apiKey = process.env.SENDGRID_API_KEY || "";
-    this.fromEmail = process.env.SENDGRID_FROM_EMAIL || "noreply@unicomms.io";
+    this.fromEmail = process.env.SENDGRID_FROM_EMAIL || "noreply@eliteamericanfinancials.com";
     
     // Check if SendGrid API key is properly configured
     if (!this.apiKey) {

@@ -63,20 +63,40 @@ class SubAccountService {
 
     try {
       // Fetch all sub-accounts from Twilio
-      const twilioSubAccounts = await client.api.accounts.list();
+      // This returns the master account AND all sub-accounts
+      const twilioAccounts = await client.api.accounts.list();
       
-      console.log(`Found ${twilioSubAccounts.length} accounts in Twilio`);
+      console.log(`Found ${twilioAccounts.length} total accounts in Twilio`);
+      
+      // Log each account for debugging
+      console.log('=== ALL TWILIO ACCOUNTS ===');
+      for (const acc of twilioAccounts) {
+        const isSubAccount = acc.ownerAccountSid !== acc.sid;
+        console.log(`  - SID: ${acc.sid}`);
+        console.log(`    Name: ${acc.friendlyName}`);
+        console.log(`    Status: ${acc.status}`);
+        console.log(`    Owner: ${acc.ownerAccountSid}`);
+        console.log(`    Is Sub-Account: ${isSubAccount}`);
+        console.log('');
+      }
+      console.log('=== END TWILIO ACCOUNTS ===');
+
+      // Filter to only sub-accounts (where ownerAccountSid matches master OR sid !== master)
+      const twilioSubAccounts = twilioAccounts.filter(acc => {
+        // Skip the master account itself
+        if (acc.sid === masterAccount.accountSid) {
+          return false;
+        }
+        // Skip closed accounts
+        if (acc.status === 'closed') {
+          return false;
+        }
+        return true;
+      });
+
+      console.log(`Found ${twilioSubAccounts.length} sub-accounts to import`);
 
       for (const twilioAccount of twilioSubAccounts) {
-        // Skip the master account itself
-        if (twilioAccount.sid === masterAccount.accountSid) {
-          continue;
-        }
-
-        // Skip closed accounts
-        if (twilioAccount.status === 'closed') {
-          continue;
-        }
 
         // Check if already exists in DB
         const existing = await db.select()
@@ -165,7 +185,7 @@ class SubAccountService {
           const newUsers = await db.insert(users).values({
             username: 'admin',
             password: 'admin123', // In production, this should be hashed
-            email: 'admin@syncgrid.io',
+            email: 'admin@elitefinancial.io',
             firstName: 'Admin',
             lastName: 'User',
             role: 'admin',
