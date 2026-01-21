@@ -26,12 +26,31 @@ import {
   insertBillingSchema,
   insertApiKeySchema,
   insertWebhookSchema,
-  generateApiKey
+  generateApiKey,
+  brandRegistrations,
+  messagingCampaigns,
+  smsCampaigns,
+  contactLists,
 } from "@shared/schema";
+import { db } from "./db";
+import { eq, and } from "drizzle-orm";
 import { ZodError } from "zod";
 import { fromZodError } from "zod-validation-error";
 
+// Webhook routers
+import twilioWebhook from "./webhooks/twilio.webhook";
+import commioWebhook from "./webhooks/commio.webhook";
+import bandwidthWebhook from "./webhooks/bandwidth.webhook";
+
+// Redis caching
+import { redisService, CacheKeys, CACHE_TTL, STALE_TTL } from "./services/redisService";
+
 export async function registerRoutes(app: Express): Promise<Server> {
+  // Register webhook routes (these need to be registered early for provider callbacks)
+  app.use("/api/webhooks/twilio", twilioWebhook);
+  app.use("/api/webhooks/commio", commioWebhook);
+  app.use("/api/webhooks/bandwidth", bandwidthWebhook);
+  console.log("[Routes] Webhook endpoints registered");
   // Error handling middleware for Zod validation errors
   function handleZodError(error: unknown, res: Response) {
     if (error instanceof ZodError) {
@@ -466,7 +485,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
   
-  app.get("/api/campaigns/:userId", async (req, res) => {
+  app.get("/api/user-campaigns/:userId", async (req, res) => {
     try {
       const userId = parseInt(req.params.userId);
       if (isNaN(userId)) {
@@ -694,8 +713,23 @@ export async function registerRoutes(app: Express): Promise<Server> {
         return res.status(200).json(mockNumbers);
       }
       
-      // In production, we would query the database and phone provider API
+      // In production, we would query the database and phone provider API (with Redis caching)
+      const cacheKey = `textflow:phone-numbers:${userId}`;
+      
+      if (redisService.isAvailable()) {
+        const cached = await redisService.get<any>(cacheKey);
+        if (cached) {
+          console.log(`[Routes] Phone numbers cache HIT for user ${userId}`);
+          return res.status(200).json(cached);
+        }
+      }
+      
       const phoneNumbers = await communicationService.getPhoneNumbers(userId);
+      
+      if (redisService.isAvailable()) {
+        await redisService.set(cacheKey, phoneNumbers, CACHE_TTL.PHONE_NUMBERS);
+      }
+      
       return res.status(200).json(phoneNumbers);
     } catch (error) {
       console.error(error);
@@ -2129,11 +2163,34 @@ export async function registerRoutes(app: Express): Promise<Server> {
   // Initialize providers on startup
   accountService.initializeProviders().catch(console.error);
 
-  // Get all accounts for the current user
+  // Get all accounts for the current user (with Redis caching)
   app.get("/api/accounts", async (req, res) => {
+    // Prevent browser caching so disconnected accounts disappear immediately
+    res.set('Cache-Control', 'no-store, no-cache, must-revalidate');
+    res.set('Pragma', 'no-cache');
+    
     try {
       // Get user ID from session or default to 1 for demo
       const userId = (req as any).user?.id || 1;
+      const cacheKey = `textflow:accounts:${userId}`;
+      
+      // Check Redis cache first
+      if (redisService.isAvailable()) {
+        const { data: cached, isStale } = await redisService.getWithStale<any>(cacheKey);
+        if (cached) {
+          console.log(`[Routes] Accounts cache ${isStale ? 'STALE' : 'HIT'} for user ${userId}`);
+          res.json(cached);
+          // Background refresh if stale
+          if (isStale) {
+            accountService.getAccountsForUser(userId).then(async (dbResult) => {
+              if (dbResult.accounts.length > 0) {
+                await redisService.set(cacheKey, { accounts: dbResult.accounts, overview: dbResult.overview }, CACHE_TTL.ACCOUNT_INFO, STALE_TTL.ANALYTICS);
+              }
+            }).catch(console.error);
+          }
+          return;
+        }
+      }
       
       // Try to get accounts from database first
       const dbResult = await accountService.getAccountsForUser(userId);
@@ -2176,11 +2233,21 @@ export async function registerRoutes(app: Express): Promise<Server> {
             accounts,
           };
 
-          return res.json({ accounts, overview });
+          const result = { accounts, overview };
+          // Cache the Twilio fallback result
+          if (redisService.isAvailable()) {
+            await redisService.set(cacheKey, result, CACHE_TTL.ACCOUNT_INFO, STALE_TTL.ANALYTICS);
+          }
+          return res.json(result);
         }
       }
 
-      res.json({ accounts: dbResult.accounts, overview: dbResult.overview });
+      const result = { accounts: dbResult.accounts, overview: dbResult.overview };
+      // Cache the result
+      if (redisService.isAvailable()) {
+        await redisService.set(cacheKey, result, CACHE_TTL.ACCOUNT_INFO, STALE_TTL.ANALYTICS);
+      }
+      res.json(result);
     } catch (error) {
       console.error("Error fetching accounts:", error);
       res.status(500).json({ error: "Failed to fetch accounts" });
@@ -2286,6 +2353,15 @@ export async function registerRoutes(app: Express): Promise<Server> {
       }
 
       await accountService.deleteAccount(accountId);
+      
+      // Clear accounts cache so the deleted account doesn't show up
+      const userId = (req as any).user?.id || 1;
+      const cacheKey = `textflow:accounts:${userId}`;
+      if (redisService.isAvailable()) {
+        await redisService.delete(cacheKey);
+        console.log(`[Routes] Cleared accounts cache for user ${userId} after delete`);
+      }
+      
       res.json({ success: true });
     } catch (error) {
       console.error("Error deleting account:", error);
@@ -2349,10 +2425,33 @@ export async function registerRoutes(app: Express): Promise<Server> {
         return res.status(400).json({ error: "Invalid account ID" });
       }
 
-      // Get provider for account and fetch phone numbers
+      // Get account to check for imported phone numbers
+      const account = await accountService.getAccountById(accountId);
+      if (!account) {
+        return res.status(404).json({ error: "Account not found" });
+      }
+
+      // Check for manually imported phone numbers first (for Commio accounts where API doesn't support listing)
+      const settings = (account.settings || {}) as Record<string, any>;
+      if (settings.importedPhoneNumbers && settings.importedPhoneNumbers.length > 0) {
+        return res.json({
+          phoneNumbers: settings.importedPhoneNumbers.map((pn: any) => ({
+            id: pn.phoneNumber,
+            phoneNumber: pn.phoneNumber,
+            friendlyName: pn.friendlyName || pn.phoneNumber,
+            capabilities: pn.capabilities || { sms: true, voice: true, mms: false },
+            status: pn.status || 'active',
+            dateCreated: pn.dateCreated || new Date().toISOString(),
+          })),
+          total: settings.importedPhoneNumbers.length,
+          source: 'imported',
+        });
+      }
+
+      // Get provider for account and fetch phone numbers from API
       const provider = await accountService.getProviderForAccount(accountId);
       if (!provider) {
-        return res.status(404).json({ error: "Account not found or not configured" });
+        return res.status(404).json({ error: "Account not configured" });
       }
 
       const phoneNumbers = await provider.getPhoneNumbers();
@@ -2366,10 +2465,68 @@ export async function registerRoutes(app: Express): Promise<Server> {
           dateCreated: pn.dateCreated,
         })),
         total: phoneNumbers.length,
+        source: 'api',
       });
     } catch (error) {
       console.error("Error fetching phone numbers:", error);
       res.status(500).json({ error: "Failed to fetch phone numbers" });
+    }
+  });
+
+  /**
+   * Import phone numbers manually for accounts where API doesn't support listing
+   * This is useful for Commio/ThinQ accounts where the API token may not have DID listing permissions
+   */
+  app.post("/api/accounts/:id/phone-numbers/import", async (req, res) => {
+    try {
+      const accountId = parseInt(req.params.id.replace('acc_', ''));
+      if (isNaN(accountId)) {
+        return res.status(400).json({ error: "Invalid account ID" });
+      }
+
+      const { phoneNumbers } = req.body;
+      if (!phoneNumbers || !Array.isArray(phoneNumbers)) {
+        return res.status(400).json({ error: "phoneNumbers array is required" });
+      }
+
+      // Import phone numbers to database
+      const imported = [];
+      for (const pn of phoneNumbers) {
+        const phoneNumber = typeof pn === 'string' ? pn : pn.phoneNumber || pn.did || pn.number;
+        if (!phoneNumber) continue;
+        
+        // Format phone number
+        const cleaned = phoneNumber.replace(/\D/g, '');
+        const formatted = cleaned.length === 10 ? `+1${cleaned}` : 
+                         cleaned.length === 11 && cleaned.startsWith('1') ? `+${cleaned}` :
+                         phoneNumber.startsWith('+') ? phoneNumber : `+${cleaned}`;
+        
+        imported.push({
+          phoneNumber: formatted,
+          friendlyName: pn.friendlyName || pn.name || formatted,
+          capabilities: { sms: true, voice: true, mms: false },
+          status: 'active',
+        });
+      }
+
+      // Store in account settings for now (could be moved to phone_numbers table)
+      const account = await accountService.getAccountById(accountId);
+      if (!account) {
+        return res.status(404).json({ error: "Account not found" });
+      }
+
+      const settings = (account.settings || {}) as Record<string, any>;
+      settings.importedPhoneNumbers = imported;
+      await accountService.updateAccount(accountId, { settings });
+
+      res.json({
+        success: true,
+        imported: imported.length,
+        phoneNumbers: imported,
+      });
+    } catch (error) {
+      console.error("Error importing phone numbers:", error);
+      res.status(500).json({ error: "Failed to import phone numbers" });
     }
   });
 
@@ -2900,10 +3057,34 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
-  // Twilio Analytics endpoint - Real-time Twilio data
+  // Twilio Analytics endpoint - Real-time Twilio data (with Redis caching)
   app.get("/api/twilio/analytics", async (req, res) => {
     try {
+      const cacheKey = 'textflow:twilio:analytics';
+      
+      // Check Redis cache first
+      if (redisService.isAvailable()) {
+        const { data: cached, isStale } = await redisService.getWithStale<any>(cacheKey);
+        if (cached) {
+          console.log(`[Routes] Twilio analytics cache ${isStale ? 'STALE' : 'HIT'}`);
+          res.json(cached);
+          // Refresh in background if stale
+          if (isStale) {
+            twilioAnalyticsService.getAnalytics().then(fresh => {
+              redisService.set(cacheKey, fresh, CACHE_TTL.ANALYTICS, STALE_TTL.ANALYTICS);
+            }).catch(console.error);
+          }
+          return;
+        }
+      }
+      
       const analytics = await twilioAnalyticsService.getAnalytics();
+      
+      // Cache the result
+      if (redisService.isAvailable()) {
+        await redisService.set(cacheKey, analytics, CACHE_TTL.ANALYTICS, STALE_TTL.ANALYTICS);
+      }
+      
       res.json(analytics);
     } catch (error) {
       console.error("Error fetching Twilio analytics:", error);
@@ -2911,22 +3092,81 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
-  // Twilio Summary endpoint - Text summary for display
+  // Twilio Summary endpoint - Text summary for display (with Redis caching)
   app.get("/api/twilio/summary", async (req, res) => {
     try {
+      const cacheKey = 'textflow:twilio:summary';
+      
+      if (redisService.isAvailable()) {
+        const cached = await redisService.get<any>(cacheKey);
+        if (cached) {
+          return res.json(cached);
+        }
+      }
+      
       const summary = await twilioAnalyticsService.generateTwilioSummary();
-      res.json({ summary });
+      const result = { summary };
+      
+      if (redisService.isAvailable()) {
+        await redisService.set(cacheKey, result, CACHE_TTL.ANALYTICS, STALE_TTL.ANALYTICS);
+      }
+      
+      res.json(result);
     } catch (error) {
       console.error("Error fetching Twilio summary:", error);
       res.status(500).json({ error: "Failed to fetch Twilio summary" });
     }
   });
 
-  // Twilio Metrics endpoint - Quick metrics for dashboard
+  // Twilio Metrics endpoint - Quick metrics for dashboard (with Redis caching)
   app.get("/api/twilio/metrics", async (req, res) => {
     try {
+      const cacheKey = 'textflow:twilio:metrics';
+      
+      // Check Redis cache first
+      if (redisService.isAvailable()) {
+        const { data: cached, isStale } = await redisService.getWithStale<any>(cacheKey);
+        if (cached) {
+          console.log(`[Routes] Twilio metrics cache ${isStale ? 'STALE' : 'HIT'}`);
+          res.json(cached);
+          if (isStale) {
+            // Refresh in background
+            twilioAnalyticsService.getAnalytics().then(analytics => {
+              const metrics = {
+                messages: {
+                  sentToday: analytics.metrics.totalMessagesSentToday,
+                  receivedToday: analytics.metrics.totalMessagesReceivedToday,
+                  sentYesterday: analytics.metrics.totalMessagesSentYesterday,
+                  sentThisWeek: analytics.metrics.totalMessagesSentThisWeek,
+                  sentThisMonth: analytics.metrics.totalMessagesSentThisMonth,
+                  deliveryRate: analytics.metrics.deliveryRateToday,
+                  failed: analytics.metrics.failedToday
+                },
+                calls: {
+                  today: analytics.metrics.totalCallsToday,
+                  thisWeek: analytics.metrics.totalCallsThisWeek,
+                  durationToday: analytics.metrics.totalCallDurationToday
+                },
+                spend: {
+                  today: analytics.metrics.totalSpendToday,
+                  thisMonth: analytics.metrics.totalSpendThisMonth,
+                  avgPerMessage: analytics.metrics.averageMessageCost
+                },
+                account: {
+                  status: analytics.account.status,
+                  phoneNumbers: analytics.phoneNumbers.length
+                },
+                generatedAt: analytics.generatedAt
+              };
+              redisService.set(cacheKey, metrics, CACHE_TTL.METRICS, STALE_TTL.METRICS);
+            }).catch(console.error);
+          }
+          return;
+        }
+      }
+      
       const analytics = await twilioAnalyticsService.getAnalytics();
-      res.json({
+      const metrics = {
         messages: {
           sentToday: analytics.metrics.totalMessagesSentToday,
           receivedToday: analytics.metrics.totalMessagesReceivedToday,
@@ -2951,7 +3191,14 @@ export async function registerRoutes(app: Express): Promise<Server> {
           phoneNumbers: analytics.phoneNumbers.length
         },
         generatedAt: analytics.generatedAt
-      });
+      };
+      
+      // Cache the result
+      if (redisService.isAvailable()) {
+        await redisService.set(cacheKey, metrics, CACHE_TTL.METRICS, STALE_TTL.METRICS);
+      }
+      
+      res.json(metrics);
     } catch (error) {
       console.error("Error fetching Twilio metrics:", error);
       res.status(500).json({ error: "Failed to fetch Twilio metrics" });
@@ -2975,11 +3222,40 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const accountId = req.query.accountId as string | undefined;
       const isOverviewMode = req.query.overview === 'true' || !accountId;
 
-      const result = await dataService.getAnalytics({
-        userId,
-        accountId,
-        isOverviewMode,
-      });
+      // Direct Redis cache check at route level for maximum speed
+      const cacheKey = `textflow:dashboard:${userId}:${isOverviewMode ? 'overview' : accountId}`;
+      
+      if (redisService.isAvailable()) {
+        const { data: cached, isStale } = await redisService.getWithStale<any>(cacheKey);
+        if (cached) {
+          console.log(`[Routes] Dashboard cache ${isStale ? 'STALE' : 'HIT'} - returning instantly`);
+          res.json(cached);
+          
+          // Background refresh if stale
+          if (isStale) {
+            const context = { userId, accountId, isOverviewMode };
+            dataService.getAnalytics(context).then(fresh => {
+              // Cache only lightweight version (metrics + limited messages)
+              const lightweight = createLightweightCache(fresh);
+              redisService.set(cacheKey, lightweight, CACHE_TTL.ANALYTICS, STALE_TTL.ANALYTICS);
+            }).catch(console.error);
+          }
+          return;
+        }
+      }
+
+      const context = { userId, accountId, isOverviewMode };
+      
+      // Fetch from external APIs
+      console.log('[Routes] Dashboard cache MISS - fetching from APIs...');
+      const result = await dataService.getAnalytics(context);
+
+      // Cache lightweight version (metrics + limited recent messages/calls)
+      if (redisService.isAvailable()) {
+        const lightweight = createLightweightCache(result);
+        await redisService.set(cacheKey, lightweight, CACHE_TTL.ANALYTICS, STALE_TTL.ANALYTICS);
+        console.log('[Routes] Dashboard cached for instant future loads');
+      }
 
       res.json(result);
     } catch (error) {
@@ -2987,6 +3263,62 @@ export async function registerRoutes(app: Express): Promise<Server> {
       res.status(500).json({ error: "Failed to fetch analytics" });
     }
   });
+  
+  // Helper to create lightweight cache (metrics + limited messages for dashboard)
+  function createLightweightCache(data: any) {
+    return {
+      context: data.context,
+      accounts: data.accounts?.map((acc: any) => ({
+        accountId: acc.accountId,
+        accountName: acc.accountName,
+        provider: acc.provider,
+        analytics: {
+          account: acc.analytics?.account,
+          metrics: acc.analytics?.metrics,
+          phoneNumbers: acc.analytics?.phoneNumbers,
+          // Include all periods for charts - limit to 500 for performance
+          messages: {
+            today: acc.analytics?.messages?.today?.slice(0, 100) || [],
+            yesterday: acc.analytics?.messages?.yesterday?.slice(0, 100) || [],
+            thisWeek: acc.analytics?.messages?.thisWeek?.slice(0, 200) || [],
+            lastWeek: acc.analytics?.messages?.lastWeek?.slice(0, 200) || [],
+            thisMonth: acc.analytics?.messages?.thisMonth?.slice(0, 500) || [],
+            lastMonth: acc.analytics?.messages?.lastMonth?.slice(0, 500) || [],
+            all: acc.analytics?.messages?.all?.slice(0, 1000) || [],
+          },
+          calls: {
+            today: acc.analytics?.calls?.today?.slice(0, 100) || [],
+            yesterday: acc.analytics?.calls?.yesterday?.slice(0, 100) || [],
+            thisWeek: acc.analytics?.calls?.thisWeek?.slice(0, 200) || [],
+            lastWeek: acc.analytics?.calls?.lastWeek?.slice(0, 200) || [],
+            thisMonth: acc.analytics?.calls?.thisMonth?.slice(0, 500) || [],
+            lastMonth: acc.analytics?.calls?.lastMonth?.slice(0, 500) || [],
+            all: acc.analytics?.calls?.all?.slice(0, 1000) || [],
+          },
+        },
+      })) || [],
+      aggregatedMetrics: data.aggregatedMetrics,
+      // Include all periods for top-level data too
+      messages: {
+        today: data.messages?.today?.slice(0, 100) || [],
+        yesterday: data.messages?.yesterday?.slice(0, 100) || [],
+        thisWeek: data.messages?.thisWeek?.slice(0, 200) || [],
+        lastWeek: data.messages?.lastWeek?.slice(0, 200) || [],
+        thisMonth: data.messages?.thisMonth?.slice(0, 500) || [],
+        lastMonth: data.messages?.lastMonth?.slice(0, 500) || [],
+        all: data.messages?.all?.slice(0, 1000) || [],
+      },
+      calls: {
+        today: data.calls?.today?.slice(0, 100) || [],
+        yesterday: data.calls?.yesterday?.slice(0, 100) || [],
+        thisWeek: data.calls?.thisWeek?.slice(0, 200) || [],
+        lastWeek: data.calls?.lastWeek?.slice(0, 200) || [],
+        thisMonth: data.calls?.thisMonth?.slice(0, 500) || [],
+        lastMonth: data.calls?.lastMonth?.slice(0, 500) || [],
+        all: data.calls?.all?.slice(0, 1000) || [],
+      },
+    };
+  }
 
   /**
    * Clear analytics cache - forces fresh data fetch on next request
@@ -2994,11 +3326,74 @@ export async function registerRoutes(app: Express): Promise<Server> {
   app.post("/api/data/cache/clear", async (req, res) => {
     try {
       const { cacheService } = await import('./services/cacheService');
+      const { redisService } = await import('./services/redisService');
+      
+      // Clear in-memory cache
       cacheService.clear();
+      
+      // Clear Redis cache if available
+      if (redisService.isAvailable()) {
+        const accountId = req.body.accountId;
+        if (accountId) {
+          await redisService.invalidateAccount(accountId);
+        } else {
+          await redisService.deletePattern('textflow:*');
+        }
+      }
+      
       res.json({ success: true, message: 'Cache cleared successfully' });
     } catch (error) {
       console.error("Error clearing cache:", error);
       res.status(500).json({ error: "Failed to clear cache" });
+    }
+  });
+
+  /**
+   * Trigger historical data sync for an account
+   * This fetches 6 months of data from the provider and stores it locally
+   */
+  app.post("/api/data/sync", async (req, res) => {
+    try {
+      const { accountId, monthsBack = 6 } = req.body;
+      
+      if (!accountId) {
+        return res.status(400).json({ error: "accountId is required" });
+      }
+
+      const { queueService } = await import('./services/queueService');
+      const { accountService } = await import('./services/accountService');
+      
+      // Get account details
+      const account = await accountService.getAccountById(parseInt(accountId));
+      if (!account) {
+        return res.status(404).json({ error: "Account not found" });
+      }
+
+      // Queue the sync job
+      const job = await queueService.addSyncHistoricalJob({
+        accountId: parseInt(accountId),
+        provider: 'twilio' as 'twilio' | 'commio' | 'bandwidth', // Default to twilio, can be extended
+        accountSid: account.accountSid || '',
+        authToken: account.authToken || '',
+        monthsBack,
+      });
+
+      if (job) {
+        res.json({ 
+          success: true, 
+          message: 'Sync job queued',
+          jobId: job.id,
+        });
+      } else {
+        // If queue not available, run sync directly (slower but works without Redis)
+        res.json({ 
+          success: true, 
+          message: 'Sync will run on next data fetch (queue not available)',
+        });
+      }
+    } catch (error) {
+      console.error("Error triggering sync:", error);
+      res.status(500).json({ error: "Failed to trigger sync" });
     }
   });
 
@@ -3012,6 +3407,28 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const period = (req.query.period as string) || 'thisMonth';
       const isOverviewMode = req.query.overview === 'true' || !accountId;
 
+      // Check cache first for instant response
+      const cacheKey = `textflow:messages:${userId}:${isOverviewMode ? 'overview' : accountId}:${period}`;
+      
+      if (redisService.isAvailable()) {
+        const { data: cached, isStale } = await redisService.getWithStale<any>(cacheKey);
+        if (cached) {
+          console.log(`[Routes] Messages cache ${isStale ? 'STALE' : 'HIT'}`);
+          res.json(cached);
+          
+          // Background refresh if stale
+          if (isStale) {
+            dataService.getAnalytics({ userId, accountId, isOverviewMode }).then(result => {
+              const messages = period === 'today' ? result.messages.today
+                : period === 'thisWeek' ? result.messages.thisWeek
+                : result.messages.thisMonth;
+              redisService.set(cacheKey, { messages, total: messages.length, period, context: result.context }, 300, 60);
+            }).catch(console.error);
+          }
+          return;
+        }
+      }
+
       const result = await dataService.getAnalytics({
         userId,
         accountId,
@@ -3024,12 +3441,19 @@ export async function registerRoutes(app: Express): Promise<Server> {
         ? result.messages.thisWeek
         : result.messages.thisMonth;
 
-      res.json({
+      const response = {
         messages,
         total: messages.length,
         period,
         context: result.context,
-      });
+      };
+
+      // Cache the result
+      if (redisService.isAvailable()) {
+        await redisService.set(cacheKey, response, 300, 60);
+      }
+
+      res.json(response);
     } catch (error) {
       console.error("Error fetching messages:", error);
       res.status(500).json({ error: "Failed to fetch messages" });
@@ -3165,6 +3589,341 @@ export async function registerRoutes(app: Express): Promise<Server> {
     } catch (error) {
       console.error("Error making call:", error);
       res.status(500).json({ error: "Failed to make call" });
+    }
+  });
+
+  // ============================================
+  // BRAND & MESSAGING CAMPAIGNS API
+  // ============================================
+
+  const { campaignService } = await import('./services/campaignService');
+
+  /**
+   * Get all contact lists
+   */
+  app.get("/api/campaigns/contact-lists", async (req, res) => {
+    try {
+      const accountId = req.query.accountId ? parseInt(req.query.accountId as string) : undefined;
+      const userId = (req as any).user?.id || 1;
+      
+      let query = db.select().from(contactLists).where(eq(contactLists.userId, userId));
+      if (accountId) {
+        query = db.select().from(contactLists).where(
+          and(eq(contactLists.userId, userId), eq(contactLists.accountId, accountId))
+        ) as any;
+      }
+      
+      const lists = await query;
+      res.json({ lists });
+    } catch (error: any) {
+      console.error("Error fetching contact lists:", error);
+      res.status(500).json({ error: error.message || "Failed to fetch contact lists" });
+    }
+  });
+
+  /**
+   * Create a contact list
+   */
+  app.post("/api/campaigns/contact-lists", async (req, res) => {
+    try {
+      const userId = (req as any).user?.id || 1;
+      const { accountId, name, description } = req.body;
+
+      if (!name) {
+        return res.status(400).json({ error: "Name is required" });
+      }
+
+      const result = await campaignService.createContactList(userId, accountId, name, description);
+      res.json({ success: true, ...result });
+    } catch (error: any) {
+      console.error("Error creating contact list:", error);
+      res.status(500).json({ error: error.message || "Failed to create contact list" });
+    }
+  });
+
+  /**
+   * Import contacts from CSV
+   */
+  app.post("/api/campaigns/contacts/import", async (req, res) => {
+    try {
+      const userId = (req as any).user?.id || 1;
+      const { accountId, contactListId, contacts } = req.body;
+
+      if (!contacts || !Array.isArray(contacts)) {
+        return res.status(400).json({ error: "Contacts array is required" });
+      }
+
+      const result = await campaignService.importContacts(userId, accountId, contactListId, contacts);
+      res.json(result);
+    } catch (error: any) {
+      console.error("Error importing contacts:", error);
+      res.status(500).json({ error: error.message || "Failed to import contacts" });
+    }
+  });
+
+  /**
+   * Create brand registration (draft)
+   */
+  app.post("/api/campaigns/brands", async (req, res) => {
+    try {
+      const userId = (req as any).user?.id || 1;
+      const brandData = { ...req.body, userId };
+
+      if (!brandData.accountId || !brandData.companyName) {
+        return res.status(400).json({ error: "accountId and companyName are required" });
+      }
+
+      const brand = await campaignService.createBrandRegistration(brandData);
+      res.json({ success: true, brand });
+    } catch (error: any) {
+      console.error("Error creating brand registration:", error);
+      res.status(500).json({ error: error.message || "Failed to create brand registration" });
+    }
+  });
+
+  /**
+   * Submit brand registration to provider
+   */
+  app.post("/api/campaigns/brands/:brandId/submit", async (req, res) => {
+    try {
+      const brandId = parseInt(req.params.brandId);
+      const result = await campaignService.submitBrandRegistration(brandId);
+      
+      if (result.success) {
+        res.json(result);
+      } else {
+        res.status(400).json(result);
+      }
+    } catch (error: any) {
+      console.error("Error submitting brand registration:", error);
+      res.status(500).json({ error: error.message || "Failed to submit brand registration" });
+    }
+  });
+
+  /**
+   * Get all brand registrations for account
+   */
+  app.get("/api/campaigns/brands", async (req, res) => {
+    try {
+      const accountId = req.query.accountId ? parseInt(req.query.accountId as string) : undefined;
+      
+      let query = db.select().from(brandRegistrations);
+      if (accountId) {
+        query = query.where(eq(brandRegistrations.accountId, accountId)) as any;
+      }
+      
+      const brands = await query;
+      res.json({ brands });
+    } catch (error: any) {
+      console.error("Error fetching brand registrations:", error);
+      res.status(500).json({ error: error.message || "Failed to fetch brand registrations" });
+    }
+  });
+
+  /**
+   * Create messaging campaign registration (draft)
+   */
+  app.post("/api/campaigns/messaging-campaigns", async (req, res) => {
+    try {
+      const userId = (req as any).user?.id || 1;
+      const campaignData = { ...req.body, userId };
+
+      if (!campaignData.brandRegistrationId || !campaignData.campaignName) {
+        return res.status(400).json({ error: "brandRegistrationId and campaignName are required" });
+      }
+
+      const campaign = await campaignService.createMessagingCampaign(campaignData);
+      res.json({ success: true, campaign });
+    } catch (error: any) {
+      console.error("Error creating messaging campaign:", error);
+      res.status(500).json({ error: error.message || "Failed to create messaging campaign" });
+    }
+  });
+
+  /**
+   * Submit messaging campaign to provider
+   */
+  app.post("/api/campaigns/messaging-campaigns/:campaignId/submit", async (req, res) => {
+    try {
+      const campaignId = parseInt(req.params.campaignId);
+      const result = await campaignService.submitMessagingCampaign(campaignId);
+      
+      if (result.success) {
+        res.json(result);
+      } else {
+        res.status(400).json(result);
+      }
+    } catch (error: any) {
+      console.error("Error submitting messaging campaign:", error);
+      res.status(500).json({ error: error.message || "Failed to submit messaging campaign" });
+    }
+  });
+
+  /**
+   * Get all messaging campaigns
+   */
+  app.get("/api/campaigns/messaging-campaigns", async (req, res) => {
+    try {
+      const accountId = req.query.accountId ? parseInt(req.query.accountId as string) : undefined;
+      
+      let query = db.select().from(messagingCampaigns);
+      if (accountId) {
+        query = query.where(eq(messagingCampaigns.accountId, accountId)) as any;
+      }
+      
+      const campaigns = await query;
+      res.json({ campaigns });
+    } catch (error: any) {
+      console.error("Error fetching messaging campaigns:", error);
+      res.status(500).json({ error: error.message || "Failed to fetch messaging campaigns" });
+    }
+  });
+
+  /**
+   * Create SMS campaign
+   */
+  app.post("/api/campaigns/sms-campaigns", async (req, res) => {
+    try {
+      const userId = (req as any).user?.id || 1;
+      const campaignData = { ...req.body, userId };
+
+      if (!campaignData.name || !campaignData.messageTemplate || !campaignData.fromNumber) {
+        return res.status(400).json({ 
+          error: "name, messageTemplate, and fromNumber are required" 
+        });
+      }
+
+      const campaign = await campaignService.createSmsCampaign(campaignData);
+      res.json({ success: true, campaign });
+    } catch (error: any) {
+      console.error("Error creating SMS campaign:", error);
+      res.status(500).json({ error: error.message || "Failed to create SMS campaign" });
+    }
+  });
+
+  /**
+   * Add recipients to SMS campaign from contact list
+   */
+  app.post("/api/campaigns/sms-campaigns/:campaignId/recipients", async (req, res) => {
+    try {
+      const campaignId = parseInt(req.params.campaignId);
+      const { contactListId } = req.body;
+
+      if (!contactListId) {
+        return res.status(400).json({ error: "contactListId is required" });
+      }
+
+      const result = await campaignService.addRecipientsFromContactList(campaignId, contactListId);
+      res.json({ success: true, ...result });
+    } catch (error: any) {
+      console.error("Error adding recipients:", error);
+      res.status(500).json({ error: error.message || "Failed to add recipients" });
+    }
+  });
+
+  /**
+   * Start SMS campaign
+   */
+  app.post("/api/campaigns/sms-campaigns/:campaignId/start", async (req, res) => {
+    try {
+      const campaignId = parseInt(req.params.campaignId);
+      const result = await campaignService.startSmsCampaign(campaignId);
+      
+      if (result.success) {
+        res.json(result);
+      } else {
+        res.status(400).json(result);
+      }
+    } catch (error: any) {
+      console.error("Error starting SMS campaign:", error);
+      res.status(500).json({ error: error.message || "Failed to start SMS campaign" });
+    }
+  });
+
+  /**
+   * Pause SMS campaign
+   */
+  app.post("/api/campaigns/sms-campaigns/:campaignId/pause", async (req, res) => {
+    try {
+      const campaignId = parseInt(req.params.campaignId);
+      const result = await campaignService.pauseSmsCampaign(campaignId);
+      res.json(result);
+    } catch (error: any) {
+      console.error("Error pausing SMS campaign:", error);
+      res.status(500).json({ error: error.message || "Failed to pause SMS campaign" });
+    }
+  });
+
+  /**
+   * Get SMS campaign statistics
+   */
+  app.get("/api/campaigns/sms-campaigns/:campaignId/stats", async (req, res) => {
+    try {
+      const campaignId = parseInt(req.params.campaignId);
+      const stats = await campaignService.getCampaignStats(campaignId);
+      res.json(stats);
+    } catch (error: any) {
+      console.error("Error fetching campaign stats:", error);
+      res.status(500).json({ error: error.message || "Failed to fetch campaign stats" });
+    }
+  });
+
+  /**
+   * Get all SMS campaigns
+   */
+  app.get("/api/campaigns/sms-campaigns", async (req, res) => {
+    try {
+      const accountId = req.query.accountId ? parseInt(req.query.accountId as string) : undefined;
+      
+      let query = db.select().from(smsCampaigns);
+      if (accountId) {
+        query = query.where(eq(smsCampaigns.accountId, accountId)) as any;
+      }
+      
+      const campaigns = await query;
+      res.json({ campaigns });
+    } catch (error: any) {
+      console.error("Error fetching SMS campaigns:", error);
+      res.status(500).json({ error: error.message || "Failed to fetch SMS campaigns" });
+    }
+  });
+
+  /**
+   * Add to opt-out list
+   */
+  app.post("/api/campaigns/opt-out", async (req, res) => {
+    try {
+      const { accountId, phoneNumber, reason, source } = req.body;
+
+      if (!accountId || !phoneNumber) {
+        return res.status(400).json({ error: "accountId and phoneNumber are required" });
+      }
+
+      await campaignService.addOptOut(accountId, phoneNumber, reason, source);
+      res.json({ success: true });
+    } catch (error: any) {
+      console.error("Error adding to opt-out list:", error);
+      res.status(500).json({ error: error.message || "Failed to add to opt-out list" });
+    }
+  });
+
+  /**
+   * Check if phone number is opted out
+   */
+  app.get("/api/campaigns/opt-out/check", async (req, res) => {
+    try {
+      const accountId = parseInt(req.query.accountId as string);
+      const phoneNumber = req.query.phoneNumber as string;
+
+      if (!accountId || !phoneNumber) {
+        return res.status(400).json({ error: "accountId and phoneNumber are required" });
+      }
+
+      const isOptedOut = await campaignService.isOptedOut(accountId, phoneNumber);
+      res.json({ optedOut: isOptedOut });
+    } catch (error: any) {
+      console.error("Error checking opt-out status:", error);
+      res.status(500).json({ error: error.message || "Failed to check opt-out status" });
     }
   });
 

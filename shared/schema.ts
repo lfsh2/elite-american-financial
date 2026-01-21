@@ -372,3 +372,298 @@ export type InsertAccountPhoneNumber = z.infer<typeof insertAccountPhoneNumberSc
 
 export type AccountUser = typeof accountUsers.$inferSelect;
 export type InsertAccountUser = z.infer<typeof insertAccountUserSchema>;
+
+// ============================================
+// BRAND & MESSAGING CAMPAIGNS (A2P 10DLC)
+// ============================================
+
+// Brand Registrations (Company/Business registration for A2P)
+export const brandRegistrations = pgTable("brand_registrations", {
+  id: serial("id").primaryKey(),
+  accountId: integer("account_id").notNull().references(() => accounts.id),
+  userId: integer("user_id").notNull().references(() => users.id),
+  
+  // Business Information
+  companyName: text("company_name").notNull(),
+  ein: text("ein"), // Employer Identification Number
+  businessType: text("business_type").notNull(), // sole_proprietor, partnership, corporation, llc, nonprofit
+  vertical: text("vertical").notNull(), // real_estate, financial, healthcare, etc.
+  
+  // Contact Information
+  contactFirstName: text("contact_first_name").notNull(),
+  contactLastName: text("contact_last_name").notNull(),
+  contactEmail: text("contact_email").notNull(),
+  contactPhone: text("contact_phone").notNull(),
+  
+  // Address
+  street: text("street"),
+  city: text("city"),
+  state: text("state"),
+  postalCode: text("postal_code"),
+  country: text("country").default("US"),
+  
+  // Website & Social
+  websiteUrl: text("website_url"),
+  
+  // Registration Status
+  status: text("status").notNull().default("draft"), // draft, pending, approved, rejected, suspended
+  externalBrandId: text("external_brand_id"), // TCR Brand ID or Twilio Brand SID
+  brandScore: integer("brand_score"), // Trust score from TCR
+  
+  // Provider tracking
+  providerId: integer("provider_id").references(() => providers.id),
+  providerBrandSid: text("provider_brand_sid"), // Twilio/Commio brand SID
+  
+  // Timestamps
+  submittedAt: timestamp("submitted_at"),
+  approvedAt: timestamp("approved_at"),
+  rejectedAt: timestamp("rejected_at"),
+  rejectionReason: text("rejection_reason"),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+  updatedAt: timestamp("updated_at").notNull().defaultNow(),
+});
+
+export const insertBrandRegistrationSchema = createInsertSchema(brandRegistrations).omit({
+  id: true,
+  externalBrandId: true,
+  brandScore: true,
+  providerBrandSid: true,
+  submittedAt: true,
+  approvedAt: true,
+  rejectedAt: true,
+  rejectionReason: true,
+  createdAt: true,
+  updatedAt: true,
+});
+
+// Messaging Campaigns (Use case registration)
+export const messagingCampaigns = pgTable("messaging_campaigns", {
+  id: serial("id").primaryKey(),
+  brandRegistrationId: integer("brand_registration_id").notNull().references(() => brandRegistrations.id),
+  accountId: integer("account_id").notNull().references(() => accounts.id),
+  userId: integer("user_id").notNull().references(() => users.id),
+  
+  // Campaign Details
+  campaignName: text("campaign_name").notNull(),
+  description: text("description").notNull(),
+  useCase: text("use_case").notNull(), // marketing, notifications, customer_care, delivery_notifications, etc.
+  subUseCase: text("sub_use_case"), // More specific use case
+  
+  // Message Content
+  sampleMessages: text("sample_messages").array(), // Required sample messages
+  messageFlow: text("message_flow"), // Description of how messages are triggered
+  
+  // Opt-in/Opt-out
+  optInType: text("opt_in_type").notNull(), // verbal, web_form, text, paper_form
+  optInMessage: text("opt_in_message"),
+  optOutMessage: text("opt_out_message").default("Reply STOP to unsubscribe"),
+  helpMessage: text("help_message").default("Reply HELP for assistance"),
+  optInKeywords: text("opt_in_keywords").array().default(["START", "YES", "SUBSCRIBE"]),
+  optOutKeywords: text("opt_out_keywords").array().default(["STOP", "UNSUBSCRIBE", "CANCEL"]),
+  helpKeywords: text("help_keywords").array().default(["HELP", "INFO"]),
+  
+  // Content flags
+  hasEmbeddedLinks: boolean("has_embedded_links").default(false),
+  hasEmbeddedPhone: boolean("has_embedded_phone").default(false),
+  hasAgeGatedContent: boolean("has_age_gated_content").default(false),
+  
+  // Registration Status
+  status: text("status").notNull().default("draft"), // draft, pending, approved, rejected, suspended
+  externalCampaignId: text("external_campaign_id"), // TCR Campaign ID
+  
+  // Provider tracking
+  providerCampaignSid: text("provider_campaign_sid"), // Twilio/Commio campaign SID
+  messagingServiceSid: text("messaging_service_sid"), // Twilio Messaging Service SID
+  
+  // Rate limits (from TCR/carrier)
+  dailyLimit: integer("daily_limit"),
+  monthlyLimit: integer("monthly_limit"),
+  throughputLimit: integer("throughput_limit"), // Messages per second
+  
+  // Timestamps
+  submittedAt: timestamp("submitted_at"),
+  approvedAt: timestamp("approved_at"),
+  rejectedAt: timestamp("rejected_at"),
+  rejectionReason: text("rejection_reason"),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+  updatedAt: timestamp("updated_at").notNull().defaultNow(),
+});
+
+export const insertMessagingCampaignSchema = createInsertSchema(messagingCampaigns).omit({
+  id: true,
+  externalCampaignId: true,
+  providerCampaignSid: true,
+  messagingServiceSid: true,
+  dailyLimit: true,
+  monthlyLimit: true,
+  throughputLimit: true,
+  submittedAt: true,
+  approvedAt: true,
+  rejectedAt: true,
+  rejectionReason: true,
+  createdAt: true,
+  updatedAt: true,
+});
+
+// Contact Lists (for organizing contacts)
+export const contactLists = pgTable("contact_lists", {
+  id: serial("id").primaryKey(),
+  userId: integer("user_id").notNull().references(() => users.id),
+  accountId: integer("account_id").references(() => accounts.id),
+  name: text("name").notNull(),
+  description: text("description"),
+  contactCount: integer("contact_count").default(0),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+  updatedAt: timestamp("updated_at").notNull().defaultNow(),
+});
+
+export const insertContactListSchema = createInsertSchema(contactLists).omit({
+  id: true,
+  contactCount: true,
+  createdAt: true,
+  updatedAt: true,
+});
+
+// Contact List Members (many-to-many relationship)
+export const contactListMembers = pgTable("contact_list_members", {
+  id: serial("id").primaryKey(),
+  contactListId: integer("contact_list_id").notNull().references(() => contactLists.id),
+  contactId: integer("contact_id").notNull().references(() => contacts.id),
+  addedAt: timestamp("added_at").notNull().defaultNow(),
+});
+
+export const insertContactListMemberSchema = createInsertSchema(contactListMembers).omit({
+  id: true,
+  addedAt: true,
+});
+
+// SMS Campaigns (actual sending campaigns)
+export const smsCampaigns = pgTable("sms_campaigns", {
+  id: serial("id").primaryKey(),
+  userId: integer("user_id").notNull().references(() => users.id),
+  accountId: integer("account_id").references(() => accounts.id),
+  messagingCampaignId: integer("messaging_campaign_id").references(() => messagingCampaigns.id), // Link to registered campaign
+  
+  // Campaign Info
+  name: text("name").notNull(),
+  description: text("description"),
+  
+  // Message Content
+  messageTemplate: text("message_template").notNull(), // Supports merge tags like {{firstName}}
+  mediaUrls: text("media_urls").array(), // For MMS
+  
+  // Sender
+  fromNumber: text("from_number").notNull(),
+  
+  // Recipients
+  contactListId: integer("contact_list_id").references(() => contactLists.id),
+  recipientCount: integer("recipient_count").default(0),
+  
+  // Scheduling
+  status: text("status").notNull().default("draft"), // draft, scheduled, sending, paused, completed, cancelled
+  scheduledAt: timestamp("scheduled_at"),
+  startedAt: timestamp("started_at"),
+  completedAt: timestamp("completed_at"),
+  
+  // Sending options
+  sendingRate: integer("sending_rate").default(1), // Messages per second
+  timezone: text("timezone").default("UTC"),
+  
+  // Stats
+  sentCount: integer("sent_count").default(0),
+  deliveredCount: integer("delivered_count").default(0),
+  failedCount: integer("failed_count").default(0),
+  optOutCount: integer("opt_out_count").default(0),
+  
+  // Metadata
+  metadata: jsonb("metadata"),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+  updatedAt: timestamp("updated_at").notNull().defaultNow(),
+});
+
+export const insertSmsCampaignSchema = createInsertSchema(smsCampaigns).omit({
+  id: true,
+  recipientCount: true,
+  startedAt: true,
+  completedAt: true,
+  sentCount: true,
+  deliveredCount: true,
+  failedCount: true,
+  optOutCount: true,
+  createdAt: true,
+  updatedAt: true,
+});
+
+// Campaign Recipients (individual recipients for a campaign)
+export const campaignRecipients = pgTable("campaign_recipients", {
+  id: serial("id").primaryKey(),
+  smsCampaignId: integer("sms_campaign_id").notNull().references(() => smsCampaigns.id),
+  contactId: integer("contact_id").references(() => contacts.id),
+  
+  // Recipient info (denormalized for performance)
+  phoneNumber: text("phone_number").notNull(),
+  firstName: text("first_name"),
+  lastName: text("last_name"),
+  customFields: jsonb("custom_fields"), // For merge tags
+  
+  // Status
+  status: text("status").notNull().default("pending"), // pending, sent, delivered, failed, opted_out, skipped
+  messageSid: text("message_sid"), // Provider message ID
+  
+  // Delivery info
+  sentAt: timestamp("sent_at"),
+  deliveredAt: timestamp("delivered_at"),
+  failedAt: timestamp("failed_at"),
+  errorCode: text("error_code"),
+  errorMessage: text("error_message"),
+  
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+});
+
+export const insertCampaignRecipientSchema = createInsertSchema(campaignRecipients).omit({
+  id: true,
+  messageSid: true,
+  sentAt: true,
+  deliveredAt: true,
+  failedAt: true,
+  errorCode: true,
+  errorMessage: true,
+  createdAt: true,
+});
+
+// Opt-out list (TCPA compliance)
+export const optOutList = pgTable("opt_out_list", {
+  id: serial("id").primaryKey(),
+  accountId: integer("account_id").references(() => accounts.id),
+  phoneNumber: text("phone_number").notNull(),
+  reason: text("reason"), // user_request, carrier_complaint, etc.
+  source: text("source"), // keyword, api, manual
+  optedOutAt: timestamp("opted_out_at").notNull().defaultNow(),
+});
+
+export const insertOptOutSchema = createInsertSchema(optOutList).omit({
+  id: true,
+  optedOutAt: true,
+});
+
+// Types for Brand & Messaging Campaigns
+export type BrandRegistration = typeof brandRegistrations.$inferSelect;
+export type InsertBrandRegistration = z.infer<typeof insertBrandRegistrationSchema>;
+
+export type MessagingCampaign = typeof messagingCampaigns.$inferSelect;
+export type InsertMessagingCampaign = z.infer<typeof insertMessagingCampaignSchema>;
+
+export type ContactList = typeof contactLists.$inferSelect;
+export type InsertContactList = z.infer<typeof insertContactListSchema>;
+
+export type ContactListMember = typeof contactListMembers.$inferSelect;
+export type InsertContactListMember = z.infer<typeof insertContactListMemberSchema>;
+
+export type SmsCampaign = typeof smsCampaigns.$inferSelect;
+export type InsertSmsCampaign = z.infer<typeof insertSmsCampaignSchema>;
+
+export type CampaignRecipient = typeof campaignRecipients.$inferSelect;
+export type InsertCampaignRecipient = z.infer<typeof insertCampaignRecipientSchema>;
+
+export type OptOut = typeof optOutList.$inferSelect;
+export type InsertOptOut = z.infer<typeof insertOptOutSchema>;

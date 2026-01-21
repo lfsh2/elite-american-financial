@@ -3,6 +3,10 @@ import express, { type Request, Response, NextFunction } from "express";
 import { registerRoutes } from "./routes";
 import { setupVite, serveStatic, log } from "./vite";
 import { autoRefillService } from "./autoRefillService";
+import { initializeWorkers } from "./workers";
+import { redisService, CACHE_TTL, STALE_TTL } from "./services/redisService";
+import { twilioAnalyticsService } from "./twilioAnalytics";
+import { dataService } from "./services/dataService";
 
 const app = express();
 app.use(express.json());
@@ -66,5 +70,116 @@ app.use((req, res, next) => {
     
     // Start the auto-refill service
     autoRefillService.start();
+    
+    // Initialize background workers after a short delay to allow Redis to connect
+    setTimeout(async () => {
+      if (redisService.isAvailable()) {
+        initializeWorkers();
+        log('Background workers initialized');
+        
+        // PRE-WARM CACHE - Fetch data immediately so users never wait
+        log('🔥 Pre-warming cache in background...');
+        warmCache().catch(err => console.error('[CacheWarm] Error:', err));
+      } else {
+        log('Redis not available - running without background workers (caching still works)');
+      }
+    }, 2000);
   });
 })();
+
+/**
+ * Pre-warm the cache by fetching all critical data from third-party APIs
+ * This runs in the background on server startup so users never have to wait
+ */
+async function warmCache() {
+  const startTime = Date.now();
+  
+  try {
+    // Fetch Twilio analytics and cache it
+    log('[CacheWarm] Fetching Twilio analytics...');
+    const twilioAnalytics = await twilioAnalyticsService.getAnalytics();
+    
+    // Cache Twilio analytics
+    await redisService.set('textflow:twilio:analytics', twilioAnalytics, CACHE_TTL.ANALYTICS, STALE_TTL.ANALYTICS);
+    
+    // Cache Twilio metrics
+    const metrics = {
+      messages: {
+        sentToday: twilioAnalytics.metrics.totalMessagesSentToday,
+        receivedToday: twilioAnalytics.metrics.totalMessagesReceivedToday,
+        sentYesterday: twilioAnalytics.metrics.totalMessagesSentYesterday,
+        sentThisWeek: twilioAnalytics.metrics.totalMessagesSentThisWeek,
+        sentThisMonth: twilioAnalytics.metrics.totalMessagesSentThisMonth,
+        deliveryRate: twilioAnalytics.metrics.deliveryRateToday,
+        failed: twilioAnalytics.metrics.failedToday
+      },
+      calls: {
+        today: twilioAnalytics.metrics.totalCallsToday,
+        thisWeek: twilioAnalytics.metrics.totalCallsThisWeek,
+        durationToday: twilioAnalytics.metrics.totalCallDurationToday
+      },
+      spend: {
+        today: twilioAnalytics.metrics.totalSpendToday,
+        thisMonth: twilioAnalytics.metrics.totalSpendThisMonth,
+        avgPerMessage: twilioAnalytics.metrics.averageMessageCost
+      },
+      account: {
+        status: twilioAnalytics.account.status,
+        phoneNumbers: twilioAnalytics.phoneNumbers.length
+      },
+      generatedAt: twilioAnalytics.generatedAt
+    };
+    await redisService.set('textflow:twilio:metrics', metrics, CACHE_TTL.METRICS, STALE_TTL.METRICS);
+    
+    // Fetch and cache main dashboard analytics for default user
+    log('[CacheWarm] Fetching dashboard analytics...');
+    const dashboardData = await dataService.getAnalytics({ userId: 1, isOverviewMode: true });
+    
+    // Create lightweight version for caching (metrics + limited messages)
+    const lightweight = {
+      context: dashboardData.context,
+      accounts: dashboardData.accounts?.map((acc: any) => ({
+        accountId: acc.accountId,
+        accountName: acc.accountName,
+        provider: acc.provider,
+        analytics: {
+          account: acc.analytics?.account,
+          metrics: acc.analytics?.metrics,
+          phoneNumbers: acc.analytics?.phoneNumbers,
+          messages: {
+            today: acc.analytics?.messages?.today?.slice(0, 50) || [],
+            thisWeek: acc.analytics?.messages?.thisWeek?.slice(0, 50) || [],
+            thisMonth: acc.analytics?.messages?.thisMonth?.slice(0, 100) || [],
+          },
+          calls: {
+            today: acc.analytics?.calls?.today?.slice(0, 50) || [],
+            thisWeek: acc.analytics?.calls?.thisWeek?.slice(0, 50) || [],
+            thisMonth: acc.analytics?.calls?.thisMonth?.slice(0, 100) || [],
+          },
+        },
+      })) || [],
+      aggregatedMetrics: dashboardData.aggregatedMetrics,
+      messages: {
+        today: dashboardData.messages?.today?.slice(0, 50) || [],
+        thisWeek: dashboardData.messages?.thisWeek?.slice(0, 50) || [],
+        thisMonth: dashboardData.messages?.thisMonth?.slice(0, 100) || [],
+      },
+      calls: {
+        today: dashboardData.calls?.today?.slice(0, 50) || [],
+        thisWeek: dashboardData.calls?.thisWeek?.slice(0, 50) || [],
+        thisMonth: dashboardData.calls?.thisMonth?.slice(0, 100) || [],
+      },
+    };
+    
+    // Cache with the same key used by the route
+    const dashboardCacheKey = 'textflow:dashboard:1:overview';
+    await redisService.set(dashboardCacheKey, lightweight, CACHE_TTL.ANALYTICS, STALE_TTL.ANALYTICS);
+    log('[CacheWarm] Dashboard data cached at:', dashboardCacheKey);
+    
+    const duration = ((Date.now() - startTime) / 1000).toFixed(1);
+    log(`✅ Cache pre-warmed in ${duration}s - Dashboard will load instantly!`);
+    
+  } catch (error) {
+    console.error('[CacheWarm] Failed to warm cache:', error);
+  }
+}

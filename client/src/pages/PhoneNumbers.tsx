@@ -102,14 +102,25 @@ export default function PhoneNumbers() {
   const [numberType, setNumberType] = useState('local');
   const [selectedCapabilities, setSelectedCapabilities] = useState<string[]>(['voice', 'sms']);
 
-  const phoneNumbers = rawPhoneNumbers.map((pn, index) => ({
+  const phoneNumbers = rawPhoneNumbers.map((pn: any, index) => ({
     id: pn.id || index.toString(),
     phoneNumber: pn.phoneNumber,
     friendlyName: pn.friendlyName || pn.phoneNumber,
     capabilities: pn.capabilities || { voice: false, sms: false, mms: false },
     status: pn.status || 'active',
     dateCreated: pn.dateCreated || new Date().toISOString(),
+    provider: pn._provider || pn.provider || 'unknown',
+    accountName: pn._accountName || pn.accountName || '',
   }));
+
+  // Provider counts for summary badges
+  const providerCounts = useMemo(() => {
+    return phoneNumbers.reduce((acc: Record<string, number>, pn) => {
+      const provider = pn.provider || 'unknown';
+      acc[provider] = (acc[provider] || 0) + 1;
+      return acc;
+    }, {});
+  }, [phoneNumbers]);
 
   const stats = {
     totalNumbers: phoneNumbers.length,
@@ -327,6 +338,24 @@ export default function PhoneNumbers() {
               <TabsTrigger value="porting">Porting Status</TabsTrigger>
               <TabsTrigger value="usage">Usage</TabsTrigger>
             </TabsList>
+            {/* Provider count badges */}
+            <div className="flex gap-2 mt-3 mb-2">
+              {Object.entries(providerCounts).map(([provider, count]) => (
+                <Badge 
+                  key={provider} 
+                  variant="outline" 
+                  className={
+                    provider.toLowerCase() === 'twilio' 
+                      ? 'border-red-300 text-red-600 bg-red-50' 
+                      : provider.toLowerCase() === 'commio'
+                      ? 'border-blue-300 text-blue-600 bg-blue-50'
+                      : 'border-gray-300 text-gray-600 bg-gray-50'
+                  }
+                >
+                  {provider.charAt(0).toUpperCase() + provider.slice(1)}: {count} numbers
+                </Badge>
+              ))}
+            </div>
             <TabsContent value={activeTab} className="mt-4">
               <div className="rounded-md border">
                 <Table>
@@ -338,9 +367,10 @@ export default function PhoneNumbers() {
                           <ArrowUpDown className="ml-2 h-4 w-4" />
                         </div>
                       </TableHead>
+                      <TableHead>Provider</TableHead>
                       <TableHead className="cursor-pointer" onClick={() => toggleSort('name')}>
                         <div className="flex items-center">
-                          Friendly Name
+                          Account
                           <ArrowUpDown className="ml-2 h-4 w-4" />
                         </div>
                       </TableHead>
@@ -358,12 +388,12 @@ export default function PhoneNumbers() {
                   <TableBody>
                     {filteredNumbers.length === 0 ? (
                       <TableRow>
-                        <TableCell colSpan={6} className="text-center py-8 text-muted-foreground">
+                        <TableCell colSpan={7} className="text-center py-8 text-muted-foreground">
                           No phone numbers found
                         </TableCell>
                       </TableRow>
                     ) : (
-                      filteredNumbers.map((number) => (
+                      filteredNumbers.map((number: any) => (
                         <TableRow 
                           key={number.id}
                           className="cursor-pointer hover:bg-muted/50"
@@ -372,7 +402,21 @@ export default function PhoneNumbers() {
                           <TableCell className="font-medium font-mono">
                             {formatPhoneNumber(number.phoneNumber)}
                           </TableCell>
-                          <TableCell>{number.friendlyName}</TableCell>
+                          <TableCell>
+                            <Badge 
+                              variant="outline" 
+                              className={
+                                number.provider?.toLowerCase() === 'twilio' 
+                                  ? 'border-red-300 text-red-600 bg-red-50' 
+                                  : number.provider?.toLowerCase() === 'commio'
+                                  ? 'border-blue-300 text-blue-600 bg-blue-50'
+                                  : 'border-gray-300 text-gray-600 bg-gray-50'
+                              }
+                            >
+                              {number.provider ? number.provider.charAt(0).toUpperCase() + number.provider.slice(1) : 'Unknown'}
+                            </Badge>
+                          </TableCell>
+                          <TableCell className="text-sm">{number.accountName || number.friendlyName}</TableCell>
                           <TableCell>{getCapabilityBadges(number.capabilities)}</TableCell>
                           <TableCell>
                             <Badge className="bg-green-100 text-green-800 hover:bg-green-100">

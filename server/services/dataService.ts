@@ -13,6 +13,10 @@
 import { providerFactory, type ProviderCode, type ProviderAnalytics, type Message, type Call } from '../providers';
 import { accountService } from './accountService';
 import { cacheService } from './cacheService';
+import { redisService, CacheKeys, CACHE_TTL, STALE_TTL } from './redisService';
+import { db } from '../db';
+import { smsMessages, voiceCalls, accounts } from '../../shared/schema';
+import { eq, and, gte, desc, count, sql } from 'drizzle-orm';
 
 export interface DataContext {
   userId: number;
@@ -78,14 +82,25 @@ class DataService {
   async getAnalytics(context: DataContext): Promise<DataServiceResult> {
     const { userId, accountId, isOverviewMode } = context;
 
-    // Generate cache key based on context
-    const cacheKey = `analytics:user_${userId}:${isOverviewMode ? 'overview' : `account_${accountId}`}`;
+    // Use consistent cache key with getAnalyticsFast
+    const cacheKey = isOverviewMode 
+      ? CacheKeys.aggregatedMetrics(userId)
+      : CacheKeys.analytics(accountId || userId);
     
-    // Check cache first (5 minute TTL)
-    const cached = cacheService.get<DataServiceResult>(cacheKey);
-    if (cached) {
-      console.log('[DataService] Returning cached analytics for:', cacheKey);
-      return cached;
+    // Check Redis cache first (with stale-while-revalidate)
+    if (redisService.isAvailable()) {
+      const { data: cached, isStale } = await redisService.getWithStale<DataServiceResult>(cacheKey);
+      if (cached) {
+        console.log(`[DataService] Redis cache ${isStale ? 'STALE' : 'HIT'} for:`, cacheKey);
+        return cached;
+      }
+    }
+    
+    // Fallback to in-memory cache
+    const memCached = cacheService.get<DataServiceResult>(cacheKey);
+    if (memCached) {
+      console.log('[DataService] Memory cache HIT for:', cacheKey);
+      return memCached;
     }
 
     console.log('[DataService] getAnalytics called with:', { userId, accountId, isOverviewMode });
@@ -159,9 +174,12 @@ class DataService {
       calls,
     };
 
-    // Cache the result for 5 minutes
+    // Cache the result in Redis (primary) and memory (fallback)
+    if (redisService.isAvailable()) {
+      await redisService.set(cacheKey, result, CACHE_TTL.ANALYTICS, STALE_TTL.ANALYTICS);
+      console.log('[DataService] Redis cached for:', cacheKey);
+    }
     cacheService.set(cacheKey, result, 5 * 60 * 1000);
-    console.log('[DataService] Cached analytics for:', cacheKey);
 
     return result;
   }
@@ -317,24 +335,36 @@ class DataService {
    */
   private mergeMessages(accounts: AccountAnalytics[]): {
     today: Message[];
+    yesterday: Message[];
     thisWeek: Message[];
+    lastWeek: Message[];
     thisMonth: Message[];
+    lastMonth: Message[];
+    all: Message[];
   } {
     const today: Message[] = [];
+    const yesterday: Message[] = [];
     const thisWeek: Message[] = [];
+    const lastWeek: Message[] = [];
     const thisMonth: Message[] = [];
+    const lastMonth: Message[] = [];
+    const all: Message[] = [];
 
     for (const account of accounts) {
       // Add account context to each message
-      const addContext = (msgs: Message[]) => msgs.map(m => ({
+      const addContext = (msgs: Message[] | undefined) => (msgs || []).map(m => ({
         ...m,
         _accountId: account.accountId,
         _accountName: account.accountName,
       }));
 
       today.push(...addContext(account.analytics.messages.today));
+      yesterday.push(...addContext((account.analytics.messages as any).yesterday));
       thisWeek.push(...addContext(account.analytics.messages.thisWeek));
+      lastWeek.push(...addContext((account.analytics.messages as any).lastWeek));
       thisMonth.push(...addContext(account.analytics.messages.thisMonth));
+      lastMonth.push(...addContext((account.analytics.messages as any).lastMonth));
+      all.push(...addContext((account.analytics.messages as any).all));
     }
 
     // Sort by date descending
@@ -343,8 +373,12 @@ class DataService {
 
     return {
       today: today.sort(sortByDate),
+      yesterday: yesterday.sort(sortByDate),
       thisWeek: thisWeek.sort(sortByDate),
+      lastWeek: lastWeek.sort(sortByDate),
       thisMonth: thisMonth.sort(sortByDate),
+      lastMonth: lastMonth.sort(sortByDate),
+      all: all.sort(sortByDate),
     };
   }
 
@@ -353,24 +387,36 @@ class DataService {
    */
   private mergeCalls(accounts: AccountAnalytics[]): {
     today: Call[];
+    yesterday: Call[];
     thisWeek: Call[];
+    lastWeek: Call[];
     thisMonth: Call[];
+    lastMonth: Call[];
+    all: Call[];
   } {
     const today: Call[] = [];
+    const yesterday: Call[] = [];
     const thisWeek: Call[] = [];
+    const lastWeek: Call[] = [];
     const thisMonth: Call[] = [];
+    const lastMonth: Call[] = [];
+    const all: Call[] = [];
 
     for (const account of accounts) {
       // Add account context to each call
-      const addContext = (calls: Call[]) => calls.map(c => ({
+      const addContext = (calls: Call[] | undefined) => (calls || []).map(c => ({
         ...c,
         _accountId: account.accountId,
         _accountName: account.accountName,
       }));
 
       today.push(...addContext(account.analytics.calls.today));
+      yesterday.push(...addContext((account.analytics.calls as any).yesterday));
       thisWeek.push(...addContext(account.analytics.calls.thisWeek));
+      lastWeek.push(...addContext((account.analytics.calls as any).lastWeek));
       thisMonth.push(...addContext(account.analytics.calls.thisMonth));
+      lastMonth.push(...addContext((account.analytics.calls as any).lastMonth));
+      all.push(...addContext((account.analytics.calls as any).all));
     }
 
     // Sort by date descending
@@ -379,8 +425,12 @@ class DataService {
 
     return {
       today: today.sort(sortByDate),
+      yesterday: yesterday.sort(sortByDate),
       thisWeek: thisWeek.sort(sortByDate),
+      lastWeek: lastWeek.sort(sortByDate),
       thisMonth: thisMonth.sort(sortByDate),
+      lastMonth: lastMonth.sort(sortByDate),
+      all: all.sort(sortByDate),
     };
   }
 
@@ -412,6 +462,286 @@ class DataService {
     }
 
     return provider.makeCall(options);
+  }
+
+  /**
+   * Get analytics from local database with Redis caching (FAST PATH)
+   * This is the primary method for dashboard - queries local DB instead of external APIs
+   */
+  async getAnalyticsFast(context: DataContext): Promise<DataServiceResult> {
+    const { userId, accountId, isOverviewMode } = context;
+    const cacheKey = isOverviewMode 
+      ? CacheKeys.aggregatedMetrics(userId)
+      : CacheKeys.analytics(accountId || userId);
+
+    // Try Redis cache first with stale-while-revalidate
+    if (redisService.isAvailable()) {
+      const { data: cached, isStale } = await redisService.getWithStale<DataServiceResult>(cacheKey);
+      
+      if (cached) {
+        console.log(`[DataService] Cache ${isStale ? 'STALE' : 'HIT'} for:`, cacheKey);
+        
+        // If stale, trigger background refresh but return cached data immediately
+        if (isStale) {
+          this.refreshAnalyticsInBackground(context, cacheKey);
+        }
+        
+        return cached;
+      }
+    }
+
+    console.log('[DataService] Cache MISS, querying database for:', cacheKey);
+
+    // Query local database
+    const result = await this.queryLocalDatabase(context);
+
+    // Cache the result
+    if (redisService.isAvailable()) {
+      await redisService.set(cacheKey, result, CACHE_TTL.ANALYTICS, STALE_TTL.ANALYTICS);
+    }
+
+    return result;
+  }
+
+  /**
+   * Query analytics from local PostgreSQL database
+   */
+  private async queryLocalDatabase(context: DataContext): Promise<DataServiceResult> {
+    const { userId, accountId, isOverviewMode } = context;
+    
+    const now = new Date();
+    const startOfDay = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+    const startOfWeek = new Date(startOfDay);
+    startOfWeek.setDate(startOfWeek.getDate() - startOfWeek.getDay());
+    const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
+    const sixMonthsAgo = new Date(now);
+    sixMonthsAgo.setMonth(sixMonthsAgo.getMonth() - 6);
+
+    try {
+      // Get accounts for user
+      const { accounts: userAccounts } = await accountService.getAccountsForUser(userId);
+      
+      // Determine which account IDs to query
+      let accountIds: number[] = [];
+      if (isOverviewMode) {
+        accountIds = userAccounts.map(a => {
+          const id = String(a.id).replace('acc_', '');
+          return parseInt(id);
+        }).filter(id => !isNaN(id));
+      } else if (accountId) {
+        const id = parseInt(String(accountId).replace('acc_', ''));
+        if (!isNaN(id)) accountIds = [id];
+      }
+
+      if (accountIds.length === 0) {
+        // Fallback to external API if no local accounts
+        return this.getAnalytics(context);
+      }
+
+      // Query messages from database
+      const messagesQuery = db
+        .select()
+        .from(smsMessages)
+        .where(
+          and(
+            sql`${smsMessages.accountId} IN (${sql.join(accountIds.map(id => sql`${id}`), sql`, `)})`,
+            gte(smsMessages.sentAt, sixMonthsAgo)
+          )
+        )
+        .orderBy(desc(smsMessages.sentAt))
+        .limit(10000);
+
+      // Query calls from database
+      const callsQuery = db
+        .select()
+        .from(voiceCalls)
+        .where(
+          and(
+            sql`${voiceCalls.accountId} IN (${sql.join(accountIds.map(id => sql`${id}`), sql`, `)})`,
+            gte(voiceCalls.startTime, sixMonthsAgo)
+          )
+        )
+        .orderBy(desc(voiceCalls.startTime))
+        .limit(5000);
+
+      const [dbMessages, dbCalls] = await Promise.all([messagesQuery, callsQuery]);
+
+      console.log(`[DataService] Database query: ${dbMessages.length} messages, ${dbCalls.length} calls`);
+
+      // If no local data, fall back to external API to fetch from Twilio/Commio/Bandwidth
+      if (dbMessages.length === 0 && dbCalls.length === 0) {
+        console.log('[DataService] No local data found, fetching from external APIs...');
+        const result = await this.getAnalytics(context);
+        
+        // Cache the result from external API so subsequent requests are instant
+        const cacheKey = isOverviewMode 
+          ? CacheKeys.aggregatedMetrics(userId)
+          : CacheKeys.analytics(accountId || userId);
+        if (redisService.isAvailable()) {
+          await redisService.set(cacheKey, result, CACHE_TTL.ANALYTICS, STALE_TTL.ANALYTICS);
+          console.log('[DataService] Cached external API result for:', cacheKey);
+        }
+        
+        return result;
+      }
+
+      // Convert to Message/Call format
+      const allMessages: Message[] = dbMessages.map(m => ({
+        sid: m.messageSid || `msg_${m.id}`,
+        from: m.from,
+        to: m.to,
+        body: m.body,
+        status: m.status as any,
+        direction: m.direction as any,
+        dateSent: m.sentAt.toISOString(),
+        dateCreated: m.sentAt.toISOString(),
+      }));
+
+      const allCalls: Call[] = dbCalls.map(c => ({
+        sid: c.callSid || `call_${c.id}`,
+        from: c.from,
+        to: c.to,
+        status: c.status as any,
+        direction: c.direction as any,
+        duration: String(c.duration || 0),
+        startTime: c.startTime.toISOString(),
+        endTime: c.endTime?.toISOString(),
+      }));
+
+      // Filter by time periods
+      const messagesToday = allMessages.filter(m => new Date(m.dateSent) >= startOfDay);
+      const messagesThisWeek = allMessages.filter(m => new Date(m.dateSent) >= startOfWeek);
+      const messagesThisMonth = allMessages.filter(m => new Date(m.dateSent) >= startOfMonth);
+
+      const callsToday = allCalls.filter(c => new Date(c.startTime) >= startOfDay);
+      const callsThisWeek = allCalls.filter(c => new Date(c.startTime) >= startOfWeek);
+      const callsThisMonth = allCalls.filter(c => new Date(c.startTime) >= startOfMonth);
+
+      // Calculate metrics
+      const outboundMonth = messagesThisMonth.filter(m => m.direction?.startsWith('outbound'));
+      const deliveredMonth = outboundMonth.filter(m => m.status === 'delivered').length;
+      const failedMonth = outboundMonth.filter(m => m.status === 'failed' || m.status === 'undelivered').length;
+
+      const aggregatedMetrics: AggregatedMetrics = {
+        totalMessagesSentToday: messagesToday.filter(m => m.direction?.startsWith('outbound')).length,
+        totalMessagesSentThisWeek: messagesThisWeek.filter(m => m.direction?.startsWith('outbound')).length,
+        totalMessagesSentThisMonth: outboundMonth.length,
+        totalMessagesReceivedToday: messagesToday.filter(m => m.direction === 'inbound').length,
+        totalCallsToday: callsToday.length,
+        totalCallsThisWeek: callsThisWeek.length,
+        totalCallDurationToday: callsToday.reduce((sum, c) => sum + parseInt(c.duration || '0'), 0),
+        totalSpendToday: 0,
+        totalSpendThisWeek: 0,
+        totalSpendThisMonth: 0,
+        deliveryRate: outboundMonth.length > 0 ? (deliveredMonth / outboundMonth.length) * 100 : 100,
+        failureRate: outboundMonth.length > 0 ? (failedMonth / outboundMonth.length) * 100 : 0,
+        totalPhoneNumbers: 0,
+        totalAccounts: accountIds.length,
+      };
+
+      // Build account analytics structure
+      const accountAnalytics: AccountAnalytics[] = userAccounts
+        .filter(a => {
+          const id = parseInt(String(a.id).replace('acc_', ''));
+          return accountIds.includes(id);
+        })
+        .map(a => ({
+          accountId: a.id,
+          accountName: a.name,
+          provider: (a.provider || 'twilio') as ProviderCode,
+          analytics: {
+            account: { sid: a.id, friendlyName: a.name, status: 'active', type: 'Full', dateCreated: '', dateUpdated: '' },
+            phoneNumbers: [],
+            messages: {
+              today: messagesToday,
+              yesterday: [],
+              thisWeek: messagesThisWeek,
+              lastWeek: [],
+              thisMonth: messagesThisMonth,
+              lastMonth: [],
+              all: allMessages,
+            },
+            calls: {
+              today: callsToday,
+              yesterday: [],
+              thisWeek: callsThisWeek,
+              lastWeek: [],
+              thisMonth: callsThisMonth,
+              lastMonth: [],
+              all: allCalls,
+            },
+            usage: [],
+            metrics: {
+              totalMessagesSentToday: aggregatedMetrics.totalMessagesSentToday,
+              totalMessagesSentThisWeek: aggregatedMetrics.totalMessagesSentThisWeek,
+              totalMessagesSentThisMonth: aggregatedMetrics.totalMessagesSentThisMonth,
+              totalMessagesReceivedToday: aggregatedMetrics.totalMessagesReceivedToday,
+              totalCallsToday: aggregatedMetrics.totalCallsToday,
+              totalCallsThisWeek: aggregatedMetrics.totalCallsThisWeek,
+              totalCallDurationToday: aggregatedMetrics.totalCallDurationToday,
+              totalSpendToday: 0,
+              totalSpendThisWeek: 0,
+              totalSpendThisMonth: 0,
+              deliveryRate: aggregatedMetrics.deliveryRate,
+              failureRate: aggregatedMetrics.failureRate,
+            },
+          },
+        }));
+
+      return {
+        context,
+        accounts: accountAnalytics,
+        aggregatedMetrics,
+        messages: {
+          today: messagesToday,
+          thisWeek: messagesThisWeek,
+          thisMonth: messagesThisMonth,
+        },
+        calls: {
+          today: callsToday,
+          thisWeek: callsThisWeek,
+          thisMonth: callsThisMonth,
+        },
+      };
+    } catch (error) {
+      console.error('[DataService] Database query error, falling back to API:', error);
+      // Fallback to external API
+      return this.getAnalytics(context);
+    }
+  }
+
+  /**
+   * Refresh analytics in background (stale-while-revalidate pattern)
+   */
+  private async refreshAnalyticsInBackground(context: DataContext, cacheKey: string): Promise<void> {
+    // Don't await - run in background
+    setImmediate(async () => {
+      try {
+        console.log('[DataService] Background refresh for:', cacheKey);
+        const result = await this.queryLocalDatabase(context);
+        await redisService.set(cacheKey, result, CACHE_TTL.ANALYTICS, STALE_TTL.ANALYTICS);
+        console.log('[DataService] Background refresh complete for:', cacheKey);
+      } catch (error) {
+        console.error('[DataService] Background refresh failed:', error);
+      }
+    });
+  }
+
+  /**
+   * Get pre-computed chart data from cache
+   */
+  async getChartData(accountId: number | string): Promise<any | null> {
+    const cacheKey = CacheKeys.chartData(accountId, '6m');
+    
+    if (redisService.isAvailable()) {
+      const cached = await redisService.get<any>(cacheKey);
+      if (cached) {
+        return cached;
+      }
+    }
+
+    // If not cached, return null - chart data should be pre-computed by background jobs
+    return null;
   }
 }
 

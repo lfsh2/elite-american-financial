@@ -489,11 +489,12 @@ export function useAccountPhoneNumbers() {
             const response = await fetch(`/api/accounts/${account.id}/phone-numbers`);
             if (response.ok) {
               const data = await response.json();
-              // Add account info to each number
+              // Add account info and provider to each number
               const numbersWithAccount = data.phoneNumbers.map((pn: any) => ({
                 ...pn,
                 _accountId: account.id,
                 _accountName: account.name,
+                _provider: account.provider,
               }));
               allNumbers.push(...numbersWithAccount);
             }

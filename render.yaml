@@ -1,0 +1,30 @@
+# Render Blueprint for TextFlow / Elite Financial
+# https://render.com/docs/blueprint-spec
+
+services:
+  # Main Web Service
+  - type: web
+    name: textflow
+    runtime: node
+    region: oregon # or ohio, frankfurt, singapore
+    plan: free # or starter, standard for production
+    buildCommand: npm install && npm run build
+    startCommand: npm start
+    healthCheckPath: /api/health
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: DATABASE_URL
+        sync: false # Set manually in Render dashboard
+      - key: REDIS_URL
+        sync: false # Set manually - use Upstash free tier
+      - key: TWILIO_ACCOUNT_SID
+        sync: false
+      - key: TWILIO_AUTH_TOKEN
+        sync: false
+      - key: TWILIO_PHONE_NUMBERS
+        sync: false
+      - key: SENDGRID_API_KEY
+        sync: false
+      - key: OPENAI_API_KEY
+        sync: false

@@ -32,40 +32,54 @@ export class CommioProvider implements ICommunicationProvider {
   
   private accountId: string;
   private apiToken: string;
+  private username: string;
   private baseUrl = 'https://api.thinq.com';
 
   constructor(credentials: ProviderCredentials) {
     // Commio credentials:
     // accountSid -> Account ID (e.g., 22956)
     // authToken -> API Token (from Dashboard → API → Tokens)
+    // apiKey -> Username for Basic Auth (e.g., amuniz1) - optional, defaults to accountSid
     this.accountId = credentials.accountSid;
     this.apiToken = credentials.authToken;
+    this.username = credentials.apiKey || credentials.accountSid;
   }
 
   /**
    * Helper method for making API requests to Commio/ThinQ
-   * Uses Bearer token authentication
+   * ThinQ API uses Basic Auth with username:api_token
+   * Endpoint format: /account/{account_id}/product/origination/...
    */
   private async apiRequest<T>(
     method: string,
     endpoint: string,
     body?: any
   ): Promise<T> {
-    const response = await fetch(`${this.baseUrl}/account/${this.accountId}${endpoint}`, {
+    const url = `${this.baseUrl}/account/${this.accountId}${endpoint}`;
+    
+    // Use Basic Auth with username:token
+    const basicAuth = Buffer.from(`${this.username}:${this.apiToken}`).toString('base64');
+    
+    console.log(`[Commio] API Request: ${method} ${url}`);
+    
+    const response = await fetch(url, {
       method,
       headers: {
-        'Authorization': `Bearer ${this.apiToken}`,
         'Content-Type': 'application/json',
+        'Authorization': `Basic ${basicAuth}`,
       },
       body: body ? JSON.stringify(body) : undefined,
     });
 
     if (!response.ok) {
       const error = await response.text();
+      console.error(`[Commio] API Error: ${response.status} - ${error}`);
       throw new Error(`Commio API error: ${response.status} - ${error}`);
     }
 
-    return response.json();
+    const data = await response.json();
+    console.log(`[Commio] API Response:`, JSON.stringify(data).substring(0, 200));
+    return data;
   }
 
   // ============================================
@@ -113,25 +127,58 @@ export class CommioProvider implements ICommunicationProvider {
   // ============================================
 
   async getPhoneNumbers(): Promise<PhoneNumber[]> {
-    try {
-      const numbers = await this.apiRequest<any[]>('GET', '/phone-numbers');
-      return numbers.map(n => ({
-        sid: n.id,
-        phoneNumber: n.phone_number,
-        friendlyName: n.friendly_name || n.phone_number,
-        capabilities: {
-          sms: n.sms_enabled ?? true,
-          voice: n.voice_enabled ?? true,
-          mms: n.mms_enabled ?? false,
-        },
-        status: 'active',
-        monthlyCost: n.monthly_cost,
-        dateCreated: n.created_at,
-      }));
-    } catch {
-      // Return empty for demo
-      return [];
+    // ThinQ API endpoints to try for phone numbers
+    const endpoints = [
+      '/product/origination/did/list',
+      '/product/origination/did',
+      '/origination/did/list',
+      '/origination/did',
+    ];
+    
+    for (const endpoint of endpoints) {
+      try {
+        console.log(`[Commio] Trying endpoint: ${endpoint}`);
+        const response = await this.apiRequest<any>('GET', endpoint);
+        
+        // Response structure: { rows: [...], total: number } or array directly
+        const numbers = response.rows || response.data || response.dids || response || [];
+        const numberList = Array.isArray(numbers) ? numbers : [];
+        
+        if (numberList.length > 0) {
+          console.log(`[Commio] Fetched ${numberList.length} phone numbers from ${endpoint}`);
+          
+          return numberList.map((n: any) => ({
+            sid: n.id || n.did_id || n.did || n.phone_number,
+            phoneNumber: this.formatPhoneNumber(n.did || n.phone_number || n.number),
+            friendlyName: n.friendly_name || n.name || n.did || n.phone_number,
+            capabilities: {
+              sms: n.sms_enabled ?? n.features?.sms ?? true,
+              voice: n.voice_enabled ?? n.features?.voice ?? true,
+              mms: n.mms_enabled ?? n.features?.mms ?? false,
+            },
+            status: n.status || 'active',
+            monthlyCost: n.monthly_cost || n.price,
+            dateCreated: n.created_at || n.purchase_date || new Date().toISOString(),
+          }));
+        }
+      } catch (error: any) {
+        console.log(`[Commio] Endpoint ${endpoint} failed: ${error.message}`);
+        continue;
+      }
     }
+    
+    console.error('[Commio] All phone number endpoints failed');
+    return [];
+  }
+  
+  private formatPhoneNumber(number: string): string {
+    if (!number) return '';
+    // Add + prefix if not present and number is 10+ digits
+    const cleaned = number.replace(/\D/g, '');
+    if (cleaned.length >= 10 && !number.startsWith('+')) {
+      return `+${cleaned.length === 10 ? '1' : ''}${cleaned}`;
+    }
+    return number;
   }
 
   async searchAvailableNumbers(options: PurchaseNumberOptions): Promise<PhoneNumber[]> {
@@ -193,16 +240,16 @@ export class CommioProvider implements ICommunicationProvider {
 
   async sendMessage(options: SendMessageOptions): Promise<SendMessageResult> {
     try {
-      const result = await this.apiRequest<any>('POST', '/messages', {
-        to: options.to,
-        from: options.from,
-        body: options.body,
-        media_urls: options.mediaUrls,
+      // ThinQ SMS API endpoint: /account/{account_id}/product/origination/sms/send
+      const result = await this.apiRequest<any>('POST', '/product/origination/sms/send', {
+        from_did: options.from.replace(/^\+/, ''), // Remove + prefix
+        to_did: options.to.replace(/^\+/, ''), // Remove + prefix
+        message: options.body,
       });
 
       return {
         success: true,
-        sid: result.id,
+        sid: result.guid || result.id || result.message_id,
         status: result.status || 'queued',
       };
     } catch (error: any) {

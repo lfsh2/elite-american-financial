@@ -10,6 +10,8 @@ import { AccountProvider } from './contexts/AccountContext';
 import Dashboard from './pages/Dashboard';
 import Messaging from './pages/Messaging';
 import Campaigns from './pages/Campaigns';
+import SmsCampaigns from './pages/SmsCampaigns';
+import SmsInbox from './pages/SmsInbox';
 import VoiceCalls from './pages/VoiceCalls';
 import Users from './pages/Users';
 import SubAccounts from './pages/SubAccounts';
@@ -55,7 +57,9 @@ function ProtectedContent() {
           <Route path="/" component={Dashboard} />
           <Route path="/dashboard" component={Dashboard} />
           <Route path="/messaging" component={Messaging} />
+          <Route path="/sms" component={SmsInbox} />
           <Route path="/campaigns" component={Campaigns} />
+          <Route path="/sms-campaigns" component={SmsCampaigns} />
           <Route path="/voice" component={VoiceCalls} />
           <Route path="/users" component={Users} />
           <Route path="/subaccounts" component={SubAccounts} />

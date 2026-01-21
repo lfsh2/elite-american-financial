@@ -42,6 +42,7 @@ import {
   User,
   HelpCircle,
   Bell,
+  Send,
 } from 'lucide-react';
 
 interface NavItem {
@@ -76,9 +77,10 @@ export const Sidebar = memo(function Sidebar() {
   const navItems: NavItem[] = useMemo(() => [
     { title: 'Dashboard', href: '/dashboard', icon: LayoutDashboard },
     { title: 'Analytics', href: '/analytics', icon: TrendingUp },
-    { title: 'Messaging', href: '/messaging', icon: MessageSquare, badge: inboxCount },
+    { title: 'SMS', href: '/sms', icon: MessageSquare, badge: inboxCount },
     { title: 'Voice Calls', href: '/voice', icon: Phone },
-    { title: 'Campaigns', href: '/campaigns', icon: Megaphone },
+    { title: 'SMS Campaigns', href: '/sms-campaigns', icon: Send },
+    { title: 'A2P Compliance', href: '/campaigns', icon: Megaphone },
     { title: 'Phone Numbers', href: '/phone-numbers', icon: Hash },
   ], [inboxCount]);
 
