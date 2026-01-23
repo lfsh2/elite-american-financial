@@ -27,7 +27,9 @@ import {
   Zap,
   Target,
   TrendingUp,
-  RefreshCw
+  RefreshCw,
+  Hash,
+  CheckSquare
 } from 'lucide-react';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle, CardFooter } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
@@ -150,6 +152,12 @@ export default function SmsCampaigns() {
     fromAccountId: '',
     contactListId: '',
   });
+  
+  // Multi-select phone numbers for batch sending (Twilio-style)
+  const [numberSelectionMode, setNumberSelectionMode] = useState<'all' | 'select' | 'single'>('all');
+  const [selectedFromNumbers, setSelectedFromNumbers] = useState<Set<string>>(new Set());
+  const [sendingProgress, setSendingProgress] = useState({ sent: 0, failed: 0, total: 0 });
+  const [showProgress, setShowProgress] = useState(false);
   
   // New contact list dialog
   const [showNewList, setShowNewList] = useState(false);
@@ -444,24 +452,104 @@ export default function SmsCampaigns() {
     }
   };
 
-  // Start campaign
-  const handleStartCampaign = async (campaignId: number) => {
+  // Start campaign with batch sending
+  const handleStartCampaign = async (campaignId: number, campaign?: SmsCampaign) => {
+    // Determine which numbers to use
+    let numbersToUse: string[] = [];
+    if (numberSelectionMode === 'all') {
+      numbersToUse = phoneNumbers.map(pn => pn.phoneNumber);
+    } else if (numberSelectionMode === 'select') {
+      numbersToUse = Array.from(selectedFromNumbers);
+    } else if (campaign?.fromNumber) {
+      numbersToUse = [campaign.fromNumber];
+    }
+
+    if (numbersToUse.length === 0) {
+      toast({
+        title: 'Error',
+        description: 'Please select at least one phone number',
+        variant: 'destructive'
+      });
+      return;
+    }
+
     setIsSending(true);
+    setShowProgress(true);
+    setSendingProgress({ sent: 0, failed: 0, total: 0 });
+
     try {
-      const res = await fetch(`/api/campaigns/sms-campaigns/${campaignId}/start`, {
-        method: 'POST',
+      // First get campaign recipients
+      const recipientsRes = await fetch(`/api/campaigns/sms-campaigns/${campaignId}/recipients`, {
         credentials: 'include',
       });
-
-      if (!res.ok) {
-        const error = await res.json();
-        throw new Error(error.message || 'Failed to start campaign');
+      
+      if (!recipientsRes.ok) {
+        throw new Error('Failed to fetch campaign recipients');
+      }
+      
+      const recipientsData = await recipientsRes.json();
+      const recipients = recipientsData.recipients || [];
+      
+      if (recipients.length === 0) {
+        throw new Error('No recipients in campaign. Add a contact list first.');
       }
 
-      toast({
-        title: 'Campaign Started',
-        description: 'Messages are being sent',
+      setSendingProgress({ sent: 0, failed: 0, total: recipients.length });
+
+      // Build phone number configs
+      const phoneNumberConfigs = numbersToUse.map(num => {
+        const phoneData = phoneNumbers.find(pn => pn.phoneNumber === num);
+        return {
+          phoneNumber: num,
+          provider: phoneData?.provider || 'twilio',
+          accountId: phoneData?.accountId,
+        };
       });
+
+      // Use batch API for parallel sending
+      const batchRes = await fetch('/api/sms/batch', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        body: JSON.stringify({
+          recipients: recipients.map((r: any) => ({
+            phone: r.phoneNumber,
+            name: r.firstName ? `${r.firstName} ${r.lastName || ''}`.trim() : undefined,
+            firstName: r.firstName,
+            lastName: r.lastName,
+          })),
+          message: campaign?.messageTemplate || '',
+          phoneNumbers: phoneNumberConfigs,
+          campaignId,
+          userId: 1,
+          messagesPerNumber: 2000,
+          concurrentPerNumber: 20,
+        }),
+      });
+
+      if (batchRes.ok) {
+        const result = await batchRes.json();
+        setSendingProgress({ sent: result.sent, failed: result.failed, total: recipients.length });
+        
+        // Update campaign status
+        await fetch(`/api/campaigns/sms-campaigns/${campaignId}`, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          credentials: 'include',
+          body: JSON.stringify({
+            status: 'completed',
+            sentCount: result.sent,
+            failedCount: result.failed,
+          }),
+        });
+
+        toast({
+          title: 'Campaign Completed',
+          description: `Sent ${result.sent} messages, ${result.failed} failed (${result.duration}ms)`,
+        });
+      } else {
+        throw new Error('Batch send failed');
+      }
 
       fetchData();
     } catch (error: any) {
@@ -473,6 +561,7 @@ export default function SmsCampaigns() {
       });
     } finally {
       setIsSending(false);
+      setTimeout(() => setShowProgress(false), 3000);
     }
   };
 
@@ -799,38 +888,152 @@ export default function SmsCampaigns() {
                         onChange={(e) => setNewCampaign(prev => ({ ...prev, description: e.target.value }))}
                       />
                     </div>
+                    {/* From Number - Multi-select like Twilio */}
                     <div className="space-y-2">
-                      <Label htmlFor="fromNumber">From Number *</Label>
-                      <Select 
-                        value={newCampaign.fromNumber}
-                        onValueChange={(value) => {
-                          const selectedPhone = phoneNumbers.find(pn => pn.phoneNumber === value);
-                          setNewCampaign(prev => ({ 
-                            ...prev, 
-                            fromNumber: value,
-                            fromAccountId: selectedPhone?.accountId || currentAccount?.id || ''
-                          }));
-                        }}
-                      >
-                        <SelectTrigger>
-                          <SelectValue placeholder="Select a phone number" />
-                        </SelectTrigger>
-                        <SelectContent>
-                          {phoneNumbers.length === 0 ? (
-                            <SelectItem value="_none" disabled>No phone numbers available - Connect Twilio or Commio account</SelectItem>
-                          ) : (
-                            phoneNumbers.map((pn, idx) => (
+                      <Label>From Numbers * (Parallel Batch Sending)</Label>
+                      
+                      {/* Number Selection Mode */}
+                      <div className="flex gap-2 mb-3">
+                        <button
+                          type="button"
+                          onClick={() => setNumberSelectionMode('all')}
+                          className={`flex-1 px-2 py-2 rounded-lg border text-xs font-medium transition-colors ${
+                            numberSelectionMode === 'all' ? 'bg-green-50 border-green-300 text-green-700' : 'hover:bg-gray-50'
+                          }`}
+                        >
+                          <RefreshCw className="h-3 w-3 inline mr-1" />
+                          Use All ({phoneNumbers.length})
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setNumberSelectionMode('select')}
+                          className={`flex-1 px-2 py-2 rounded-lg border text-xs font-medium transition-colors ${
+                            numberSelectionMode === 'select' ? 'bg-blue-50 border-blue-300 text-blue-700' : 'hover:bg-gray-50'
+                          }`}
+                        >
+                          <CheckSquare className="h-3 w-3 inline mr-1" />
+                          Select Multiple
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setNumberSelectionMode('single')}
+                          className={`flex-1 px-2 py-2 rounded-lg border text-xs font-medium transition-colors ${
+                            numberSelectionMode === 'single' ? 'bg-purple-50 border-purple-300 text-purple-700' : 'hover:bg-gray-50'
+                          }`}
+                        >
+                          <Hash className="h-3 w-3 inline mr-1" />
+                          Single Number
+                        </button>
+                      </div>
+
+                      {/* All Numbers Mode */}
+                      {numberSelectionMode === 'all' && (
+                        <div className="bg-green-50 border border-green-200 rounded-lg p-3">
+                          <div className="flex items-center gap-2 mb-2">
+                            <RefreshCw className="h-4 w-4 text-green-600" />
+                            <span className="font-medium text-green-800 text-sm">All Numbers Pool Active</span>
+                          </div>
+                          <p className="text-xs text-green-700 mb-2">
+                            Messages will rotate across all {phoneNumbers.length} numbers (2000 msgs/number max).
+                          </p>
+                          <div className="flex flex-wrap gap-1">
+                            {(() => {
+                              const counts = phoneNumbers.reduce((acc: Record<string, number>, pn) => {
+                                const provider = pn.provider || 'Unknown';
+                                acc[provider] = (acc[provider] || 0) + 1;
+                                return acc;
+                              }, {});
+                              return Object.entries(counts).map(([provider, count]) => (
+                                <Badge key={provider} variant="outline" className="text-xs">
+                                  {provider}: {count}
+                                </Badge>
+                              ));
+                            })()}
+                          </div>
+                        </div>
+                      )}
+
+                      {/* Multi-Select Mode */}
+                      {numberSelectionMode === 'select' && (
+                        <div className="border rounded-lg p-3 max-h-40 overflow-y-auto">
+                          <div className="flex items-center justify-between mb-2">
+                            <span className="text-xs font-medium text-gray-700">
+                              {selectedFromNumbers.size} selected
+                            </span>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                if (selectedFromNumbers.size === phoneNumbers.length) {
+                                  setSelectedFromNumbers(new Set());
+                                } else {
+                                  setSelectedFromNumbers(new Set(phoneNumbers.map(pn => pn.phoneNumber)));
+                                }
+                              }}
+                              className="text-xs text-blue-600 hover:underline"
+                            >
+                              {selectedFromNumbers.size === phoneNumbers.length ? 'Deselect All' : 'Select All'}
+                            </button>
+                          </div>
+                          <div className="space-y-1">
+                            {phoneNumbers.map((pn, idx) => (
+                              <label 
+                                key={idx} 
+                                className={`flex items-center gap-2 p-1.5 rounded cursor-pointer hover:bg-gray-50 text-xs ${
+                                  selectedFromNumbers.has(pn.phoneNumber) ? 'bg-blue-50' : ''
+                                }`}
+                              >
+                                <input
+                                  type="checkbox"
+                                  checked={selectedFromNumbers.has(pn.phoneNumber)}
+                                  onChange={(e) => {
+                                    const newSet = new Set(selectedFromNumbers);
+                                    if (e.target.checked) {
+                                      newSet.add(pn.phoneNumber);
+                                    } else {
+                                      newSet.delete(pn.phoneNumber);
+                                    }
+                                    setSelectedFromNumbers(newSet);
+                                  }}
+                                  className="rounded border-gray-300"
+                                />
+                                <span>{pn.phoneNumber}</span>
+                                <Badge variant="outline" className="text-xs">
+                                  {pn.provider}
+                                </Badge>
+                              </label>
+                            ))}
+                          </div>
+                        </div>
+                      )}
+
+                      {/* Single Number Mode */}
+                      {numberSelectionMode === 'single' && (
+                        <Select 
+                          value={newCampaign.fromNumber}
+                          onValueChange={(value) => {
+                            const selectedPhone = phoneNumbers.find(pn => pn.phoneNumber === value);
+                            setNewCampaign(prev => ({ 
+                              ...prev, 
+                              fromNumber: value,
+                              fromAccountId: selectedPhone?.accountId || currentAccount?.id || ''
+                            }));
+                          }}
+                        >
+                          <SelectTrigger>
+                            <SelectValue placeholder="Select a phone number" />
+                          </SelectTrigger>
+                          <SelectContent>
+                            {phoneNumbers.map((pn, idx) => (
                               <SelectItem key={`${pn.phoneNumber}-${idx}`} value={pn.phoneNumber}>
                                 <div className="flex items-center gap-2">
                                   <span>{pn.phoneNumber}</span>
-                                  {pn.friendlyName && <span className="text-muted-foreground">({pn.friendlyName})</span>}
                                   {pn.provider && <span className="text-xs bg-blue-100 text-blue-700 px-1.5 py-0.5 rounded">{pn.provider}</span>}
                                 </div>
                               </SelectItem>
-                            ))
-                          )}
-                        </SelectContent>
-                      </Select>
+                            ))}
+                          </SelectContent>
+                        </Select>
+                      )}
                     </div>
                   </>
                 )}
@@ -1040,10 +1243,33 @@ export default function SmsCampaigns() {
 
         {/* Campaigns Tab */}
         <TabsContent value="campaigns" className="mt-4">
+          {/* Sending Progress */}
+          {showProgress && (
+            <Card className="mb-4 border-blue-200 bg-blue-50">
+              <CardContent className="pt-4">
+                <div className="flex items-center justify-between mb-2">
+                  <span className="font-medium text-blue-800">Sending Messages...</span>
+                  <span className="text-sm text-blue-600">
+                    {sendingProgress.sent + sendingProgress.failed} / {sendingProgress.total}
+                  </span>
+                </div>
+                <Progress 
+                  value={sendingProgress.total > 0 ? ((sendingProgress.sent + sendingProgress.failed) / sendingProgress.total) * 100 : 0} 
+                  className="h-3"
+                />
+                <div className="flex gap-4 mt-2 text-sm">
+                  <span className="text-green-600">✓ Sent: {sendingProgress.sent}</span>
+                  <span className="text-red-600">✗ Failed: {sendingProgress.failed}</span>
+                  <span className="text-blue-600">Using {numberSelectionMode === 'all' ? phoneNumbers.length : numberSelectionMode === 'select' ? selectedFromNumbers.size : 1} numbers in parallel</span>
+                </div>
+              </CardContent>
+            </Card>
+          )}
+
           <Card>
             <CardHeader>
               <CardTitle>SMS Campaigns</CardTitle>
-              <CardDescription>Manage your SMS marketing campaigns</CardDescription>
+              <CardDescription>Manage your SMS marketing campaigns with parallel batch sending</CardDescription>
             </CardHeader>
             <CardContent>
               {campaigns.length === 0 ? (
@@ -1098,8 +1324,9 @@ export default function SmsCampaigns() {
                                 <Button 
                                   variant="ghost" 
                                   size="sm"
-                                  onClick={() => handleStartCampaign(campaign.id)}
+                                  onClick={() => handleStartCampaign(campaign.id, campaign)}
                                   disabled={isSending}
+                                  title="Start campaign with parallel batch sending"
                                 >
                                   <Play className="h-4 w-4 text-green-600" />
                                 </Button>
@@ -1117,8 +1344,9 @@ export default function SmsCampaigns() {
                                 <Button 
                                   variant="ghost" 
                                   size="sm"
-                                  onClick={() => handleStartCampaign(campaign.id)}
+                                  onClick={() => handleStartCampaign(campaign.id, campaign)}
                                   disabled={isSending}
+                                  title="Resume campaign with parallel batch sending"
                                 >
                                   <Play className="h-4 w-4 text-green-600" />
                                 </Button>

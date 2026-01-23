@@ -1,4 +1,4 @@
-import { pgTable, text, serial, integer, boolean, timestamp, jsonb, doublePrecision } from "drizzle-orm/pg-core";
+import { pgTable, text, serial, integer, boolean, timestamp, jsonb, doublePrecision, index } from "drizzle-orm/pg-core";
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod";
 import { randomBytes } from "crypto";
@@ -30,7 +30,7 @@ export const insertUserSchema = createInsertSchema(users).omit({
   autoRefillAmount: true,
 });
 
-// SMS messages
+// SMS messages with indexes for scalability
 export const smsMessages = pgTable("sms_messages", {
   id: serial("id").primaryKey(),
   userId: integer("user_id").notNull().references(() => users.id),
@@ -41,15 +41,25 @@ export const smsMessages = pgTable("sms_messages", {
   status: text("status").notNull(), // sent, delivered, failed
   direction: text("direction").notNull(), // inbound, outbound
   sentAt: timestamp("sent_at").notNull(),
-  messageSid: text("message_sid"),
+  messageSid: text("message_sid").unique(), // Unique constraint for deduplication
   campaignId: integer("campaign_id").references(() => campaigns.id),
   mediaUrls: text("media_urls").array(),
-});
+  providerCode: text("provider_code"), // twilio, commio, bandwidth
+  createdAt: timestamp("created_at").defaultNow(),
+}, (table) => ({
+  // Performance indexes for common queries
+  userSentAtIdx: index("idx_sms_user_sent").on(table.userId, table.sentAt),
+  accountSentAtIdx: index("idx_sms_account_sent").on(table.accountId, table.sentAt),
+  fromIdx: index("idx_sms_from").on(table.from),
+  toIdx: index("idx_sms_to").on(table.to),
+  statusIdx: index("idx_sms_status").on(table.status),
+  directionIdx: index("idx_sms_direction").on(table.direction),
+  messageSidIdx: index("idx_sms_message_sid").on(table.messageSid),
+}));
 
 export const insertSmsSchema = createInsertSchema(smsMessages).omit({
   id: true,
-  sentAt: true,
-  messageSid: true,
+  createdAt: true,
 });
 
 // Voice calls
@@ -131,7 +141,14 @@ export const contacts = pgTable("contacts", {
   lastName: text("last_name"),
   phoneNumber: text("phone_number"),
   email: text("email"),
+  birthday: text("birthday"), // Format: YYYY-MM-DD
+  address: text("address"),
+  city: text("city"),
+  state: text("state"),
+  zipCode: text("zip_code"),
+  country: text("country"),
   tags: text("tags").array(),
+  source: text("source"), // e.g., 'sms', 'manual', 'import'
   createdAt: timestamp("created_at").notNull(),
 });
 

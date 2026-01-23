@@ -182,14 +182,14 @@ export class TwilioProvider implements ICommunicationProvider {
     }
   }
 
-  async getMessages(dateRange: DateRange): Promise<Message[]> {
+  async getMessages(dateRange: DateRange, maxLimit: number = 2000): Promise<Message[]> {
     const allMessages: Message[] = [];
     
-    // Use list with higher limit and iterate through all results
+    // Limit messages to prevent memory issues - fetch most recent first
     const messages = await this.client.messages.list({
       dateSentAfter: dateRange.startDate,
       dateSentBefore: dateRange.endDate,
-      limit: 100000, // Fetch up to 100k messages for complete historical data
+      limit: maxLimit, // Reduced limit to prevent OOM errors
     });
 
     for (const m of messages) {
@@ -347,9 +347,9 @@ export class TwilioProvider implements ICommunicationProvider {
     startOfWeek.setDate(startOfWeek.getDate() - startOfWeek.getDay());
     const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
     
-    // Fetch last 6 months (180 days) for historical charts
-    const sixMonthsAgo = new Date(now);
-    sixMonthsAgo.setMonth(sixMonthsAgo.getMonth() - 6);
+    // Fetch last 14 days for performance (reduced from 45 days for faster dashboard)
+    const fetchStartDate = new Date(now);
+    fetchStartDate.setDate(fetchStartDate.getDate() - 14);
     const lastMonth = new Date(now.getFullYear(), now.getMonth() - 1, 1);
     const endOfLastMonth = new Date(now.getFullYear(), now.getMonth(), 0);
     const yesterday = new Date(startOfDay);
@@ -359,13 +359,13 @@ export class TwilioProvider implements ICommunicationProvider {
     const lastWeekEnd = new Date(startOfWeek);
     lastWeekEnd.setDate(lastWeekEnd.getDate() - 1);
 
-    // Fetch all data in parallel - 6 months for historical charts
+    // Fetch all data in parallel - 14 days with limits for performance
     const [account, phoneNumbers, messagesAll, callsAll, usageAll] = await Promise.all([
       this.getAccountInfo(),
       this.getPhoneNumbers(),
-      this.getMessages({ startDate: sixMonthsAgo, endDate: now }),
-      this.getCalls({ startDate: sixMonthsAgo, endDate: now }),
-      this.getUsage({ startDate: sixMonthsAgo, endDate: now }),
+      this.getMessages({ startDate: fetchStartDate, endDate: now }, 500), // Reduced from 2000 for faster load
+      this.getCalls({ startDate: fetchStartDate, endDate: now }),
+      this.getUsage({ startDate: fetchStartDate, endDate: now }),
     ]);
 
     // Filter messages by time period

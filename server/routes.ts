@@ -13,6 +13,8 @@ import { generateMessagingInsights, generateCustomInsight, chatWithAI, getKPIDas
 import { twilioAnalyticsService } from "./twilioAnalytics";
 import { accountService } from "./services/accountService";
 import { dataService } from "./services/dataService";
+import { messageService } from "./services/messageService";
+import { batchSmsService, type PhoneNumberConfig } from "./services/batchSmsService";
 import { subAccountService } from "./services/subAccountService";
 import { analyticsService } from "./services/analyticsService";
 import { createHash, randomBytes } from "crypto";
@@ -31,6 +33,7 @@ import {
   messagingCampaigns,
   smsCampaigns,
   contactLists,
+  contacts,
 } from "@shared/schema";
 import { db } from "./db";
 import { eq, and } from "drizzle-orm";
@@ -500,22 +503,33 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
   
-  // Contact endpoints
+  // Contact endpoints - using database directly for persistence
   app.post("/api/contacts", async (req, res) => {
     try {
       const contactData = insertContactSchema.parse(req.body);
       
-      // Validate user exists
-      const user = await storage.getUser(contactData.userId);
-      if (!user) {
-        return res.status(404).json({ message: "User not found" });
+      // Check for duplicate phone number for this user
+      const existing = await db.select()
+        .from(contacts)
+        .where(and(
+          eq(contacts.userId, contactData.userId),
+          eq(contacts.phoneNumber, contactData.phoneNumber || '')
+        ));
+      
+      if (existing.length > 0) {
+        return res.status(409).json({ message: "Contact with this phone number already exists", contact: existing[0] });
       }
       
-      // Save to storage
-      const contact = await storage.createContact(contactData);
+      // Insert into database
+      const [contact] = await db.insert(contacts).values({
+        ...contactData,
+        createdAt: new Date(),
+      }).returning();
       
+      console.log('[Contacts] Created contact:', contact.id, contact.phoneNumber);
       return res.status(201).json(contact);
     } catch (error) {
+      console.error('[Contacts] Error creating contact:', error);
       return handleZodError(error, res);
     }
   });
@@ -527,12 +541,210 @@ export async function registerRoutes(app: Express): Promise<Server> {
         return res.status(400).json({ message: "Invalid user ID" });
       }
       
-      const contacts = await storage.getContacts(userId);
-      return res.status(200).json(contacts);
+      // Fetch from database
+      const userContacts = await db.select()
+        .from(contacts)
+        .where(eq(contacts.userId, userId))
+        .orderBy(contacts.createdAt);
+      
+      return res.status(200).json(userContacts);
+    } catch (error) {
+      console.error('[Contacts] Error fetching contacts:', error);
+      return res.status(500).json({ message: "Internal server error" });
+    }
+  });
+
+  // Update contact
+  app.put("/api/contacts/:contactId", async (req, res) => {
+    try {
+      const contactId = parseInt(req.params.contactId);
+      if (isNaN(contactId)) {
+        return res.status(400).json({ message: "Invalid contact ID" });
+      }
+      
+      const { firstName, lastName, phoneNumber, email, tags } = req.body;
+      
+      const updated = await db
+        .update(contacts)
+        .set({
+          firstName,
+          lastName,
+          phoneNumber,
+          email,
+          tags,
+        })
+        .where(eq(contacts.id, contactId))
+        .returning();
+      
+      if (updated.length === 0) {
+        return res.status(404).json({ message: "Contact not found" });
+      }
+      
+      return res.status(200).json(updated[0]);
     } catch (error) {
       console.error(error);
       return res.status(500).json({ message: "Internal server error" });
     }
+  });
+
+  // Delete contact
+  app.delete("/api/contacts/:contactId", async (req, res) => {
+    try {
+      const contactId = parseInt(req.params.contactId);
+      if (isNaN(contactId)) {
+        return res.status(400).json({ message: "Invalid contact ID" });
+      }
+      
+      const deleted = await db
+        .delete(contacts)
+        .where(eq(contacts.id, contactId))
+        .returning();
+      
+      if (deleted.length === 0) {
+        return res.status(404).json({ message: "Contact not found" });
+      }
+      
+      return res.status(200).json({ message: "Contact deleted" });
+    } catch (error) {
+      console.error(error);
+      return res.status(500).json({ message: "Internal server error" });
+    }
+  });
+
+  // Batch SMS sending endpoint - handles parallel sending across multiple numbers
+  app.post("/api/sms/batch", async (req, res) => {
+    try {
+      const { 
+        recipients, 
+        message, 
+        phoneNumbers, 
+        campaignId, 
+        userId = 1,
+        messagesPerNumber = 2000,
+        concurrentPerNumber = 10,
+      } = req.body;
+
+      if (!recipients || !Array.isArray(recipients) || recipients.length === 0) {
+        return res.status(400).json({ message: "Recipients array is required" });
+      }
+
+      if (!message || typeof message !== 'string') {
+        return res.status(400).json({ message: "Message is required" });
+      }
+
+      if (!phoneNumbers || !Array.isArray(phoneNumbers) || phoneNumbers.length === 0) {
+        return res.status(400).json({ message: "Phone numbers array is required" });
+      }
+
+      // Build phone number configs with credentials from accounts
+      const phoneNumberConfigs: PhoneNumberConfig[] = [];
+      
+      // Get all accounts for user once
+      const accountsData = await accountService.getAccountsForUser(userId);
+      const userAccounts = accountsData.accounts || [];
+      
+      for (const pn of phoneNumbers) {
+        let config: PhoneNumberConfig | null = null;
+
+        for (const account of userAccounts) {
+          // Extract numeric account ID from "acc_1" format
+          const accountIdNum = parseInt(account.id.replace('acc_', ''));
+          
+          if (account.provider === 'twilio') {
+            try {
+              const twilioNumbers = await communicationService.getPhoneNumbers(account.id);
+              const found = twilioNumbers.find((n: any) => n.phoneNumber === pn.phoneNumber);
+              if (found) {
+                // Get full credentials from account
+                const creds = await accountService.getAccountCredentials(accountIdNum);
+                if (creds) {
+                  config = {
+                    phoneNumber: pn.phoneNumber,
+                    provider: 'twilio',
+                    accountSid: creds.accountSid,
+                    authToken: creds.authToken,
+                  };
+                }
+                break;
+              }
+            } catch (e) {
+              // Continue to next account
+            }
+          } else if (account.provider === 'commio') {
+            try {
+              const commioNumbers = await communicationService.getPhoneNumbers(account.id);
+              const found = commioNumbers.find((n: any) => n.phoneNumber === pn.phoneNumber);
+              if (found) {
+                // Get full credentials from account
+                const creds = await accountService.getAccountCredentials(accountIdNum);
+                if (creds) {
+                  config = {
+                    phoneNumber: pn.phoneNumber,
+                    provider: 'commio',
+                    apiKey: creds.apiKey,
+                    apiSecret: creds.apiSecret,
+                  };
+                }
+                break;
+              }
+            } catch (e) {
+              // Continue to next account
+            }
+          }
+        }
+
+        if (config) {
+          phoneNumberConfigs.push(config);
+        } else {
+          console.log(`[BatchSMS] No credentials found for ${pn.phoneNumber}, skipping`);
+        }
+      }
+
+      if (phoneNumberConfigs.length === 0) {
+        return res.status(400).json({ message: "No valid phone number configurations found. Check that phone numbers belong to configured accounts." });
+      }
+
+      console.log(`[BatchSMS API] Starting batch: ${recipients.length} recipients, ${phoneNumberConfigs.length} numbers`);
+
+      // Start batch send (this runs in background)
+      const result = await batchSmsService.sendBatch({
+        recipients,
+        message,
+        phoneNumbers: phoneNumberConfigs,
+        campaignId,
+        userId,
+        messagesPerNumber,
+        concurrentPerNumber,
+      });
+
+      return res.status(200).json({
+        success: result.success,
+        total: result.total,
+        sent: result.sent,
+        failed: result.failed,
+        duration: result.duration,
+        errors: result.errors.slice(0, 100), // Limit errors in response
+      });
+    } catch (error) {
+      console.error('[BatchSMS API] Error:', error);
+      return res.status(500).json({ message: "Internal server error" });
+    }
+  });
+
+  // SSE endpoint for batch SMS progress
+  app.get("/api/sms/batch/progress/:jobId", async (req, res) => {
+    res.setHeader('Content-Type', 'text/event-stream');
+    res.setHeader('Cache-Control', 'no-cache');
+    res.setHeader('Connection', 'keep-alive');
+    
+    // This would connect to a job tracking system
+    // For now, just acknowledge the connection
+    res.write(`data: ${JSON.stringify({ status: 'connected', jobId: req.params.jobId })}\n\n`);
+    
+    // Keep connection open for progress updates
+    req.on('close', () => {
+      res.end();
+    });
   });
   
   // Billing endpoints
@@ -3321,6 +3533,62 @@ export async function registerRoutes(app: Express): Promise<Server> {
   }
 
   /**
+   * Fast dashboard metrics endpoint - uses database for instant loading
+   * This is optimized for the dashboard and doesn't fetch from external APIs
+   */
+  app.get("/api/dashboard/fast", async (req, res) => {
+    try {
+      const userId = (req as any).user?.id || 1;
+      const accountId = req.query.accountId ? parseInt(req.query.accountId as string) : undefined;
+      
+      // Check cache first
+      const cacheKey = `textflow:dashboard:fast:${userId}:${accountId || 'all'}`;
+      
+      if (redisService.isAvailable()) {
+        const { data: cached } = await redisService.getWithStale<any>(cacheKey);
+        if (cached) {
+          console.log('[Routes] Fast dashboard cache HIT');
+          return res.json(cached);
+        }
+      }
+
+      // Get stats from database using messageService
+      const stats = await messageService.getMessageStats(userId, accountId);
+      
+      // Get account info
+      const { accounts: userAccounts } = await accountService.getAccountsForUser(userId);
+      
+      const result = {
+        stats: {
+          totalMessages: stats.thisMonth,
+          messagesToday: stats.today,
+          messagesThisWeek: stats.thisWeek,
+          messagesThisMonth: stats.thisMonth,
+          inboundMessages: stats.inbound,
+          outboundMessages: stats.outbound,
+        },
+        accounts: userAccounts.map(a => ({
+          id: a.id,
+          name: a.name,
+          provider: a.provider,
+        })),
+        totalAccounts: userAccounts.length,
+        lastUpdated: new Date().toISOString(),
+      };
+
+      // Cache for 2 minutes
+      if (redisService.isAvailable()) {
+        await redisService.set(cacheKey, result, 120, 60);
+      }
+
+      res.json(result);
+    } catch (error) {
+      console.error("Error fetching fast dashboard:", error);
+      res.status(500).json({ error: "Failed to fetch dashboard data" });
+    }
+  });
+
+  /**
    * Clear analytics cache - forces fresh data fetch on next request
    */
   app.post("/api/data/cache/clear", async (req, res) => {
@@ -3345,6 +3613,84 @@ export async function registerRoutes(app: Express): Promise<Server> {
     } catch (error) {
       console.error("Error clearing cache:", error);
       res.status(500).json({ error: "Failed to clear cache" });
+    }
+  });
+
+  /**
+   * Sync messages from Twilio API to database
+   * This imports existing messages so the database-backed endpoints work
+   */
+  app.post("/api/data/sync-messages", async (req, res) => {
+    try {
+      const userId = (req as any).user?.id || 1;
+      const { accounts: userAccounts } = await accountService.getAccountsForUser(userId);
+      
+      let totalImported = 0;
+      let totalSkipped = 0;
+      
+      for (const account of userAccounts) {
+        try {
+          const numericId = parseInt(String(account.id).replace('acc_', ''));
+          if (isNaN(numericId)) continue;
+          
+          const provider = await accountService.getProviderForAccount(numericId);
+          if (!provider) continue;
+          
+          console.log(`[Sync] Fetching messages from ${provider.code} for account ${account.name}...`);
+          
+          // Fetch messages from provider (last 30 days, up to 1000)
+          const now = new Date();
+          const thirtyDaysAgo = new Date(now);
+          thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
+          
+          const messages = await provider.getMessages({ startDate: thirtyDaysAgo, endDate: now }, 1000);
+          console.log(`[Sync] Fetched ${messages.length} messages from ${provider.code}`);
+          
+          // Store in database
+          for (const msg of messages) {
+            try {
+              await messageService.storeMessage({
+                userId,
+                accountId: numericId,
+                to: msg.to,
+                from: msg.from,
+                body: msg.body,
+                status: msg.status,
+                direction: msg.direction as 'inbound' | 'outbound',
+                sentAt: new Date(msg.dateSent),
+                messageSid: msg.sid,
+                providerCode: provider.code,
+              });
+              totalImported++;
+            } catch (err: any) {
+              if (err.code === '23505') {
+                totalSkipped++; // Duplicate
+              } else {
+                console.error('[Sync] Error storing message:', err.message);
+              }
+            }
+          }
+        } catch (err) {
+          console.error(`[Sync] Error syncing account ${account.name}:`, err);
+        }
+      }
+      
+      console.log(`[Sync] Complete: ${totalImported} imported, ${totalSkipped} skipped`);
+      
+      // Clear cache so dashboard shows new data
+      if (redisService.isAvailable()) {
+        await redisService.deletePattern('textflow:dashboard:*');
+      }
+      
+      res.json({ 
+        success: true, 
+        imported: totalImported,
+        skipped: totalSkipped,
+        message: `Synced ${totalImported} messages to database`
+      });
+    } catch (error) {
+      console.error("Error syncing messages:", error);
+      res.status(500).json({ error: "Failed to sync messages" });
     }
   });
 
@@ -3435,11 +3781,17 @@ export async function registerRoutes(app: Express): Promise<Server> {
         isOverviewMode,
       });
 
-      const messages = period === 'today' 
+      let messages = period === 'today' 
         ? result.messages.today
         : period === 'thisWeek'
         ? result.messages.thisWeek
         : result.messages.thisMonth;
+
+      // Apply limit if specified
+      const limit = parseInt(req.query.limit as string) || 0;
+      if (limit > 0 && messages.length > limit) {
+        messages = messages.slice(0, limit);
+      }
 
       const response = {
         messages,
@@ -3457,6 +3809,117 @@ export async function registerRoutes(app: Express): Promise<Server> {
     } catch (error) {
       console.error("Error fetching messages:", error);
       res.status(500).json({ error: "Failed to fetch messages" });
+    }
+  });
+
+  /**
+   * Get conversations with pagination (OPTIMIZED - uses database)
+   * This is the new scalable endpoint for SMS inbox
+   */
+  app.get("/api/conversations", async (req, res) => {
+    try {
+      const userId = (req as any).user?.id || 1;
+      const page = parseInt(req.query.page as string) || 1;
+      const limit = parseInt(req.query.limit as string) || 50;
+      const accountId = req.query.accountId ? parseInt(req.query.accountId as string) : undefined;
+
+      // Get date range filter
+      const period = req.query.period as string || 'thisMonth';
+      const now = new Date();
+      let startDate: Date;
+      
+      switch (period) {
+        case 'today':
+          startDate = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+          break;
+        case 'thisWeek':
+          startDate = new Date(now);
+          startDate.setDate(startDate.getDate() - 7);
+          break;
+        case 'thisMonth':
+        default:
+          startDate = new Date(now.getFullYear(), now.getMonth(), 1);
+          break;
+      }
+
+      const result = await messageService.getConversations(
+        { userId, accountId, startDate, endDate: now },
+        { page, limit }
+      );
+
+      // Look up contact names for all phone numbers
+      const phoneNumbers = result.conversations.map(c => c.contactPhone);
+      const contactsMap = await messageService.getContactsByPhones(userId, phoneNumbers);
+
+      // Enrich conversations with contact names
+      const enrichedConversations = result.conversations.map(conv => {
+        const normalizedPhone = conv.contactPhone.replace(/[^\d]/g, '').slice(-10);
+        const contact = contactsMap.get(conv.contactPhone) || contactsMap.get(normalizedPhone);
+        
+        return {
+          ...conv,
+          contactName: contact 
+            ? `${contact.firstName || ''} ${contact.lastName || ''}`.trim() || null
+            : null,
+          contactEmail: contact?.email || null,
+        };
+      });
+
+      res.json({
+        conversations: enrichedConversations,
+        total: result.total,
+        page: result.page,
+        limit: result.limit,
+        hasMore: result.hasMore,
+      });
+    } catch (error) {
+      console.error("Error fetching conversations:", error);
+      res.status(500).json({ error: "Failed to fetch conversations" });
+    }
+  });
+
+  /**
+   * Get messages for a specific conversation (contact)
+   */
+  app.get("/api/conversations/:contactPhone/messages", async (req, res) => {
+    try {
+      const userId = (req as any).user?.id || 1;
+      const contactPhone = decodeURIComponent(req.params.contactPhone);
+      const page = parseInt(req.query.page as string) || 1;
+      const limit = parseInt(req.query.limit as string) || 50;
+
+      const result = await messageService.getConversationMessages(
+        userId,
+        contactPhone,
+        { page, limit }
+      );
+
+      res.json({
+        messages: result.messages,
+        total: result.total,
+        page: result.page,
+        limit: result.limit,
+        hasMore: result.hasMore,
+      });
+    } catch (error) {
+      console.error("Error fetching conversation messages:", error);
+      res.status(500).json({ error: "Failed to fetch conversation messages" });
+    }
+  });
+
+  /**
+   * Get message stats for dashboard
+   */
+  app.get("/api/messages/stats", async (req, res) => {
+    try {
+      const userId = (req as any).user?.id || 1;
+      const accountId = req.query.accountId ? parseInt(req.query.accountId as string) : undefined;
+
+      const stats = await messageService.getMessageStats(userId, accountId);
+      res.json(stats);
+    } catch (error) {
+      console.error("Error fetching message stats:", error);
+      res.status(500).json({ error: "Failed to fetch message stats" });
     }
   });
 

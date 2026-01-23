@@ -264,8 +264,7 @@ export function useAccountAnalytics() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
-  const fetchData = useCallback(async () => {
-    setLoading(true);
+  const fetchData = useCallback(async (useCache = true) => {
     setError(null);
     
     try {
@@ -277,11 +276,33 @@ export function useAccountAnalytics() {
         params.set('accountId', currentAccount.id);
       }
 
+      // Check sessionStorage cache first for instant load
+      const cacheKey = `dashboard_analytics_${isOverviewMode ? 'overview' : currentAccount?.id || 'default'}`;
+      const cacheExpiry = `${cacheKey}_expiry`;
+      
+      if (useCache) {
+        const cached = sessionStorage.getItem(cacheKey);
+        const expiry = sessionStorage.getItem(cacheExpiry);
+        if (cached && expiry && Date.now() < parseInt(expiry)) {
+          console.log('[Dashboard] Using cached data');
+          setData(JSON.parse(cached));
+          setLoading(false);
+          // Refresh in background
+          fetchData(false);
+          return;
+        }
+      }
+
+      setLoading(true);
       const response = await fetch(`/api/data/analytics?${params}`);
       if (!response.ok) throw new Error('Failed to fetch analytics');
       
       const result = await response.json();
       setData(result);
+      
+      // Cache for 3 minutes
+      sessionStorage.setItem(cacheKey, JSON.stringify(result));
+      sessionStorage.setItem(cacheExpiry, String(Date.now() + 3 * 60 * 1000));
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Unknown error');
     } finally {

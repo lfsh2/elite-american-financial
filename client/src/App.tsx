@@ -12,6 +12,7 @@ import Messaging from './pages/Messaging';
 import Campaigns from './pages/Campaigns';
 import SmsCampaigns from './pages/SmsCampaigns';
 import SmsInbox from './pages/SmsInbox';
+import Contacts from './pages/Contacts';
 import VoiceCalls from './pages/VoiceCalls';
 import Users from './pages/Users';
 import SubAccounts from './pages/SubAccounts';
@@ -60,6 +61,7 @@ function ProtectedContent() {
           <Route path="/sms" component={SmsInbox} />
           <Route path="/campaigns" component={Campaigns} />
           <Route path="/sms-campaigns" component={SmsCampaigns} />
+          <Route path="/contacts" component={Contacts} />
           <Route path="/voice" component={VoiceCalls} />
           <Route path="/users" component={Users} />
           <Route path="/subaccounts" component={SubAccounts} />

@@ -13,6 +13,7 @@ import { db } from '../db';
 import { smsMessages, voiceCalls } from '../../shared/schema';
 import { eq } from 'drizzle-orm';
 import { redisService, CacheKeys } from '../services/redisService';
+import { messageService } from '../services/messageService';
 
 const router = Router();
 
@@ -128,10 +129,10 @@ router.post('/inbound-message', async (req: Request, res: Response) => {
     // For now, we'll store with a default account - in production, look up by To number
     const accountId = await findAccountByPhoneNumber(webhook.To);
 
-    // Store the inbound message
-    await db.insert(smsMessages).values({
+    // Store the inbound message using messageService
+    await messageService.storeMessage({
       userId: 1, // Default user - should be looked up
-      accountId: accountId,
+      accountId: accountId || undefined,
       to: webhook.To,
       from: webhook.From,
       body: webhook.Body || '',
@@ -139,6 +140,7 @@ router.post('/inbound-message', async (req: Request, res: Response) => {
       direction: 'inbound',
       sentAt: new Date(),
       messageSid: webhook.MessageSid,
+      providerCode: 'twilio',
     });
 
     // Invalidate cache

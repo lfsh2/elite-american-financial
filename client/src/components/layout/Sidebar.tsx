@@ -79,6 +79,7 @@ export const Sidebar = memo(function Sidebar() {
     { title: 'Analytics', href: '/analytics', icon: TrendingUp },
     { title: 'SMS', href: '/sms', icon: MessageSquare, badge: inboxCount },
     { title: 'Voice Calls', href: '/voice', icon: Phone },
+    { title: 'Contacts', href: '/contacts', icon: Users },
     { title: 'SMS Campaigns', href: '/sms-campaigns', icon: Send },
     { title: 'A2P Compliance', href: '/campaigns', icon: Megaphone },
     { title: 'Phone Numbers', href: '/phone-numbers', icon: Hash },
