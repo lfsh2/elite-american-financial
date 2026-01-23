@@ -119,6 +119,10 @@ export default function SmsInbox() {
   const [newCampaignName, setNewCampaignName] = useState('');
   const [sendingProgress, setSendingProgress] = useState({ sent: 0, failed: 0, total: 0 });
   const [showProgress, setShowProgress] = useState(false);
+  
+  // New conversation
+  const [showNewConversation, setShowNewConversation] = useState(false);
+  const [newConversationPhone, setNewConversationPhone] = useState('');
 
   useEffect(() => {
     fetchConversations();
@@ -521,6 +525,24 @@ export default function SmsInbox() {
       }
       
       setNewMessage('');
+      
+      // Update the conversation in the list to show the new message
+      setConversations(prev => {
+        const existingIndex = prev.findIndex(c => c.contactPhone === selectedConversation.contactPhone);
+        if (existingIndex >= 0) {
+          const updated = [...prev];
+          updated[existingIndex] = {
+            ...updated[existingIndex],
+            lastMessage: newMessage,
+            lastMessageTime: new Date().toISOString(),
+          };
+          // Move to top of list
+          const [conv] = updated.splice(existingIndex, 1);
+          return [conv, ...updated];
+        }
+        return prev;
+      });
+      
       toast({ title: 'Message Sent', description: 'Your message has been sent successfully.' });
     } catch (error: any) {
       console.error('[SmsInbox] Send error:', error);
@@ -581,6 +603,46 @@ export default function SmsInbox() {
     } else {
       setSelectedContacts(new Set(filteredConversations.map(c => c.id)));
     }
+  };
+
+  const handleStartNewConversation = () => {
+    if (!newConversationPhone.trim()) {
+      toast({ title: 'Error', description: 'Please enter a phone number.', variant: 'destructive' });
+      return;
+    }
+    
+    // Format phone number
+    let phone = newConversationPhone.trim().replace(/[^\d+]/g, '');
+    if (!phone.startsWith('+')) {
+      phone = '+1' + phone; // Default to US
+    }
+    
+    // Check if conversation already exists
+    const existing = conversations.find(c => c.contactPhone === phone);
+    if (existing) {
+      setSelectedConversation(existing);
+      setShowNewConversation(false);
+      setNewConversationPhone('');
+      return;
+    }
+    
+    // Create new conversation
+    const newConv: Conversation = {
+      id: `new_${Date.now()}`,
+      contactPhone: phone,
+      contactName: phone,
+      lastMessage: '',
+      lastMessageTime: new Date().toISOString(),
+      unreadCount: 0,
+      isStarred: false,
+      messages: [],
+    };
+    
+    setConversations(prev => [newConv, ...prev]);
+    setSelectedConversation(newConv);
+    setShowNewConversation(false);
+    setNewConversationPhone('');
+    toast({ title: 'New Conversation', description: `Started conversation with ${phone}` });
   };
 
   const handleBroadcastSend = async () => {
@@ -795,6 +857,15 @@ export default function SmsInbox() {
           <div className="flex items-center justify-between mb-4">
             <h2 className="text-lg font-semibold">All Conversations</h2>
             <div className="flex items-center gap-1">
+              <Button 
+                variant="ghost" 
+                size="icon" 
+                className="h-8 w-8"
+                onClick={() => setShowNewConversation(true)}
+                title="New conversation"
+              >
+                <Plus className="h-4 w-4" />
+              </Button>
               <Button 
                 variant={isSelectMode ? "default" : "ghost"} 
                 size="icon" 
@@ -1257,6 +1328,47 @@ export default function SmsInbox() {
                   <p className="font-medium">{selectedContact.source || 'SMS Campaign'}</p>
                 </div>
               </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* New Conversation Modal */}
+      {showNewConversation && (
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
+          <div className="bg-white rounded-xl shadow-2xl w-full max-w-md mx-4">
+            <div className="p-4 border-b flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <MessageSquare className="h-5 w-5 text-blue-600" />
+                <h3 className="font-semibold text-lg">New Conversation</h3>
+              </div>
+              <Button variant="ghost" size="icon" onClick={() => setShowNewConversation(false)}>
+                <X className="h-5 w-5" />
+              </Button>
+            </div>
+            
+            <div className="p-4">
+              <label className="block text-sm font-medium mb-2">Phone Number</label>
+              <Input
+                placeholder="+1 (555) 123-4567"
+                value={newConversationPhone}
+                onChange={(e) => setNewConversationPhone(e.target.value)}
+                onKeyDown={(e) => e.key === 'Enter' && handleStartNewConversation()}
+                className="mb-4"
+              />
+              <p className="text-xs text-gray-500 mb-4">
+                Enter a phone number to start a new conversation. Use E.164 format (e.g., +19545399276) or just the digits.
+              </p>
+            </div>
+            
+            <div className="p-4 border-t bg-gray-50 flex justify-end gap-2">
+              <Button variant="outline" onClick={() => setShowNewConversation(false)}>
+                Cancel
+              </Button>
+              <Button onClick={handleStartNewConversation}>
+                <MessageSquare className="h-4 w-4 mr-2" />
+                Start Conversation
+              </Button>
             </div>
           </div>
         </div>
