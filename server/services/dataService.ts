@@ -549,7 +549,7 @@ class DataService {
           )
         )
         .orderBy(desc(smsMessages.sentAt))
-        .limit(1000); // Reduced from 10k to prevent memory issues on Render
+        .limit(10000);
 
       // Query calls from database
       const callsQuery = db
@@ -562,7 +562,7 @@ class DataService {
           )
         )
         .orderBy(desc(voiceCalls.startTime))
-        .limit(500); // Reduced from 5k to prevent memory issues on Render
+        .limit(5000);
 
       const [dbMessages, dbCalls] = await Promise.all([messagesQuery, callsQuery]);
 

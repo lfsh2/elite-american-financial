@@ -278,7 +278,7 @@ export class TwilioProvider implements ICommunicationProvider {
     const calls = await this.client.calls.list({
       startTimeAfter: dateRange.startDate,
       startTimeBefore: dateRange.endDate,
-      limit: 1000, // Reduced from 5k to prevent memory issues on Render
+      limit: 5000,
     });
     
     console.log(`[TwilioProvider] Fetched ${calls.length} calls`);

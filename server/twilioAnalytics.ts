@@ -301,7 +301,7 @@ class TwilioAnalyticsService {
       const messages = await this.client.messages.list({
         dateSentAfter: startDate,
         dateSentBefore: endDate,
-        limit: 500 // Reduced from 10k to prevent memory issues on Render (2GB limit)
+        limit: 10000
       });
 
       return messages.map(m => ({
@@ -335,7 +335,7 @@ class TwilioAnalyticsService {
       const calls = await this.client.calls.list({
         startTimeAfter: startDate,
         startTimeBefore: endDate,
-        limit: 500 // Reduced from 5k to prevent memory issues on Render
+        limit: 5000
       });
 
       return calls.map(c => ({
