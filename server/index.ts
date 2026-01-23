@@ -77,9 +77,9 @@ app.use((req, res, next) => {
         initializeWorkers();
         log('Background workers initialized');
         
-        // PRE-WARM CACHE - Fetch data immediately so users never wait
-        log('🔥 Pre-warming cache in background...');
-        warmCache().catch(err => console.error('[CacheWarm] Error:', err));
+        // SKIP aggressive cache warming on startup to prevent OOM on Render (2GB limit)
+        // Data will be fetched lazily on first request and cached
+        log('✅ Server ready - data will be loaded on first request');
       } else {
         log('Redis not available - running without background workers (caching still works)');
       }
