@@ -259,7 +259,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
   // SMS endpoints
   app.post("/api/sms", async (req, res) => {
     try {
-      const { userId, to, from, body, direction, mediaUrls } = req.body;
+      const { userId, to, from, body, direction, mediaUrls, accountId, provider } = req.body;
       
       // Validate required fields
       if (!userId || !to || !from || !body) {
@@ -276,15 +276,75 @@ export async function registerRoutes(app: Express): Promise<Server> {
         return res.status(403).json({ message: "Insufficient credits" });
       }
       
-      // Send message via messaging provider
-      const result = await communicationService.sendSMS(to, from, body, mediaUrls);
+      let result: { success: boolean; sid?: string; error?: string };
+      const providerCode = provider?.toLowerCase() || 'twilio';
+      
+      // Route to correct provider based on accountId/provider
+      if (providerCode === 'commio' && accountId) {
+        console.log(`[SMS] Sending via Commio from ${from} to ${to}`);
+        // Get Commio credentials from account
+        // For Commio, accountSid = API Key, authToken = API Secret
+        const numericAccountId = parseInt(accountId.toString().replace('acc_', ''));
+        const credentials = await accountService.getAccountCredentials(numericAccountId);
+        
+        // Commio uses accountSid as apiKey and authToken as apiSecret
+        const apiKey = credentials?.apiKey || credentials?.accountSid;
+        const apiSecret = credentials?.apiSecret || credentials?.authToken;
+        
+        if (!apiKey || !apiSecret) {
+          console.error('[SMS] Commio credentials missing:', { hasApiKey: !!apiKey, hasApiSecret: !!apiSecret });
+          return res.status(400).json({ message: "Commio credentials not configured for this account" });
+        }
+        
+        console.log(`[SMS] Using Commio API key: ${apiKey.substring(0, 5)}...`);
+        
+        // Send via Commio/ThinQ API
+        // The accountSid field stores the ThinQ account username (e.g., "amuniz1")
+        try {
+          const thinqAccount = credentials?.accountSid || apiKey;
+          const commioResponse = await fetch(`https://api.thinq.com/account/${thinqAccount}/product/origination/sms/send`, {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              'Authorization': `Basic ${Buffer.from(`${apiKey}:${apiSecret}`).toString('base64')}`
+            },
+            body: JSON.stringify({
+              from_did: from.replace(/[^\d]/g, ''),
+              to_did: to.replace(/[^\d]/g, ''),
+              message: body
+            })
+          });
+          
+          const responseText = await commioResponse.text();
+          console.log(`[SMS] Commio response: ${commioResponse.status} - ${responseText}`);
+          
+          if (commioResponse.ok) {
+            const commioData = JSON.parse(responseText);
+            result = { success: true, sid: commioData.guid || commioData.id || `commio_${Date.now()}` };
+          } else {
+            let errorMsg = 'Commio API error';
+            try {
+              const errorData = JSON.parse(responseText);
+              errorMsg = errorData.message || errorData.error || responseText;
+            } catch { errorMsg = responseText; }
+            result = { success: false, error: errorMsg };
+          }
+        } catch (commioError) {
+          console.error('[SMS] Commio error:', commioError);
+          result = { success: false, error: commioError instanceof Error ? commioError.message : 'Commio send failed' };
+        }
+      } else {
+        // Default to Twilio
+        console.log(`[SMS] Sending via Twilio from ${from} to ${to}`);
+        result = await communicationService.sendSMS(to, from, body, mediaUrls);
+      }
       
       if (!result.success) {
         console.error('[SMS] Send failed:', result.error);
         return res.status(500).json({ message: result.error || "Failed to send SMS", success: false });
       }
       
-      // Save to storage with server-set values
+      // Save to storage with server-set values and provider code
       const message = await storage.createSmsMessage({
         userId,
         to,
@@ -295,6 +355,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
         sentAt: new Date(),
         messageSid: result.sid,
         mediaUrls: mediaUrls || [],
+        providerCode: providerCode,
       });
       
       // Deduct credits
@@ -302,12 +363,12 @@ export async function registerRoutes(app: Express): Promise<Server> {
         userId: user.id,
         amount: -1,
         type: 'credit-usage',
-        description: 'SMS message',
+        description: `SMS message (${providerCode})`,
         credits: 1
       });
       
-      console.log('[SMS] Message sent successfully:', result.sid);
-      return res.status(201).json({ ...message, success: true, messageSid: result.sid });
+      console.log(`[SMS] Message sent successfully via ${providerCode}:`, result.sid);
+      return res.status(201).json({ ...message, success: true, messageSid: result.sid, provider: providerCode });
     } catch (error) {
       console.error('[SMS] Error:', error);
       return res.status(500).json({ message: "Failed to send SMS", error: String(error) });

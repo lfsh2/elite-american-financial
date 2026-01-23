@@ -55,6 +55,7 @@ interface Message {
   direction: 'inbound' | 'outbound';
   status: string;
   createdAt: string;
+  provider?: string; // twilio, commio, etc.
 }
 
 interface Conversation {
@@ -467,6 +468,11 @@ export default function SmsInbox() {
     
     setIsSending(true);
     try {
+      // Find the selected phone number's account info
+      const selectedPhone = phoneNumbers.find(pn => pn.phoneNumber === selectedFromNumber);
+      const accountId = selectedPhone?.accountId;
+      const provider = selectedPhone?.provider || 'twilio';
+      
       // Send message via API
       const res = await fetch('/api/sms', {
         method: 'POST',
@@ -478,6 +484,8 @@ export default function SmsInbox() {
           from: selectedFromNumber,
           body: newMessage,
           direction: 'outbound',
+          accountId,
+          provider,
         }),
       });
 
@@ -496,6 +504,7 @@ export default function SmsInbox() {
         direction: 'outbound',
         status: 'sent',
         createdAt: new Date().toISOString(),
+        provider: result.provider || provider,
       };
       
       setSelectedConversation(prev => prev ? {
@@ -1083,6 +1092,15 @@ export default function SmsInbox() {
                           
                           <div className={`flex items-center gap-1 mt-1 ${isOutbound ? 'justify-end' : ''}`}>
                             <span className="text-xs text-gray-500">{formatTime(msg.createdAt)}</span>
+                            {msg.provider && (
+                              <Badge variant="outline" className={`text-[10px] px-1.5 py-0 h-4 ${
+                                msg.provider === 'commio' ? 'bg-purple-50 text-purple-600 border-purple-200' : 
+                                msg.provider === 'twilio' ? 'bg-red-50 text-red-600 border-red-200' : 
+                                'bg-gray-50 text-gray-600 border-gray-200'
+                              }`}>
+                                {msg.provider}
+                              </Badge>
+                            )}
                             {isOutbound && (
                               <span className="text-xs text-gray-500">
                                 {msg.status === 'delivered' ? <CheckCircle2 className="h-3 w-3 text-green-500 inline" /> :

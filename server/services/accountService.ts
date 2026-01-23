@@ -356,19 +356,20 @@ class AccountService {
    * Get account with decrypted credentials (for API calls)
    */
   async getAccountCredentials(accountId: number): Promise<{
-    accountSid: string;
-    authToken: string;
+    accountSid?: string;
+    authToken?: string;
     apiKey?: string;
     apiSecret?: string;
   } | null> {
     const account = await this.getAccountById(accountId);
-    if (!account || !account.accountSid || !account.authToken) {
+    if (!account) {
       return null;
     }
 
+    // Return all available credentials - different providers use different fields
     return {
-      accountSid: account.accountSid,
-      authToken: account.authToken, // TODO: Decrypt in production
+      accountSid: account.accountSid || undefined,
+      authToken: account.authToken || undefined,
       apiKey: account.apiKey || undefined,
       apiSecret: account.apiSecret || undefined,
     };
