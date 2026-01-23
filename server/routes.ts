@@ -259,10 +259,15 @@ export async function registerRoutes(app: Express): Promise<Server> {
   // SMS endpoints
   app.post("/api/sms", async (req, res) => {
     try {
-      const messageData = insertSmsSchema.parse(req.body);
+      const { userId, to, from, body, direction, mediaUrls } = req.body;
+      
+      // Validate required fields
+      if (!userId || !to || !from || !body) {
+        return res.status(400).json({ message: "Missing required fields: userId, to, from, body" });
+      }
       
       // Validate user has enough credits
-      const user = await storage.getUser(messageData.userId);
+      const user = await storage.getUser(userId);
       if (!user) {
         return res.status(404).json({ message: "User not found" });
       }
@@ -272,22 +277,24 @@ export async function registerRoutes(app: Express): Promise<Server> {
       }
       
       // Send message via messaging provider
-      const result = await communicationService.sendSMS(
-        messageData.to, 
-        messageData.from,
-        messageData.body,
-        messageData.mediaUrls
-      );
+      const result = await communicationService.sendSMS(to, from, body, mediaUrls);
       
       if (!result.success) {
-        return res.status(500).json({ message: result.error || "Failed to send SMS" });
+        console.error('[SMS] Send failed:', result.error);
+        return res.status(500).json({ message: result.error || "Failed to send SMS", success: false });
       }
       
-      // Save to storage
+      // Save to storage with server-set values
       const message = await storage.createSmsMessage({
-        ...messageData,
+        userId,
+        to,
+        from,
+        body,
+        direction: direction || 'outbound',
         status: 'sent',
+        sentAt: new Date(),
         messageSid: result.sid,
+        mediaUrls: mediaUrls || [],
       });
       
       // Deduct credits
@@ -299,9 +306,11 @@ export async function registerRoutes(app: Express): Promise<Server> {
         credits: 1
       });
       
-      return res.status(201).json(message);
+      console.log('[SMS] Message sent successfully:', result.sid);
+      return res.status(201).json({ ...message, success: true, messageSid: result.sid });
     } catch (error) {
-      return handleZodError(error, res);
+      console.error('[SMS] Error:', error);
+      return res.status(500).json({ message: "Failed to send SMS", error: String(error) });
     }
   });
   
