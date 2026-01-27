@@ -392,6 +392,38 @@ export default function SmsCampaigns() {
     }
   };
 
+  // Delete contact list
+  const handleDeleteList = async (listId: number, listName: string) => {
+    if (!confirm(`Are you sure you want to delete "${listName}"? This will also delete all contacts in this list.`)) {
+      return;
+    }
+
+    try {
+      const res = await fetch(`/api/campaigns/contact-lists/${listId}`, {
+        method: 'DELETE',
+        credentials: 'include'
+      });
+
+      if (!res.ok) {
+        throw new Error('Failed to delete contact list');
+      }
+
+      toast({
+        title: 'Success',
+        description: 'Contact list deleted successfully',
+      });
+
+      fetchData();
+    } catch (error: any) {
+      console.error('Error deleting contact list:', error);
+      toast({
+        title: 'Error',
+        description: error.message || 'Failed to delete contact list',
+        variant: 'destructive'
+      });
+    }
+  };
+
   // Create contact list and import contacts
   const handleCreateListAndImport = async () => {
     if (!newListName || uploadedContacts.length === 0) {
@@ -1694,7 +1726,13 @@ export default function SmsCampaigns() {
                               <DropdownMenuItem>Edit List</DropdownMenuItem>
                               <DropdownMenuItem>Export CSV</DropdownMenuItem>
                               <DropdownMenuSeparator />
-                              <DropdownMenuItem className="text-red-600">Delete</DropdownMenuItem>
+                              <DropdownMenuItem 
+                                className="text-red-600"
+                                onClick={() => handleDeleteList(list.id, list.name)}
+                              >
+                                <Trash2 className="mr-2 h-4 w-4" />
+                                Delete
+                              </DropdownMenuItem>
                             </DropdownMenuContent>
                           </DropdownMenu>
                         </div>

@@ -4195,6 +4195,26 @@ export async function registerRoutes(app: Express): Promise<Server> {
   });
 
   /**
+   * Delete a contact list
+   */
+  app.delete("/api/campaigns/contact-lists/:id", async (req, res) => {
+    try {
+      const userId = (req as any).user?.id || 1;
+      const listId = parseInt(req.params.id);
+
+      if (!listId) {
+        return res.status(400).json({ error: "List ID is required" });
+      }
+
+      await campaignService.deleteContactList(userId, listId);
+      res.json({ success: true, message: "Contact list deleted successfully" });
+    } catch (error: any) {
+      console.error("Error deleting contact list:", error);
+      res.status(500).json({ error: error.message || "Failed to delete contact list" });
+    }
+  });
+
+  /**
    * Create brand registration (draft)
    */
   app.post("/api/campaigns/brands", async (req, res) => {

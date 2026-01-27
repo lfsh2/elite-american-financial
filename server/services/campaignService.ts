@@ -197,6 +197,34 @@ async function updateContactListCount(contactListId: number): Promise<void> {
     .where(eq(contactLists.id, contactListId));
 }
 
+/**
+ * Delete a contact list and all its members
+ */
+export async function deleteContactList(
+  userId: number,
+  contactListId: number
+): Promise<void> {
+  // Verify the list belongs to the user
+  const [list] = await db
+    .select()
+    .from(contactLists)
+    .where(and(eq(contactLists.id, contactListId), eq(contactLists.userId, userId)));
+
+  if (!list) {
+    throw new Error("Contact list not found or access denied");
+  }
+
+  // Delete all members first
+  await db
+    .delete(contactListMembers)
+    .where(eq(contactListMembers.contactListId, contactListId));
+
+  // Delete the list
+  await db
+    .delete(contactLists)
+    .where(eq(contactLists.id, contactListId));
+}
+
 // ============================================
 // BRAND REGISTRATION
 // ============================================
@@ -1145,6 +1173,7 @@ export const campaignService = {
   // Contacts
   importContacts,
   createContactList,
+  deleteContactList,
   
   // Brand Registration
   createBrandRegistration,
