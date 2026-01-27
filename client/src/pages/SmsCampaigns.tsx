@@ -208,7 +208,17 @@ export default function SmsCampaigns() {
         });
         if (phonesRes.ok) {
           const data = await phonesRes.json();
-          setPhoneNumbers(data.phoneNumbers || []);
+          // Only include numbers if account is Twilio or Commio
+          const accountsRes = await fetch('/api/accounts', { credentials: 'include' });
+          if (accountsRes.ok) {
+            const accountsData = await accountsRes.json();
+            const account = accountsData.accounts?.find((acc: any) => acc.id === currentAccount.id);
+            if (account?.provider === 'twilio' || account?.provider === 'commio') {
+              setPhoneNumbers(data.phoneNumbers || []);
+            } else {
+              setPhoneNumbers([]); // Don't show numbers from other providers
+            }
+          }
         }
       } else {
         // Fetch from all accounts if no specific account selected
@@ -224,12 +234,15 @@ export default function SmsCampaigns() {
               });
               if (phonesRes.ok) {
                 const data = await phonesRes.json();
-                const numbersWithAccount = (data.phoneNumbers || []).map((pn: any) => ({
-                  ...pn,
-                  accountId: acc.id,
-                  accountName: acc.name,
-                  provider: acc.provider
-                }));
+                // Only include Twilio and Commio numbers for SMS sending
+                const numbersWithAccount = (data.phoneNumbers || [])
+                  .filter((pn: any) => acc.provider === 'twilio' || acc.provider === 'commio')
+                  .map((pn: any) => ({
+                    ...pn,
+                    accountId: acc.id,
+                    accountName: acc.name,
+                    provider: acc.provider
+                  }));
                 allPhoneNumbers.push(...numbersWithAccount);
               }
             } catch (e) {
@@ -897,20 +910,33 @@ export default function SmsCampaigns() {
                     </div>
                     {/* From Number - Multi-select like Twilio */}
                     <div className="space-y-2">
-                      <Label>From Numbers * (Parallel Batch Sending)</Label>
+                      <Label>From Numbers * (Twilio & Commio Only)</Label>
+                      <p className="text-xs text-muted-foreground">
+                        Only Twilio and Commio numbers can send SMS messages
+                      </p>
                       
-                      {/* Number Selection Mode */}
-                      <div className="flex gap-2 mb-3">
-                        <button
-                          type="button"
-                          onClick={() => setNumberSelectionMode('all')}
-                          className={`flex-1 px-2 py-2 rounded-lg border text-xs font-medium transition-colors ${
-                            numberSelectionMode === 'all' ? 'bg-green-50 border-green-300 text-green-700' : 'hover:bg-gray-50'
-                          }`}
-                        >
-                          <RefreshCw className="h-3 w-3 inline mr-1" />
-                          Use All ({phoneNumbers.length})
-                        </button>
+                      {phoneNumbers.length === 0 ? (
+                        <div className="bg-yellow-50 border border-yellow-200 rounded-lg p-4 text-center">
+                          <AlertCircle className="h-8 w-8 text-yellow-600 mx-auto mb-2" />
+                          <p className="text-sm font-medium text-yellow-900 mb-1">No SMS-capable numbers available</p>
+                          <p className="text-xs text-yellow-700">
+                            Please add a Twilio or Commio account with phone numbers to send SMS campaigns.
+                          </p>
+                        </div>
+                      ) : (
+                        <>
+                          {/* Number Selection Mode */}
+                          <div className="flex gap-2 mb-3">
+                            <button
+                              type="button"
+                              onClick={() => setNumberSelectionMode('all')}
+                              className={`flex-1 px-2 py-2 rounded-lg border text-xs font-medium transition-colors ${
+                                numberSelectionMode === 'all' ? 'bg-green-50 border-green-300 text-green-700' : 'hover:bg-gray-50'
+                              }`}
+                            >
+                              <RefreshCw className="h-3 w-3 inline mr-1" />
+                              Use All ({phoneNumbers.length})
+                            </button>
                         <button
                           type="button"
                           onClick={() => setNumberSelectionMode('select')}
@@ -1040,6 +1066,8 @@ export default function SmsCampaigns() {
                             ))}
                           </SelectContent>
                         </Select>
+                      )}
+                        </>
                       )}
                     </div>
                     
