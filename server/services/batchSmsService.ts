@@ -27,6 +27,12 @@ interface BatchSendOptions {
   messagesPerNumber?: number; // Default 2000
   concurrentPerNumber?: number; // Concurrent requests per number, default 10
   onProgress?: (progress: BatchProgress) => void;
+  
+  // Drip mode settings
+  dripMode?: boolean; // Enable drip mode scheduling
+  messagesPerMinute?: number; // Rate limit per number (default 30 = safe)
+  startTime?: Date; // When to start sending (for scheduled campaigns)
+  spreadOverHours?: number; // Spread messages over X hours
 }
 
 interface BatchProgress {
@@ -35,6 +41,8 @@ interface BatchProgress {
   failed: number;
   inProgress: number;
   byNumber: Record<string, { sent: number; failed: number; pending: number }>;
+  estimatedCompletionTime?: Date;
+  currentRate?: number; // Messages per minute
 }
 
 interface BatchResult {
@@ -132,6 +140,10 @@ class BatchSmsService {
       messagesPerNumber = 2000,
       concurrentPerNumber = 10,
       onProgress,
+      dripMode = false,
+      messagesPerMinute = 30, // Safe default: 30 msgs/min = 1 msg every 2 seconds
+      startTime: scheduledStartTime,
+      spreadOverHours,
     } = options;
 
     const startTime = Date.now();
@@ -246,21 +258,45 @@ class BatchSmsService {
         }
       };
 
-      // Process queue with concurrency limit
+      // Calculate delay between messages based on rate limit
+      const delayBetweenMessages = dripMode ? (60000 / messagesPerMinute) : 50; // ms
+      
+      // Process queue with concurrency limit and rate limiting
       const processBatch = async (batch: BatchRecipient[]): Promise<void> => {
-        await Promise.all(batch.map(sendMessage));
+        if (dripMode) {
+          // In drip mode, send messages sequentially with delay
+          for (const recipient of batch) {
+            await sendMessage(recipient);
+            if (batch.indexOf(recipient) < batch.length - 1) {
+              await new Promise(resolve => setTimeout(resolve, delayBetweenMessages));
+            }
+          }
+        } else {
+          // Normal mode: parallel sending
+          await Promise.all(batch.map(sendMessage));
+        }
       };
 
-      // Split queue into batches of concurrentPerNumber
-      for (let i = 0; i < queue.length; i += concurrentPerNumber) {
-        const batch = queue.slice(i, i + concurrentPerNumber);
+      // Split queue into batches
+      const batchSize = dripMode ? 1 : concurrentPerNumber; // In drip mode, process 1 at a time
+      for (let i = 0; i < queue.length; i += batchSize) {
+        const batch = queue.slice(i, i + batchSize);
         progress.inProgress += batch.length;
+        
+        // Calculate and report estimated completion time
+        if (dripMode && onProgress) {
+          const remainingMessages = queue.length - i;
+          const estimatedMinutes = remainingMessages / messagesPerMinute;
+          progress.estimatedCompletionTime = new Date(Date.now() + estimatedMinutes * 60000);
+          progress.currentRate = messagesPerMinute;
+        }
+        
         await processBatch(batch);
         progress.inProgress -= batch.length;
         
-        // Small delay between batches to avoid rate limiting
-        if (i + concurrentPerNumber < queue.length) {
-          await new Promise(resolve => setTimeout(resolve, 50));
+        // Delay between batches
+        if (i + batchSize < queue.length) {
+          await new Promise(resolve => setTimeout(resolve, dripMode ? delayBetweenMessages : 50));
         }
       }
     });

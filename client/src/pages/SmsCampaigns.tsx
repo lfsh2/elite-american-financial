@@ -159,6 +159,11 @@ export default function SmsCampaigns() {
   const [sendingProgress, setSendingProgress] = useState({ sent: 0, failed: 0, total: 0 });
   const [showProgress, setShowProgress] = useState(false);
   
+  // Drip mode settings
+  const [dripMode, setDripMode] = useState(false);
+  const [messagesPerMinute, setMessagesPerMinute] = useState(30); // Safe default
+  const [estimatedCompletion, setEstimatedCompletion] = useState<Date | null>(null);
+  
   // New contact list dialog
   const [showNewList, setShowNewList] = useState(false);
   const [newListName, setNewListName] = useState('');
@@ -506,7 +511,7 @@ export default function SmsCampaigns() {
         };
       });
 
-      // Use batch API for parallel sending
+      // Use batch API for parallel sending with drip mode
       const batchRes = await fetch('/api/sms/batch', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -523,7 +528,9 @@ export default function SmsCampaigns() {
           campaignId,
           userId: 1,
           messagesPerNumber: 2000,
-          concurrentPerNumber: 20,
+          concurrentPerNumber: dripMode ? 1 : 20,
+          dripMode,
+          messagesPerMinute,
         }),
       });
 
@@ -1033,6 +1040,91 @@ export default function SmsCampaigns() {
                             ))}
                           </SelectContent>
                         </Select>
+                      )}
+                    </div>
+                    
+                    {/* Drip Mode Settings */}
+                    <div className="space-y-3 border-t pt-4 mt-4">
+                      <div className="flex items-center justify-between">
+                        <div>
+                          <Label className="text-sm font-medium">Drip Mode (Safe Sending)</Label>
+                          <p className="text-xs text-muted-foreground mt-1">
+                            Spread messages over time to avoid carrier filtering
+                          </p>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => setDripMode(!dripMode)}
+                          className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors ${
+                            dripMode ? 'bg-green-600' : 'bg-gray-200'
+                          }`}
+                        >
+                          <span
+                            className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${
+                              dripMode ? 'translate-x-6' : 'translate-x-1'
+                            }`}
+                          />
+                        </button>
+                      </div>
+                      
+                      {dripMode && (
+                        <div className="bg-green-50 border border-green-200 rounded-lg p-4 space-y-3">
+                          <div className="flex items-start gap-2">
+                            <Zap className="h-4 w-4 text-green-600 mt-0.5" />
+                            <div className="flex-1">
+                              <Label className="text-sm font-medium text-green-900">Messages Per Minute (Per Number)</Label>
+                              <p className="text-xs text-green-700 mt-1 mb-2">
+                                Safe rate: 20-60 msgs/min. Lower = safer for new numbers.
+                              </p>
+                              <div className="flex items-center gap-3">
+                                <input
+                                  type="range"
+                                  min="10"
+                                  max="120"
+                                  step="10"
+                                  value={messagesPerMinute}
+                                  onChange={(e) => setMessagesPerMinute(parseInt(e.target.value))}
+                                  className="flex-1"
+                                />
+                                <Input
+                                  type="number"
+                                  min="10"
+                                  max="120"
+                                  value={messagesPerMinute}
+                                  onChange={(e) => setMessagesPerMinute(parseInt(e.target.value) || 30)}
+                                  className="w-20 text-center"
+                                />
+                              </div>
+                              <div className="flex items-center justify-between mt-2 text-xs">
+                                <span className="text-green-700">
+                                  {messagesPerMinute <= 30 ? '🟢 Very Safe' : messagesPerMinute <= 60 ? '🟡 Safe' : '🟠 Moderate'}
+                                </span>
+                                <span className="text-green-700 font-medium">
+                                  {messagesPerMinute} msgs/min
+                                </span>
+                              </div>
+                            </div>
+                          </div>
+                          
+                          <div className="bg-white rounded p-3 text-xs space-y-1">
+                            <div className="flex justify-between">
+                              <span className="text-gray-600">Delay between messages:</span>
+                              <span className="font-medium">{(60 / messagesPerMinute).toFixed(1)}s</span>
+                            </div>
+                            <div className="flex justify-between">
+                              <span className="text-gray-600">Est. time for 1000 msgs:</span>
+                              <span className="font-medium">{Math.ceil(1000 / messagesPerMinute)} minutes</span>
+                            </div>
+                          </div>
+                          
+                          <div className="flex items-start gap-2 text-xs text-green-800 bg-green-100 rounded p-2">
+                            <AlertCircle className="h-3 w-3 mt-0.5 flex-shrink-0" />
+                            <div>
+                              <strong>Best Practices:</strong> Keep opt-out rate &lt;1%, error rate &lt;6%. 
+                              Include opt-out language and sender ID in messages.
+                            </div>
+                          </div>
+                        </div>
                       )}
                     </div>
                   </>
