@@ -895,8 +895,8 @@ export default function SmsCampaigns() {
                 ))}
               </div>
 
-              <div className="flex-1 overflow-y-auto px-1">
-                <div className="space-y-4 py-4">
+              <div className="flex-1 overflow-y-auto px-1" style={{ maxHeight: 'calc(90vh - 250px)' }}>
+                <div className="space-y-4 py-4 pr-2">
                   {/* Step 1: Campaign Details */}
                   {campaignStep === 1 && (
                   <>
