@@ -64,9 +64,11 @@ import {
 } from 'recharts';
 import { useAccountAnalytics, formatNumber } from '../hooks/useTwilioData';
 import { useAccount } from '@/contexts/AccountContext';
+import { PhoneHealthDashboard } from '@/components/PhoneHealthDashboard';
+import { usePhoneHealth } from '@/hooks/usePhoneHealth';
 
 type TimePeriod = 'day' | 'week' | 'month';
-type AnalyticsTab = 'overview' | 'delivery' | 'response' | 'latency' | 'engagement';
+type AnalyticsTab = 'overview' | 'delivery' | 'response' | 'latency' | 'engagement' | 'health';
 
 // Health score rating helper
 const getHealthRating = (score: number) => {
@@ -91,6 +93,7 @@ export default function Analytics() {
   const [selectedProvider, setSelectedProvider] = useState<string>('all');
   const { data: accountData, loading, currentAccount } = useAccountAnalytics();
   const { accounts } = useAccount();
+  const { data: phoneHealthData, loading: healthLoading, refresh: refreshHealth } = usePhoneHealth();
 
   // Transform account data to analytics format for compatibility
   const analytics = useMemo(() => {
@@ -400,6 +403,13 @@ export default function Analytics() {
               >
                 Engagement
               </TabsTrigger>
+              <TabsTrigger 
+                value="health" 
+                className="rounded-none border-b-2 border-transparent data-[state=active]:border-primary data-[state=active]:bg-transparent data-[state=active]:shadow-none px-4 pb-3"
+              >
+                <Activity className="w-4 h-4 mr-2" />
+                Phone Health
+              </TabsTrigger>
             </TabsList>
           </Tabs>
           <div className="flex items-center gap-2">
@@ -429,8 +439,11 @@ export default function Analytics() {
         </div>
       </div>
 
-      {/* Health Score Section - Horizontal Layout like Twilio */}
-      <Card className="bg-white border-0 shadow-sm overflow-hidden">
+      {/* Overview Tab Content */}
+      {activeTab === 'overview' && (
+        <>
+          {/* Health Score Section - Horizontal Layout like Twilio */}
+          <Card className="bg-white border-0 shadow-sm overflow-hidden">
         <CardContent className="p-0">
           <div className="grid grid-cols-1 lg:grid-cols-6 divide-y lg:divide-y-0 lg:divide-x divide-gray-100">
             {/* Health Score Gauge - Takes 1 column */}
@@ -890,6 +903,54 @@ export default function Analytics() {
           </CardContent>
         </Card>
       </div>
+        </>
+      )}
+
+      {/* Phone Health Tab Content */}
+      {activeTab === 'health' && (
+        <PhoneHealthDashboard 
+          data={phoneHealthData} 
+          loading={healthLoading} 
+          onRefresh={refreshHealth} 
+        />
+      )}
+
+      {/* Other tabs - placeholder for now */}
+      {activeTab === 'delivery' && (
+        <Card>
+          <CardHeader>
+            <CardTitle>Delivery & Errors</CardTitle>
+            <CardDescription>Coming soon</CardDescription>
+          </CardHeader>
+        </Card>
+      )}
+
+      {activeTab === 'response' && (
+        <Card>
+          <CardHeader>
+            <CardTitle>Response Analytics</CardTitle>
+            <CardDescription>Coming soon</CardDescription>
+          </CardHeader>
+        </Card>
+      )}
+
+      {activeTab === 'latency' && (
+        <Card>
+          <CardHeader>
+            <CardTitle>Latency Metrics</CardTitle>
+            <CardDescription>Coming soon</CardDescription>
+          </CardHeader>
+        </Card>
+      )}
+
+      {activeTab === 'engagement' && (
+        <Card>
+          <CardHeader>
+            <CardTitle>Engagement Analytics</CardTitle>
+            <CardDescription>Coming soon</CardDescription>
+          </CardHeader>
+        </Card>
+      )}
     </div>
   );
 }

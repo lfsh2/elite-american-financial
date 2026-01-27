@@ -3270,6 +3270,81 @@ export async function registerRoutes(app: Express): Promise<Server> {
   });
 
   /**
+   * Phone Number Health Check Endpoints
+   */
+  
+  /**
+   * Get comprehensive health check for all phone numbers
+   * Query params:
+   * - accountId: Optional specific account ID to check
+   */
+  app.get("/api/analytics/phone-health", async (req, res) => {
+    try {
+      const userId = (req as any).user?.id || 1;
+      const accountId = req.query.accountId ? parseInt(req.query.accountId as string) : undefined;
+
+      const { phoneHealthService } = await import('./services/phoneHealthService');
+      const healthCheck = await phoneHealthService.getHealthCheck(userId, accountId);
+
+      res.json(healthCheck);
+    } catch (error: any) {
+      console.error("Error fetching phone health:", error);
+      res.status(500).json({ error: error.message || "Failed to fetch phone health" });
+    }
+  });
+
+  /**
+   * Get health check for a specific phone number
+   */
+  app.get("/api/analytics/phone-health/:phoneNumber", async (req, res) => {
+    try {
+      const phoneNumber = req.params.phoneNumber;
+      const accountId = req.query.accountId ? parseInt(req.query.accountId as string) : undefined;
+
+      if (!accountId) {
+        return res.status(400).json({ error: "accountId query parameter is required" });
+      }
+
+      const { phoneHealthService } = await import('./services/phoneHealthService');
+      const health = await phoneHealthService.getPhoneNumberHealth(phoneNumber, accountId);
+
+      if (!health) {
+        return res.status(404).json({ error: "Phone number not found" });
+      }
+
+      res.json(health);
+    } catch (error: any) {
+      console.error("Error fetching phone number health:", error);
+      res.status(500).json({ error: error.message || "Failed to fetch phone number health" });
+    }
+  });
+
+  /**
+   * Refresh health check for a specific account
+   */
+  app.post("/api/analytics/phone-health/refresh/:accountId", async (req, res) => {
+    try {
+      const accountId = parseInt(req.params.accountId);
+
+      if (isNaN(accountId)) {
+        return res.status(400).json({ error: "Invalid account ID" });
+      }
+
+      const { phoneHealthService } = await import('./services/phoneHealthService');
+      const healthChecks = await phoneHealthService.refreshAccountHealth(accountId);
+
+      res.json({ 
+        success: true, 
+        count: healthChecks.length,
+        healthChecks 
+      });
+    } catch (error: any) {
+      console.error("Error refreshing phone health:", error);
+      res.status(500).json({ error: error.message || "Failed to refresh phone health" });
+    }
+  });
+
+  /**
    * Export analytics report as CSV
    */
   app.get("/api/analytics/export/csv", async (req, res) => {
