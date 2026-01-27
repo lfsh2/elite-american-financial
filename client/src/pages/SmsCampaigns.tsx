@@ -273,12 +273,47 @@ export default function SmsCampaigns() {
     }
   };
 
-  // Parse CSV file
+  // Parse CSV file with proper handling of quoted fields
   const parseCSV = (text: string): Contact[] => {
     const lines = text.split('\n').filter(line => line.trim());
-    if (lines.length === 0) return [];
+    if (lines.length < 2) {
+      toast({
+        title: 'Invalid CSV',
+        description: 'CSV file must contain headers and at least one row',
+        variant: 'destructive'
+      });
+      return [];
+    }
 
-    const headers = lines[0].toLowerCase().split(',').map(h => h.trim());
+    // Helper function to parse CSV line with quoted fields
+    const parseCSVLine = (line: string): string[] => {
+      const result: string[] = [];
+      let current = '';
+      let inQuotes = false;
+      
+      for (let i = 0; i < line.length; i++) {
+        const char = line[i];
+        const nextChar = line[i + 1];
+        
+        if (char === '"') {
+          if (inQuotes && nextChar === '"') {
+            current += '"';
+            i++; // Skip next quote
+          } else {
+            inQuotes = !inQuotes;
+          }
+        } else if (char === ',' && !inQuotes) {
+          result.push(current.trim());
+          current = '';
+        } else {
+          current += char;
+        }
+      }
+      result.push(current.trim());
+      return result;
+    };
+
+    const headers = parseCSVLine(lines[0]).map(h => h.toLowerCase().trim());
     const phoneIndex = headers.findIndex(h => h.includes('phone') || h.includes('number') || h.includes('mobile'));
     const firstNameIndex = headers.findIndex(h => h.includes('first') || h === 'name');
     const lastNameIndex = headers.findIndex(h => h.includes('last'));
@@ -295,15 +330,28 @@ export default function SmsCampaigns() {
 
     const contacts: Contact[] = [];
     for (let i = 1; i < lines.length; i++) {
-      const values = lines[i].split(',').map(v => v.trim().replace(/^["']|["']$/g, ''));
+      const values = parseCSVLine(lines[i]);
       if (values[phoneIndex]) {
-        contacts.push({
+        // Build contact object with all fields
+        const contact: any = {
           phoneNumber: values[phoneIndex],
           firstName: firstNameIndex >= 0 ? values[firstNameIndex] : undefined,
           lastName: lastNameIndex >= 0 ? values[lastNameIndex] : undefined,
           email: emailIndex >= 0 ? values[emailIndex] : undefined,
           selected: true,
+        };
+
+        // Add custom fields (e.g., dollar_amount, company, etc.)
+        headers.forEach((header, index) => {
+          if (index !== phoneIndex && index !== firstNameIndex && 
+              index !== lastNameIndex && index !== emailIndex && values[index]) {
+            // Convert header to snake_case for consistency
+            const fieldName = header.replace(/\s+/g, '_').toLowerCase();
+            contact[fieldName] = values[index];
+          }
         });
+
+        contacts.push(contact);
       }
     }
     return contacts;
@@ -1351,7 +1399,12 @@ export default function SmsCampaigns() {
                   <Button 
                     onClick={() => setCampaignStep(prev => prev + 1)}
                     disabled={
-                      (campaignStep === 1 && (!newCampaign.name || !newCampaign.fromNumber)) ||
+                      (campaignStep === 1 && (
+                        !newCampaign.name || 
+                        (numberSelectionMode === 'single' && !newCampaign.fromNumber) ||
+                        (numberSelectionMode === 'select' && selectedFromNumbers.size === 0) ||
+                        (numberSelectionMode === 'all' && getFilteredNumbers().length === 0)
+                      )) ||
                       (campaignStep === 2 && !newCampaign.messageTemplate)
                     }
                   >
