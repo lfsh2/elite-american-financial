@@ -405,15 +405,20 @@ export default function SmsCampaigns() {
       });
 
       if (!res.ok) {
-        throw new Error('Failed to delete contact list');
+        const errorData = await res.json().catch(() => ({}));
+        throw new Error(errorData.error || 'Failed to delete contact list');
       }
+
+      // Immediately update the UI by filtering out the deleted list
+      setContactLists(prev => prev.filter(list => list.id !== listId));
 
       toast({
         title: 'Success',
         description: 'Contact list deleted successfully',
       });
 
-      fetchData();
+      // Refresh data to ensure consistency
+      await fetchData();
     } catch (error: any) {
       console.error('Error deleting contact list:', error);
       toast({
