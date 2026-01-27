@@ -4198,15 +4198,19 @@ export async function registerRoutes(app: Express): Promise<Server> {
    * Delete a contact list
    */
   app.delete("/api/campaigns/contact-lists/:id", async (req, res) => {
+    console.log('DELETE /api/campaigns/contact-lists/:id called with id:', req.params.id);
     try {
       const userId = (req as any).user?.id || 1;
       const listId = parseInt(req.params.id);
+      console.log('Deleting contact list - userId:', userId, 'listId:', listId);
 
-      if (!listId) {
+      if (!listId || isNaN(listId)) {
+        console.log('Invalid list ID:', req.params.id);
         return res.status(400).json({ error: "List ID is required" });
       }
 
       await campaignService.deleteContactList(userId, listId);
+      console.log('Contact list deleted successfully:', listId);
       res.json({ success: true, message: "Contact list deleted successfully" });
     } catch (error: any) {
       console.error("Error deleting contact list:", error);
