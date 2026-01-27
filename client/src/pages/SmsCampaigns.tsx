@@ -413,11 +413,21 @@ export default function SmsCampaigns() {
       });
 
       console.log('Delete response status:', res.status);
+      console.log('Delete response content-type:', res.headers.get('content-type'));
 
       if (!res.ok) {
         const errorData = await res.json().catch(() => ({}));
         console.error('Delete failed:', errorData);
         throw new Error(errorData.error || 'Failed to delete contact list');
+      }
+
+      // Check if response is JSON
+      const contentType = res.headers.get('content-type');
+      if (!contentType || !contentType.includes('application/json')) {
+        console.error('Response is not JSON, content-type:', contentType);
+        const text = await res.text();
+        console.error('Response body:', text.substring(0, 200));
+        throw new Error('Server returned invalid response format');
       }
 
       const result = await res.json();
