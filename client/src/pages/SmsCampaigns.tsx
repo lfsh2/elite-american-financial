@@ -159,6 +159,9 @@ export default function SmsCampaigns() {
   const [sendingProgress, setSendingProgress] = useState({ sent: 0, failed: 0, total: 0 });
   const [showProgress, setShowProgress] = useState(false);
   
+  // Provider filter: 'all', 'commio', or 'twilio'
+  const [providerFilter, setProviderFilter] = useState<'all' | 'commio' | 'twilio'>('all');
+  
   // Drip mode settings
   const [dripMode, setDripMode] = useState(false);
   const [messagesPerMinute, setMessagesPerMinute] = useState(30); // Safe default
@@ -172,6 +175,12 @@ export default function SmsCampaigns() {
   // Campaign sending
   const [isSending, setIsSending] = useState(false);
   const [selectedCampaign, setSelectedCampaign] = useState<SmsCampaign | null>(null);
+
+  // Filter phone numbers by provider
+  const getFilteredNumbers = () => {
+    if (providerFilter === 'all') return phoneNumbers;
+    return phoneNumbers.filter(pn => pn.provider === providerFilter);
+  };
 
   // Fetch data on mount
   useEffect(() => {
@@ -472,10 +481,10 @@ export default function SmsCampaigns() {
 
   // Start campaign with batch sending
   const handleStartCampaign = async (campaignId: number, campaign?: SmsCampaign) => {
-    // Determine which numbers to use
+    // Determine which numbers to use (respects provider filter)
     let numbersToUse: string[] = [];
     if (numberSelectionMode === 'all') {
-      numbersToUse = phoneNumbers.map(pn => pn.phoneNumber);
+      numbersToUse = getFilteredNumbers().map(pn => pn.phoneNumber);
     } else if (numberSelectionMode === 'select') {
       numbersToUse = Array.from(selectedFromNumbers);
     } else if (campaign?.fromNumber) {
@@ -915,6 +924,39 @@ export default function SmsCampaigns() {
                         Only Twilio and Commio numbers can send SMS messages
                       </p>
                       
+                      {/* Provider Filter */}
+                      {phoneNumbers.length > 0 && (
+                        <div className="flex gap-2 mb-2">
+                          <button
+                            type="button"
+                            onClick={() => setProviderFilter('all')}
+                            className={`flex-1 px-3 py-1.5 rounded-md border text-xs font-medium transition-colors ${
+                              providerFilter === 'all' ? 'bg-gray-100 border-gray-300 text-gray-900' : 'hover:bg-gray-50'
+                            }`}
+                          >
+                            All Providers
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => setProviderFilter('commio')}
+                            className={`flex-1 px-3 py-1.5 rounded-md border text-xs font-medium transition-colors ${
+                              providerFilter === 'commio' ? 'bg-purple-50 border-purple-300 text-purple-700' : 'hover:bg-gray-50'
+                            }`}
+                          >
+                            All Commio
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => setProviderFilter('twilio')}
+                            className={`flex-1 px-3 py-1.5 rounded-md border text-xs font-medium transition-colors ${
+                              providerFilter === 'twilio' ? 'bg-red-50 border-red-300 text-red-700' : 'hover:bg-gray-50'
+                            }`}
+                          >
+                            All Twilio
+                          </button>
+                        </div>
+                      )}
+                      
                       {phoneNumbers.length === 0 ? (
                         <div className="bg-yellow-50 border border-yellow-200 rounded-lg p-4 text-center">
                           <AlertCircle className="h-8 w-8 text-yellow-600 mx-auto mb-2" />
@@ -935,7 +977,7 @@ export default function SmsCampaigns() {
                               }`}
                             >
                               <RefreshCw className="h-3 w-3 inline mr-1" />
-                              Use All ({phoneNumbers.length})
+                              Use All ({getFilteredNumbers().length})
                             </button>
                         <button
                           type="button"
@@ -967,11 +1009,11 @@ export default function SmsCampaigns() {
                             <span className="font-medium text-green-800 text-sm">All Numbers Pool Active</span>
                           </div>
                           <p className="text-xs text-green-700 mb-2">
-                            Messages will rotate across all {phoneNumbers.length} numbers (2000 msgs/number max).
+                            Messages will rotate across all {getFilteredNumbers().length} numbers (2000 msgs/number max).
                           </p>
                           <div className="flex flex-wrap gap-1">
                             {(() => {
-                              const counts = phoneNumbers.reduce((acc: Record<string, number>, pn) => {
+                              const counts = getFilteredNumbers().reduce((acc: Record<string, number>, pn) => {
                                 const provider = pn.provider || 'Unknown';
                                 acc[provider] = (acc[provider] || 0) + 1;
                                 return acc;
@@ -996,19 +1038,19 @@ export default function SmsCampaigns() {
                             <button
                               type="button"
                               onClick={() => {
-                                if (selectedFromNumbers.size === phoneNumbers.length) {
+                                if (selectedFromNumbers.size === getFilteredNumbers().length) {
                                   setSelectedFromNumbers(new Set());
                                 } else {
-                                  setSelectedFromNumbers(new Set(phoneNumbers.map(pn => pn.phoneNumber)));
+                                  setSelectedFromNumbers(new Set(getFilteredNumbers().map(pn => pn.phoneNumber)));
                                 }
                               }}
                               className="text-xs text-blue-600 hover:underline"
                             >
-                              {selectedFromNumbers.size === phoneNumbers.length ? 'Deselect All' : 'Select All'}
+                              {selectedFromNumbers.size === getFilteredNumbers().length ? 'Deselect All' : 'Select All'}
                             </button>
                           </div>
                           <div className="space-y-1">
-                            {phoneNumbers.map((pn, idx) => (
+                            {getFilteredNumbers().map((pn, idx) => (
                               <label 
                                 key={idx} 
                                 className={`flex items-center gap-2 p-1.5 rounded cursor-pointer hover:bg-gray-50 text-xs ${
@@ -1044,7 +1086,7 @@ export default function SmsCampaigns() {
                         <Select 
                           value={newCampaign.fromNumber}
                           onValueChange={(value) => {
-                            const selectedPhone = phoneNumbers.find(pn => pn.phoneNumber === value);
+                            const selectedPhone = getFilteredNumbers().find(pn => pn.phoneNumber === value);
                             setNewCampaign(prev => ({ 
                               ...prev, 
                               fromNumber: value,
@@ -1056,7 +1098,7 @@ export default function SmsCampaigns() {
                             <SelectValue placeholder="Select a phone number" />
                           </SelectTrigger>
                           <SelectContent>
-                            {phoneNumbers.map((pn, idx) => (
+                            {getFilteredNumbers().map((pn, idx) => (
                               <SelectItem key={`${pn.phoneNumber}-${idx}`} value={pn.phoneNumber}>
                                 <div className="flex items-center gap-2">
                                   <span>{pn.phoneNumber}</span>
