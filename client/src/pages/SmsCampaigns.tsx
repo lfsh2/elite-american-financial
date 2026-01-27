@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import { useAuth } from '../hooks/use-auth';
 import { useAccount } from '../contexts/AccountContext';
 import { 
@@ -83,6 +83,7 @@ interface Contact {
   lastName?: string;
   email?: string;
   selected?: boolean;
+  [key: string]: any; // Support custom fields from CSV
 }
 
 interface ContactList {
@@ -176,11 +177,11 @@ export default function SmsCampaigns() {
   const [isSending, setIsSending] = useState(false);
   const [selectedCampaign, setSelectedCampaign] = useState<SmsCampaign | null>(null);
 
-  // Filter phone numbers by provider
-  const getFilteredNumbers = () => {
+  // Filter phone numbers by provider (memoized to prevent infinite loops)
+  const filteredNumbers = useMemo(() => {
     if (providerFilter === 'all') return phoneNumbers;
     return phoneNumbers.filter(pn => pn.provider === providerFilter);
-  };
+  }, [phoneNumbers, providerFilter]);
 
   // Fetch data on mount
   useEffect(() => {
@@ -532,7 +533,7 @@ export default function SmsCampaigns() {
     // Determine which numbers to use (respects provider filter)
     let numbersToUse: string[] = [];
     if (numberSelectionMode === 'all') {
-      numbersToUse = getFilteredNumbers().map(pn => pn.phoneNumber);
+      numbersToUse = filteredNumbers.map(pn => pn.phoneNumber);
     } else if (numberSelectionMode === 'select') {
       numbersToUse = Array.from(selectedFromNumbers);
     } else if (campaign?.fromNumber) {
@@ -1026,7 +1027,7 @@ export default function SmsCampaigns() {
                               }`}
                             >
                               <RefreshCw className="h-3 w-3 inline mr-1" />
-                              Use All ({getFilteredNumbers().length})
+                              Use All ({filteredNumbers.length})
                             </button>
                         <button
                           type="button"
@@ -1058,11 +1059,11 @@ export default function SmsCampaigns() {
                             <span className="font-medium text-green-800 text-sm">All Numbers Pool Active</span>
                           </div>
                           <p className="text-xs text-green-700 mb-2">
-                            Messages will rotate across all {getFilteredNumbers().length} numbers (2000 msgs/number max).
+                            Messages will rotate across all {filteredNumbers.length} numbers (2000 msgs/number max).
                           </p>
                           <div className="flex flex-wrap gap-1">
                             {(() => {
-                              const counts = getFilteredNumbers().reduce((acc: Record<string, number>, pn) => {
+                              const counts = filteredNumbers.reduce((acc: Record<string, number>, pn) => {
                                 const provider = pn.provider || 'Unknown';
                                 acc[provider] = (acc[provider] || 0) + 1;
                                 return acc;
@@ -1087,20 +1088,20 @@ export default function SmsCampaigns() {
                             <button
                               type="button"
                               onClick={() => {
-                                if (selectedFromNumbers.size === getFilteredNumbers().length) {
+                                if (selectedFromNumbers.size === filteredNumbers.length) {
                                   setSelectedFromNumbers(new Set());
                                 } else {
-                                  setSelectedFromNumbers(new Set(getFilteredNumbers().map(pn => pn.phoneNumber)));
+                                  setSelectedFromNumbers(new Set(filteredNumbers.map(pn => pn.phoneNumber)));
                                 }
                               }}
                               className="text-xs text-blue-600 hover:text-blue-700 font-medium hover:underline"
                             >
-                              {selectedFromNumbers.size === getFilteredNumbers().length ? 'Deselect All' : 'Select All'}
+                              {selectedFromNumbers.size === filteredNumbers.length ? 'Deselect All' : 'Select All'}
                             </button>
                           </div>
                           <div className="max-h-[200px] overflow-y-auto p-2">
                             <div className="space-y-1">
-                              {getFilteredNumbers().map((pn, idx) => (
+                              {filteredNumbers.map((pn, idx) => (
                                 <label 
                                   key={idx} 
                                   className={`flex items-center gap-3 p-2.5 rounded-md cursor-pointer transition-colors ${
@@ -1146,7 +1147,7 @@ export default function SmsCampaigns() {
                         <Select 
                           value={newCampaign.fromNumber}
                           onValueChange={(value) => {
-                            const selectedPhone = getFilteredNumbers().find(pn => pn.phoneNumber === value);
+                            const selectedPhone = filteredNumbers.find(pn => pn.phoneNumber === value);
                             setNewCampaign(prev => ({ 
                               ...prev, 
                               fromNumber: value,
@@ -1158,7 +1159,7 @@ export default function SmsCampaigns() {
                             <SelectValue placeholder="Select a phone number" />
                           </SelectTrigger>
                           <SelectContent>
-                            {getFilteredNumbers().map((pn, idx) => (
+                            {filteredNumbers.map((pn, idx) => (
                               <SelectItem key={`${pn.phoneNumber}-${idx}`} value={pn.phoneNumber}>
                                 <div className="flex items-center gap-2">
                                   <span>{pn.phoneNumber}</span>
@@ -1403,7 +1404,7 @@ export default function SmsCampaigns() {
                         !newCampaign.name || 
                         (numberSelectionMode === 'single' && !newCampaign.fromNumber) ||
                         (numberSelectionMode === 'select' && selectedFromNumbers.size === 0) ||
-                        (numberSelectionMode === 'all' && getFilteredNumbers().length === 0)
+                        (numberSelectionMode === 'all' && filteredNumbers.length === 0)
                       )) ||
                       (campaignStep === 2 && !newCampaign.messageTemplate)
                     }
