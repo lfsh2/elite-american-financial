@@ -159,6 +159,9 @@ export default function SmsCampaigns() {
   const [sendingProgress, setSendingProgress] = useState({ sent: 0, failed: 0, total: 0 });
   const [showProgress, setShowProgress] = useState(false);
   
+  // Provider filter for batch sending
+  const [providerFilter, setProviderFilter] = useState<'both' | 'twilio' | 'commio'>('both');
+  
   // Drip mode settings
   const [dripMode, setDripMode] = useState(false);
   const [messagesPerMinute, setMessagesPerMinute] = useState(30); // Safe default
@@ -172,6 +175,12 @@ export default function SmsCampaigns() {
   // Campaign sending
   const [isSending, setIsSending] = useState(false);
   const [selectedCampaign, setSelectedCampaign] = useState<SmsCampaign | null>(null);
+
+  // Filter phone numbers based on provider selection
+  const filteredPhoneNumbers = phoneNumbers.filter(pn => {
+    if (providerFilter === 'both') return true;
+    return pn.provider === providerFilter;
+  });
 
   // Fetch data on mount
   useEffect(() => {
@@ -472,10 +481,10 @@ export default function SmsCampaigns() {
 
   // Start campaign with batch sending
   const handleStartCampaign = async (campaignId: number, campaign?: SmsCampaign) => {
-    // Determine which numbers to use
+    // Determine which numbers to use (filtered by provider selection)
     let numbersToUse: string[] = [];
     if (numberSelectionMode === 'all') {
-      numbersToUse = phoneNumbers.map(pn => pn.phoneNumber);
+      numbersToUse = filteredPhoneNumbers.map(pn => pn.phoneNumber);
     } else if (numberSelectionMode === 'select') {
       numbersToUse = Array.from(selectedFromNumbers);
     } else if (campaign?.fromNumber) {
@@ -915,7 +924,38 @@ export default function SmsCampaigns() {
                         Only Twilio and Commio numbers can send SMS messages
                       </p>
                       
-                      {phoneNumbers.length === 0 ? (
+                      {/* Provider Filter */}
+                      <div className="flex gap-2 mb-3">
+                        <button
+                          type="button"
+                          onClick={() => setProviderFilter('both')}
+                          className={`flex-1 px-3 py-2 rounded-lg border text-xs font-medium transition-colors ${
+                            providerFilter === 'both' ? 'bg-purple-50 border-purple-300 text-purple-700' : 'hover:bg-gray-50'
+                          }`}
+                        >
+                          Both Providers
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setProviderFilter('twilio')}
+                          className={`flex-1 px-3 py-2 rounded-lg border text-xs font-medium transition-colors ${
+                            providerFilter === 'twilio' ? 'bg-red-50 border-red-300 text-red-700' : 'hover:bg-gray-50'
+                          }`}
+                        >
+                          Twilio Only
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setProviderFilter('commio')}
+                          className={`flex-1 px-3 py-2 rounded-lg border text-xs font-medium transition-colors ${
+                            providerFilter === 'commio' ? 'bg-purple-50 border-purple-300 text-purple-700' : 'hover:bg-gray-50'
+                          }`}
+                        >
+                          Commio Only
+                        </button>
+                      </div>
+                      
+                      {filteredPhoneNumbers.length === 0 ? (
                         <div className="bg-yellow-50 border border-yellow-200 rounded-lg p-4 text-center">
                           <AlertCircle className="h-8 w-8 text-yellow-600 mx-auto mb-2" />
                           <p className="text-sm font-medium text-yellow-900 mb-1">No SMS-capable numbers available</p>
@@ -935,7 +975,7 @@ export default function SmsCampaigns() {
                               }`}
                             >
                               <RefreshCw className="h-3 w-3 inline mr-1" />
-                              Use All ({phoneNumbers.length})
+                              Use All ({filteredPhoneNumbers.length})
                             </button>
                         <button
                           type="button"
@@ -967,11 +1007,11 @@ export default function SmsCampaigns() {
                             <span className="font-medium text-green-800 text-sm">All Numbers Pool Active</span>
                           </div>
                           <p className="text-xs text-green-700 mb-2">
-                            Messages will rotate across all {phoneNumbers.length} numbers (2000 msgs/number max).
+                            Messages will rotate across all {filteredPhoneNumbers.length} numbers (2000 msgs/number max).
                           </p>
                           <div className="flex flex-wrap gap-1">
                             {(() => {
-                              const counts = phoneNumbers.reduce((acc: Record<string, number>, pn) => {
+                              const counts = filteredPhoneNumbers.reduce((acc: Record<string, number>, pn) => {
                                 const provider = pn.provider || 'Unknown';
                                 acc[provider] = (acc[provider] || 0) + 1;
                                 return acc;
@@ -996,19 +1036,19 @@ export default function SmsCampaigns() {
                             <button
                               type="button"
                               onClick={() => {
-                                if (selectedFromNumbers.size === phoneNumbers.length) {
+                                if (selectedFromNumbers.size === filteredPhoneNumbers.length) {
                                   setSelectedFromNumbers(new Set());
                                 } else {
-                                  setSelectedFromNumbers(new Set(phoneNumbers.map(pn => pn.phoneNumber)));
+                                  setSelectedFromNumbers(new Set(filteredPhoneNumbers.map(pn => pn.phoneNumber)));
                                 }
                               }}
                               className="text-xs text-blue-600 hover:underline"
                             >
-                              {selectedFromNumbers.size === phoneNumbers.length ? 'Deselect All' : 'Select All'}
+                              {selectedFromNumbers.size === filteredPhoneNumbers.length ? 'Deselect All' : 'Select All'}
                             </button>
                           </div>
                           <div className="space-y-1">
-                            {phoneNumbers.map((pn, idx) => (
+                            {filteredPhoneNumbers.map((pn, idx) => (
                               <label 
                                 key={idx} 
                                 className={`flex items-center gap-2 p-1.5 rounded cursor-pointer hover:bg-gray-50 text-xs ${
@@ -1056,7 +1096,7 @@ export default function SmsCampaigns() {
                             <SelectValue placeholder="Select a phone number" />
                           </SelectTrigger>
                           <SelectContent>
-                            {phoneNumbers.map((pn, idx) => (
+                            {filteredPhoneNumbers.map((pn, idx) => (
                               <SelectItem key={`${pn.phoneNumber}-${idx}`} value={pn.phoneNumber}>
                                 <div className="flex items-center gap-2">
                                   <span>{pn.phoneNumber}</span>
