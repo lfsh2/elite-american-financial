@@ -7,6 +7,7 @@ interface BatchRecipient {
   name?: string;
   firstName?: string;
   lastName?: string;
+  [key: string]: any; // Allow custom fields like dollar_amount, etc.
 }
 
 interface PhoneNumberConfig {
@@ -71,10 +72,34 @@ class BatchSmsService {
     const firstName = recipient.firstName || recipient.name?.split(' ')[0] || '';
     const lastName = recipient.lastName || recipient.name?.split(' ').slice(1).join(' ') || '';
     
+    // Support both {{firstName}} and {first_name} formats
     result = result.replace(/\{\{firstName\}\}/gi, firstName);
+    result = result.replace(/\{first_name\}/gi, firstName);
     result = result.replace(/\{\{lastName\}\}/gi, lastName);
+    result = result.replace(/\{last_name\}/gi, lastName);
     result = result.replace(/\{\{phone\}\}/gi, recipient.phone);
+    result = result.replace(/\{phone\}/gi, recipient.phone);
+    result = result.replace(/\{\{phoneNumber\}\}/gi, recipient.phone);
+    result = result.replace(/\{phone_number\}/gi, recipient.phone);
     result = result.replace(/\{\{name\}\}/gi, recipient.name || firstName);
+    result = result.replace(/\{name\}/gi, recipient.name || firstName);
+    
+    // Replace custom fields (e.g., {dollar_amount}, {custom_field})
+    // Match any {field_name} or {{fieldName}} pattern
+    const customFieldPattern = /\{([a-zA-Z_][a-zA-Z0-9_]*)\}/g;
+    result = result.replace(customFieldPattern, (match, fieldName) => {
+      // Try snake_case field name
+      if (recipient[fieldName] !== undefined) {
+        return String(recipient[fieldName]);
+      }
+      // Try camelCase conversion (e.g., dollar_amount -> dollarAmount)
+      const camelCase = fieldName.replace(/_([a-z])/g, (g: string) => g[1].toUpperCase());
+      if (recipient[camelCase] !== undefined) {
+        return String(recipient[camelCase]);
+      }
+      // Return original if not found
+      return match;
+    });
     
     return result;
   }

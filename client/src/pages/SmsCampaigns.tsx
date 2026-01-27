@@ -867,8 +867,8 @@ export default function SmsCampaigns() {
                 New Campaign
               </Button>
             </DialogTrigger>
-            <DialogContent className="max-w-2xl">
-              <DialogHeader>
+            <DialogContent className="max-w-2xl max-h-[90vh] overflow-hidden flex flex-col">
+              <DialogHeader className="flex-shrink-0">
                 <DialogTitle>Create SMS Campaign</DialogTitle>
                 <DialogDescription>
                   Step {campaignStep} of 3: {campaignStep === 1 ? 'Campaign Details' : campaignStep === 2 ? 'Message Content' : 'Select Recipients'}
@@ -895,9 +895,10 @@ export default function SmsCampaigns() {
                 ))}
               </div>
 
-              <div className="space-y-4 py-4">
-                {/* Step 1: Campaign Details */}
-                {campaignStep === 1 && (
+              <div className="flex-1 overflow-y-auto px-1">
+                <div className="space-y-4 py-4">
+                  {/* Step 1: Campaign Details */}
+                  {campaignStep === 1 && (
                   <>
                     <div className="space-y-2">
                       <Label htmlFor="campaignName">Campaign Name *</Label>
@@ -1030,9 +1031,9 @@ export default function SmsCampaigns() {
 
                       {/* Multi-Select Mode */}
                       {numberSelectionMode === 'select' && (
-                        <div className="border rounded-lg p-3 max-h-40 overflow-y-auto">
-                          <div className="flex items-center justify-between mb-2">
-                            <span className="text-xs font-medium text-gray-700">
+                        <div className="border rounded-lg overflow-hidden">
+                          <div className="flex items-center justify-between p-3 bg-gray-50 border-b">
+                            <span className="text-xs font-semibold text-gray-700">
                               {selectedFromNumbers.size} selected
                             </span>
                             <button
@@ -1044,39 +1045,50 @@ export default function SmsCampaigns() {
                                   setSelectedFromNumbers(new Set(getFilteredNumbers().map(pn => pn.phoneNumber)));
                                 }
                               }}
-                              className="text-xs text-blue-600 hover:underline"
+                              className="text-xs text-blue-600 hover:text-blue-700 font-medium hover:underline"
                             >
                               {selectedFromNumbers.size === getFilteredNumbers().length ? 'Deselect All' : 'Select All'}
                             </button>
                           </div>
-                          <div className="space-y-1">
-                            {getFilteredNumbers().map((pn, idx) => (
-                              <label 
-                                key={idx} 
-                                className={`flex items-center gap-2 p-1.5 rounded cursor-pointer hover:bg-gray-50 text-xs ${
-                                  selectedFromNumbers.has(pn.phoneNumber) ? 'bg-blue-50' : ''
-                                }`}
-                              >
-                                <input
-                                  type="checkbox"
-                                  checked={selectedFromNumbers.has(pn.phoneNumber)}
-                                  onChange={(e) => {
-                                    const newSet = new Set(selectedFromNumbers);
-                                    if (e.target.checked) {
-                                      newSet.add(pn.phoneNumber);
-                                    } else {
-                                      newSet.delete(pn.phoneNumber);
-                                    }
-                                    setSelectedFromNumbers(newSet);
-                                  }}
-                                  className="rounded border-gray-300"
-                                />
-                                <span>{pn.phoneNumber}</span>
-                                <Badge variant="outline" className="text-xs">
-                                  {pn.provider}
-                                </Badge>
-                              </label>
-                            ))}
+                          <div className="max-h-[200px] overflow-y-auto p-2">
+                            <div className="space-y-1">
+                              {getFilteredNumbers().map((pn, idx) => (
+                                <label 
+                                  key={idx} 
+                                  className={`flex items-center gap-3 p-2.5 rounded-md cursor-pointer transition-colors ${
+                                    selectedFromNumbers.has(pn.phoneNumber) 
+                                      ? 'bg-blue-50 border border-blue-200' 
+                                      : 'hover:bg-gray-50 border border-transparent'
+                                  }`}
+                                >
+                                  <input
+                                    type="checkbox"
+                                    checked={selectedFromNumbers.has(pn.phoneNumber)}
+                                    onChange={(e) => {
+                                      const newSet = new Set(selectedFromNumbers);
+                                      if (e.target.checked) {
+                                        newSet.add(pn.phoneNumber);
+                                      } else {
+                                        newSet.delete(pn.phoneNumber);
+                                      }
+                                      setSelectedFromNumbers(newSet);
+                                    }}
+                                    className="rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+                                  />
+                                  <span className="flex-1 text-sm font-medium text-gray-900">{pn.phoneNumber}</span>
+                                  <Badge 
+                                    variant="outline" 
+                                    className={`text-xs font-semibold ${
+                                      pn.provider === 'commio' 
+                                        ? 'bg-purple-50 text-purple-700 border-purple-200' 
+                                        : 'bg-red-50 text-red-700 border-red-200'
+                                    }`}
+                                  >
+                                    {pn.provider}
+                                  </Badge>
+                                </label>
+                              ))}
+                            </div>
                           </div>
                         </div>
                       )}
@@ -1114,23 +1126,23 @@ export default function SmsCampaigns() {
                     </div>
                     
                     {/* Drip Mode Settings */}
-                    <div className="space-y-3 border-t pt-4 mt-4">
+                    <div className="space-y-3 border-t pt-5 mt-5">
                       <div className="flex items-center justify-between">
                         <div>
-                          <Label className="text-sm font-medium">Drip Mode (Safe Sending)</Label>
-                          <p className="text-xs text-muted-foreground mt-1">
+                          <Label className="text-base font-semibold">Drip Mode (Safe Sending)</Label>
+                          <p className="text-xs text-gray-600 mt-1">
                             Spread messages over time to avoid carrier filtering
                           </p>
                         </div>
                         <button
                           type="button"
                           onClick={() => setDripMode(!dripMode)}
-                          className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors ${
-                            dripMode ? 'bg-green-600' : 'bg-gray-200'
+                          className={`relative inline-flex h-7 w-12 items-center rounded-full transition-colors focus:outline-none focus:ring-2 focus:ring-green-500 focus:ring-offset-2 ${
+                            dripMode ? 'bg-green-600' : 'bg-gray-300'
                           }`}
                         >
                           <span
-                            className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${
+                            className={`inline-block h-5 w-5 transform rounded-full bg-white shadow-sm transition-transform ${
                               dripMode ? 'translate-x-6' : 'translate-x-1'
                             }`}
                           />
@@ -1138,15 +1150,17 @@ export default function SmsCampaigns() {
                       </div>
                       
                       {dripMode && (
-                        <div className="bg-green-50 border border-green-200 rounded-lg p-4 space-y-3">
-                          <div className="flex items-start gap-2">
-                            <Zap className="h-4 w-4 text-green-600 mt-0.5" />
+                        <div className="bg-gradient-to-br from-green-50 to-emerald-50 border border-green-200 rounded-xl p-5 space-y-4 shadow-sm">
+                          <div className="flex items-start gap-3">
+                            <div className="p-2 bg-green-100 rounded-lg">
+                              <Zap className="h-5 w-5 text-green-700" />
+                            </div>
                             <div className="flex-1">
-                              <Label className="text-sm font-medium text-green-900">Messages Per Minute (Per Number)</Label>
-                              <p className="text-xs text-green-700 mt-1 mb-2">
+                              <Label className="text-sm font-semibold text-green-900">Messages Per Minute (Per Number)</Label>
+                              <p className="text-xs text-green-700 mt-1 mb-3">
                                 Safe rate: 20-60 msgs/min. Lower = safer for new numbers.
                               </p>
-                              <div className="flex items-center gap-3">
+                              <div className="flex items-center gap-4">
                                 <input
                                   type="range"
                                   min="10"
@@ -1154,7 +1168,7 @@ export default function SmsCampaigns() {
                                   step="10"
                                   value={messagesPerMinute}
                                   onChange={(e) => setMessagesPerMinute(parseInt(e.target.value))}
-                                  className="flex-1"
+                                  className="flex-1 h-2 bg-green-200 rounded-lg appearance-none cursor-pointer accent-green-600"
                                 />
                                 <Input
                                   type="number"
@@ -1162,21 +1176,21 @@ export default function SmsCampaigns() {
                                   max="120"
                                   value={messagesPerMinute}
                                   onChange={(e) => setMessagesPerMinute(parseInt(e.target.value) || 30)}
-                                  className="w-20 text-center"
+                                  className="w-20 text-center font-semibold border-green-300 focus:border-green-500 focus:ring-green-500"
                                 />
                               </div>
-                              <div className="flex items-center justify-between mt-2 text-xs">
-                                <span className="text-green-700">
+                              <div className="flex items-center justify-between mt-3 text-xs">
+                                <span className="font-medium text-green-800">
                                   {messagesPerMinute <= 30 ? '🟢 Very Safe' : messagesPerMinute <= 60 ? '🟡 Safe' : '🟠 Moderate'}
                                 </span>
-                                <span className="text-green-700 font-medium">
+                                <span className="text-green-800 font-semibold">
                                   {messagesPerMinute} msgs/min
                                 </span>
                               </div>
                             </div>
                           </div>
                           
-                          <div className="bg-white rounded p-3 text-xs space-y-1">
+                          <div className="bg-white rounded-lg p-4 text-xs space-y-2 shadow-sm border border-green-100">
                             <div className="flex justify-between">
                               <span className="text-gray-600">Delay between messages:</span>
                               <span className="font-medium">{(60 / messagesPerMinute).toFixed(1)}s</span>
@@ -1187,10 +1201,10 @@ export default function SmsCampaigns() {
                             </div>
                           </div>
                           
-                          <div className="flex items-start gap-2 text-xs text-green-800 bg-green-100 rounded p-2">
-                            <AlertCircle className="h-3 w-3 mt-0.5 flex-shrink-0" />
+                          <div className="flex items-start gap-2 text-xs text-green-800 bg-green-100 rounded-lg p-3 border border-green-200">
+                            <AlertCircle className="h-4 w-4 mt-0.5 flex-shrink-0" />
                             <div>
-                              <strong>Best Practices:</strong> Keep opt-out rate &lt;1%, error rate &lt;6%. 
+                              <strong className="font-semibold">Best Practices:</strong> Keep opt-out rate &lt;1%, error rate &lt;6%. 
                               Include opt-out language and sender ID in messages.
                             </div>
                           </div>
@@ -1207,22 +1221,53 @@ export default function SmsCampaigns() {
                       <Label htmlFor="messageTemplate">Message Template *</Label>
                       <Textarea
                         id="messageTemplate"
-                        placeholder="Hi {{firstName}}, check out our latest deals!"
+                        placeholder="Hi {first_name}, quick update - we finalized details on an option around ${dollar_amount}. Please call me back here as soon as you can. (857) 800-8971"
                         className="min-h-[150px]"
                         value={newCampaign.messageTemplate}
                         onChange={(e) => setNewCampaign(prev => ({ ...prev, messageTemplate: e.target.value }))}
                       />
-                      <p className="text-xs text-muted-foreground">
-                        Use merge tags: {'{{firstName}}'}, {'{{lastName}}'}, {'{{phoneNumber}}'}
-                      </p>
+                      <div className="bg-blue-50 border border-blue-200 rounded-lg p-3 mt-2">
+                        <p className="text-xs font-medium text-blue-900 mb-2">Available Merge Tags:</p>
+                        <div className="grid grid-cols-2 gap-2 text-xs">
+                          <div className="flex items-center gap-1">
+                            <code className="bg-white px-1.5 py-0.5 rounded text-blue-700">{'{first_name}'}</code>
+                            <span className="text-blue-600">or</span>
+                            <code className="bg-white px-1.5 py-0.5 rounded text-blue-700">{'{{firstName}}'}</code>
+                          </div>
+                          <div className="flex items-center gap-1">
+                            <code className="bg-white px-1.5 py-0.5 rounded text-blue-700">{'{last_name}'}</code>
+                            <span className="text-blue-600">or</span>
+                            <code className="bg-white px-1.5 py-0.5 rounded text-blue-700">{'{{lastName}}'}</code>
+                          </div>
+                          <div className="flex items-center gap-1">
+                            <code className="bg-white px-1.5 py-0.5 rounded text-blue-700">{'{phone}'}</code>
+                            <span className="text-blue-600">or</span>
+                            <code className="bg-white px-1.5 py-0.5 rounded text-blue-700">{'{{phone}}'}</code>
+                          </div>
+                          <div className="flex items-center gap-1">
+                            <code className="bg-white px-1.5 py-0.5 rounded text-blue-700">{'{name}'}</code>
+                            <span className="text-blue-600">or</span>
+                            <code className="bg-white px-1.5 py-0.5 rounded text-blue-700">{'{{name}}'}</code>
+                          </div>
+                        </div>
+                        <p className="text-xs text-blue-700 mt-2">
+                          💡 You can also use custom fields from your CSV: <code className="bg-white px-1.5 py-0.5 rounded">{'{dollar_amount}'}</code>, <code className="bg-white px-1.5 py-0.5 rounded">{'{company}'}</code>, etc.
+                        </p>
+                      </div>
                     </div>
                     <div className="bg-gray-50 rounded-lg p-4">
                       <Label className="text-sm font-medium">Preview</Label>
                       <div className="mt-2 p-3 bg-white rounded border text-sm">
                         {newCampaign.messageTemplate
                           .replace(/\{\{firstName\}\}/g, 'John')
+                          .replace(/\{first_name\}/g, 'John')
                           .replace(/\{\{lastName\}\}/g, 'Doe')
+                          .replace(/\{last_name\}/g, 'Doe')
                           .replace(/\{\{phoneNumber\}\}/g, '+1234567890')
+                          .replace(/\{phone_number\}/g, '+1234567890')
+                          .replace(/\{phone\}/g, '+1234567890')
+                          .replace(/\{dollar_amount\}/g, '$50,000')
+                          .replace(/\{company\}/g, 'Acme Corp')
                           || 'Your message preview will appear here...'}
                       </div>
                       <p className="text-xs text-muted-foreground mt-2">
@@ -1293,9 +1338,10 @@ export default function SmsCampaigns() {
                     )}
                   </>
                 )}
+                </div>
               </div>
 
-              <DialogFooter>
+              <DialogFooter className="flex-shrink-0">
                 {campaignStep > 1 && (
                   <Button variant="outline" onClick={() => setCampaignStep(prev => prev - 1)}>
                     Back
