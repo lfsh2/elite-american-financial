@@ -260,22 +260,18 @@ class BatchSmsService {
         }
         progress.byNumber[phoneConfig.phoneNumber].pending--;
 
-        // Store in database
-        try {
-          await db.insert(smsMessages).values({
-            userId,
-            messageSid: result.messageSid || `batch_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
-            from: phoneConfig.phoneNumber,
-            to: recipient.phone,
-            body: personalizedMessage,
-            status: result.success ? 'sent' : 'failed',
-            direction: 'outbound-api',
-            sentAt: new Date(),
-            createdAt: new Date(),
-          });
-        } catch (dbError) {
-          console.error('[BatchSMS] DB insert error:', dbError);
-        }
+        // Add to database batch (will be inserted in batches of 100)
+        dbMessageBatch.push({
+          userId,
+          messageSid: result.messageSid || `batch_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
+          from: phoneConfig.phoneNumber,
+          to: recipient.phone,
+          body: personalizedMessage,
+          status: result.success ? 'sent' : 'failed',
+          direction: 'outbound-api',
+          sentAt: new Date(),
+          createdAt: new Date(),
+        });
 
         // Report progress
         if (onProgress) {
@@ -286,6 +282,19 @@ class BatchSmsService {
       // Calculate delay between messages based on rate limit
       const delayBetweenMessages = dripMode ? (60000 / messagesPerMinute) : 50; // ms
       
+      // Batch database inserts for better performance
+      const dbMessageBatch: any[] = [];
+      const flushDbBatch = async () => {
+        if (dbMessageBatch.length > 0) {
+          try {
+            await db.insert(smsMessages).values(dbMessageBatch);
+            dbMessageBatch.length = 0;
+          } catch (dbError) {
+            console.error('[BatchSMS] Batch DB insert error:', dbError);
+          }
+        }
+      };
+
       // Process queue with concurrency limit and rate limiting
       const processBatch = async (batch: BatchRecipient[]): Promise<void> => {
         if (dripMode) {
@@ -299,6 +308,11 @@ class BatchSmsService {
         } else {
           // Normal mode: parallel sending
           await Promise.all(batch.map(sendMessage));
+        }
+        
+        // Flush DB batch every 100 messages
+        if (dbMessageBatch.length >= 100) {
+          await flushDbBatch();
         }
       };
 
@@ -324,6 +338,9 @@ class BatchSmsService {
           await new Promise(resolve => setTimeout(resolve, dripMode ? delayBetweenMessages : 50));
         }
       }
+      
+      // Flush any remaining messages in the batch
+      await flushDbBatch();
     });
 
     // Wait for all numbers to complete
