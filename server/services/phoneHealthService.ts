@@ -62,12 +62,27 @@ interface ActivityMetrics {
   errorCount: number;
 }
 
+interface DateRange {
+  startDate: Date;
+  endDate: Date;
+}
+
 export class PhoneHealthService {
   /**
    * Get comprehensive health check for all phone numbers
    */
-  async getHealthCheck(userId: number, accountId?: number): Promise<HealthCheckSummary> {
+  async getHealthCheck(
+    userId: number, 
+    accountId?: number,
+    dateRange?: DateRange
+  ): Promise<HealthCheckSummary> {
     const accountsToCheck = await this.getAccountsForUser(userId, accountId);
+    
+    // Default to today if no date range provided
+    const range = dateRange || {
+      startDate: new Date(new Date().setHours(0, 0, 0, 0)),
+      endDate: new Date()
+    };
     
     const allHealthChecks: PhoneNumberHealth[] = [];
     
@@ -75,7 +90,7 @@ export class PhoneHealthService {
     await Promise.all(
       accountsToCheck.map(async (account) => {
         try {
-          const healthChecks = await this.checkAccountPhoneNumbers(account);
+          const healthChecks = await this.checkAccountPhoneNumbers(account, range);
           allHealthChecks.push(...healthChecks);
         } catch (error) {
           console.error(`[PhoneHealth] Error checking account ${account.id}:`, error);
@@ -139,7 +154,13 @@ export class PhoneHealthService {
 
     if (!account) return [];
 
-    return this.checkAccountPhoneNumbers(account);
+    // Use default date range (today)
+    const dateRange: DateRange = {
+      startDate: new Date(new Date().setHours(0, 0, 0, 0)),
+      endDate: new Date()
+    };
+
+    return this.checkAccountPhoneNumbers(account, dateRange);
   }
 
   /**
@@ -160,7 +181,8 @@ export class PhoneHealthService {
    * Check all phone numbers for a specific account
    */
   private async checkAccountPhoneNumbers(
-    account: typeof accounts.$inferSelect
+    account: typeof accounts.$inferSelect,
+    dateRange: DateRange
   ): Promise<PhoneNumberHealth[]> {
     if (!account.accountSid || !account.authToken) {
       return [];
@@ -170,10 +192,6 @@ export class PhoneHealthService {
       const provider = await this.getProvider(account);
       const phoneNumbers = await provider.getPhoneNumbers();
 
-      // Calculate activity metrics for the last 7 days
-      const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
-      const now = new Date();
-
       const providerCode = await this.getProviderCode(account);
 
       // Process phone numbers in parallel
@@ -182,8 +200,8 @@ export class PhoneHealthService {
           const activityMetrics = await this.getActivityMetrics(
             phoneNumber.phoneNumber,
             account.id,
-            sevenDaysAgo,
-            now
+            dateRange.startDate,
+            dateRange.endDate
           );
 
           return this.calculateHealth(

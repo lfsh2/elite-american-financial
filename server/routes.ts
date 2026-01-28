@@ -34,6 +34,7 @@ import {
   smsCampaigns,
   contactLists,
   contacts,
+  campaignRecipients,
 } from "@shared/schema";
 import { db } from "./db";
 import { eq, and } from "drizzle-orm";
@@ -3282,9 +3283,21 @@ export async function registerRoutes(app: Express): Promise<Server> {
     try {
       const userId = (req as any).user?.id || 1;
       const accountId = req.query.accountId ? parseInt(req.query.accountId as string) : undefined;
+      
+      // Parse date range from query params
+      const startDate = req.query.startDate 
+        ? new Date(req.query.startDate as string)
+        : new Date(new Date().setHours(0, 0, 0, 0)); // Default to today
+      const endDate = req.query.endDate
+        ? new Date(req.query.endDate as string)
+        : new Date();
 
       const { phoneHealthService } = await import('./services/phoneHealthService');
-      const healthCheck = await phoneHealthService.getHealthCheck(userId, accountId);
+      const healthCheck = await phoneHealthService.getHealthCheck(
+        userId, 
+        accountId,
+        { startDate, endDate }
+      );
 
       res.json(healthCheck);
     } catch (error: any) {
@@ -4430,6 +4443,32 @@ export async function registerRoutes(app: Express): Promise<Server> {
     } catch (error: any) {
       console.error("Error creating SMS campaign:", error);
       res.status(500).json({ error: error.message || "Failed to create SMS campaign" });
+    }
+  });
+
+  /**
+   * Get recipients for SMS campaign
+   */
+  app.get("/api/campaigns/sms-campaigns/:campaignId/recipients", async (req, res) => {
+    try {
+      const campaignId = parseInt(req.params.campaignId);
+      
+      const recipients = await db
+        .select({
+          id: campaignRecipients.id,
+          phoneNumber: campaignRecipients.phoneNumber,
+          firstName: campaignRecipients.firstName,
+          lastName: campaignRecipients.lastName,
+          email: campaignRecipients.email,
+          customData: campaignRecipients.customData,
+        })
+        .from(campaignRecipients)
+        .where(eq(campaignRecipients.smsCampaignId, campaignId));
+
+      res.json({ recipients });
+    } catch (error: any) {
+      console.error("Error fetching recipients:", error);
+      res.status(500).json({ error: error.message || "Failed to fetch recipients" });
     }
   });
 

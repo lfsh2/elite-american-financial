@@ -8,6 +8,8 @@
 import { useState, useEffect, useCallback } from 'react';
 import { useAccount } from '@/contexts/AccountContext';
 
+export type DateRangeOption = 'today' | '7days' | '30days' | '90days';
+
 export interface PhoneNumberHealth {
   phoneNumber: string;
   friendlyName: string;
@@ -51,7 +53,29 @@ export interface HealthCheckSummary {
 const CACHE_KEY = 'phone_health_data';
 const CACHE_DURATION = 5 * 60 * 1000; // 5 minutes
 
-export function usePhoneHealth() {
+const getDateRangeFromOption = (option: DateRangeOption): { startDate: Date; endDate: Date } => {
+  const endDate = new Date();
+  const startDate = new Date();
+  
+  switch (option) {
+    case 'today':
+      startDate.setHours(0, 0, 0, 0);
+      break;
+    case '7days':
+      startDate.setDate(startDate.getDate() - 7);
+      break;
+    case '30days':
+      startDate.setDate(startDate.getDate() - 30);
+      break;
+    case '90days':
+      startDate.setDate(startDate.getDate() - 90);
+      break;
+  }
+  
+  return { startDate, endDate };
+};
+
+export function usePhoneHealth(dateRange: DateRangeOption = 'today') {
   const { currentAccount, isOverviewMode } = useAccount();
   const [data, setData] = useState<HealthCheckSummary | null>(null);
   const [loading, setLoading] = useState(true);
@@ -63,9 +87,10 @@ export function usePhoneHealth() {
 
     try {
       // Check cache first
+      const cacheKey = `${CACHE_KEY}_${dateRange}`;
       if (useCache) {
-        const cached = sessionStorage.getItem(CACHE_KEY);
-        const cacheTime = sessionStorage.getItem(`${CACHE_KEY}_time`);
+        const cached = sessionStorage.getItem(cacheKey);
+        const cacheTime = sessionStorage.getItem(`${cacheKey}_time`);
         
         if (cached && cacheTime) {
           const cacheAge = Date.now() - parseInt(cacheTime);
@@ -86,6 +111,11 @@ export function usePhoneHealth() {
       if (!isOverviewMode && currentAccount) {
         params.set('accountId', currentAccount.id);
       }
+      
+      // Add date range
+      const { startDate, endDate } = getDateRangeFromOption(dateRange);
+      params.set('startDate', startDate.toISOString());
+      params.set('endDate', endDate.toISOString());
 
       const response = await fetch(`/api/analytics/phone-health?${params}`);
       
@@ -96,8 +126,8 @@ export function usePhoneHealth() {
       const result = await response.json();
 
       // Cache the result
-      sessionStorage.setItem(CACHE_KEY, JSON.stringify(result));
-      sessionStorage.setItem(`${CACHE_KEY}_time`, Date.now().toString());
+      sessionStorage.setItem(cacheKey, JSON.stringify(result));
+      sessionStorage.setItem(`${cacheKey}_time`, Date.now().toString());
 
       setData(result);
       setLastFetch(new Date());
@@ -107,14 +137,15 @@ export function usePhoneHealth() {
     } finally {
       setLoading(false);
     }
-  }, [currentAccount, isOverviewMode]);
+  }, [currentAccount, isOverviewMode, dateRange]);
 
   const refresh = useCallback(() => {
     // Clear cache and fetch fresh data
-    sessionStorage.removeItem(CACHE_KEY);
-    sessionStorage.removeItem(`${CACHE_KEY}_time`);
+    const cacheKey = `${CACHE_KEY}_${dateRange}`;
+    sessionStorage.removeItem(cacheKey);
+    sessionStorage.removeItem(`${cacheKey}_time`);
     return fetchHealthData(false);
-  }, [fetchHealthData]);
+  }, [fetchHealthData, dateRange]);
 
   const refreshAccount = useCallback(async (accountId: number) => {
     try {

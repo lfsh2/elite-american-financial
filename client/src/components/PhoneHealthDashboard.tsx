@@ -27,6 +27,7 @@ import {
   ChevronUp,
   Info,
   Zap,
+  Calendar,
 } from 'lucide-react';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
@@ -46,6 +47,13 @@ import {
   TooltipProvider,
   TooltipTrigger,
 } from '@/components/ui/tooltip';
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select';
 import { cn } from '@/lib/utils';
 
 export interface PhoneNumberHealth {
@@ -88,13 +96,23 @@ export interface HealthCheckSummary {
   phoneNumbers: PhoneNumberHealth[];
 }
 
+export type DateRangeOption = 'today' | '7days' | '30days' | '90days';
+
 interface PhoneHealthDashboardProps {
   data: HealthCheckSummary | null;
   loading: boolean;
   onRefresh: () => void;
+  dateRange?: DateRangeOption;
+  onDateRangeChange?: (range: DateRangeOption) => void;
 }
 
-export function PhoneHealthDashboard({ data, loading, onRefresh }: PhoneHealthDashboardProps) {
+export function PhoneHealthDashboard({ 
+  data, 
+  loading, 
+  onRefresh,
+  dateRange = 'today',
+  onDateRangeChange,
+}: PhoneHealthDashboardProps) {
   const [expandedRows, setExpandedRows] = useState<Set<string>>(new Set());
   const [filterStatus, setFilterStatus] = useState<string>('all');
   const [sortBy, setSortBy] = useState<'score' | 'name' | 'activity'>('score');
@@ -205,6 +223,16 @@ export function PhoneHealthDashboard({ data, loading, onRefresh }: PhoneHealthDa
     return activityDate.toLocaleDateString();
   };
 
+  const getDateRangeLabel = (range: DateRangeOption) => {
+    switch (range) {
+      case 'today': return 'Today';
+      case '7days': return 'Last 7 Days';
+      case '30days': return 'Last 30 Days';
+      case '90days': return 'Last 90 Days';
+      default: return 'Today';
+    }
+  };
+
   if (loading) {
     return (
       <Card>
@@ -299,6 +327,20 @@ export function PhoneHealthDashboard({ data, loading, onRefresh }: PhoneHealthDa
               <CardDescription>Comprehensive health monitoring for all phone numbers</CardDescription>
             </div>
             <div className="flex items-center gap-2">
+              {onDateRangeChange && (
+                <Select value={dateRange} onValueChange={(value) => onDateRangeChange(value as DateRangeOption)}>
+                  <SelectTrigger className="w-[160px] h-9">
+                    <Calendar className="w-4 h-4 mr-2" />
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="today">Today</SelectItem>
+                    <SelectItem value="7days">Last 7 Days</SelectItem>
+                    <SelectItem value="30days">Last 30 Days</SelectItem>
+                    <SelectItem value="90days">Last 90 Days</SelectItem>
+                  </SelectContent>
+                </Select>
+              )}
               <div className="flex gap-1">
                 {['all', 'healthy', 'warning', 'critical'].map((status) => (
                   <Button

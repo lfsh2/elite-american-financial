@@ -91,9 +91,10 @@ export default function Analytics() {
   const [activeTab, setActiveTab] = useState<AnalyticsTab>('overview');
   const [showRecommendation, setShowRecommendation] = useState(true);
   const [selectedProvider, setSelectedProvider] = useState<string>('all');
+  const [healthDateRange, setHealthDateRange] = useState<'today' | '7days' | '30days' | '90days'>('today');
   const { data: accountData, loading, currentAccount } = useAccountAnalytics();
   const { accounts } = useAccount();
-  const { data: phoneHealthData, loading: healthLoading, refresh: refreshHealth } = usePhoneHealth();
+  const { data: phoneHealthData, loading: healthLoading, refresh: refreshHealth } = usePhoneHealth(healthDateRange);
 
   // Transform account data to analytics format for compatibility
   const analytics = useMemo(() => {
@@ -911,7 +912,9 @@ export default function Analytics() {
         <PhoneHealthDashboard 
           data={phoneHealthData} 
           loading={healthLoading} 
-          onRefresh={refreshHealth} 
+          onRefresh={refreshHealth}
+          dateRange={healthDateRange}
+          onDateRangeChange={setHealthDateRange}
         />
       )}
 
