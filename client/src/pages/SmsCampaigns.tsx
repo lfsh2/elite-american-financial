@@ -192,7 +192,6 @@ export default function SmsCampaigns() {
     setIsLoading(true);
     try {
       const accountId = currentAccount?.id ? parseInt(String(currentAccount.id).replace('acc_', '')) : undefined;
-      console.log('Fetching data for accountId:', accountId);
       
       // Fetch campaigns
       const campaignsRes = await fetch(`/api/campaigns/sms-campaigns${accountId ? `?accountId=${accountId}` : ''}`, {
@@ -205,13 +204,11 @@ export default function SmsCampaigns() {
 
       // Fetch contact lists
       const listsUrl = `/api/campaigns/contact-lists${accountId ? `?accountId=${accountId}` : ''}`;
-      console.log('Fetching contact lists from:', listsUrl);
       const listsRes = await fetch(listsUrl, {
         credentials: 'include'
       });
       if (listsRes.ok) {
         const data = await listsRes.json();
-        console.log('Fetched contact lists:', data.lists);
         setContactLists(data.lists || []);
       } else {
         console.error('Failed to fetch contact lists:', listsRes.status);
@@ -528,16 +525,11 @@ export default function SmsCampaigns() {
       return;
     }
 
-    console.log('Deleting contact list:', listId, listName);
-
     try {
       const res = await fetch(`/api/campaigns/contact-lists/${listId}`, {
         method: 'DELETE',
         credentials: 'include'
       });
-
-      console.log('Delete response status:', res.status);
-      console.log('Delete response content-type:', res.headers.get('content-type'));
 
       if (!res.ok) {
         const errorData = await res.json().catch(() => ({}));
@@ -555,14 +547,9 @@ export default function SmsCampaigns() {
       }
 
       const result = await res.json();
-      console.log('Delete successful:', result);
 
       // Immediately update the UI by filtering out the deleted list
-      setContactLists(prev => {
-        const updated = prev.filter(list => list.id !== listId);
-        console.log('Updated contact lists:', updated);
-        return updated;
-      });
+      setContactLists(prev => prev.filter(list => list.id !== listId));
 
       toast({
         title: 'Success',
@@ -570,7 +557,6 @@ export default function SmsCampaigns() {
       });
 
       // Refresh data to ensure consistency
-      console.log('Refreshing data...');
       await fetchData();
     } catch (error: any) {
       console.error('Error deleting contact list:', error);
