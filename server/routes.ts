@@ -2769,10 +2769,14 @@ export async function registerRoutes(app: Express): Promise<Server> {
       // Parse account ID
       const accountId = id === 'acc_master_twilio' ? null : parseInt(id.replace('acc_', ''));
       
+      console.log('[Usage API] Fetching usage for userId:', userId, 'accountId:', accountId);
+      
       // Get date range (default to last 30 days)
       const endDate = new Date();
       const startDate = new Date();
       startDate.setDate(startDate.getDate() - 30);
+      
+      console.log('[Usage API] Date range:', startDate.toISOString(), 'to', endDate.toISOString());
       
       // Query messages grouped by phone number
       const messageStats = await db
@@ -2791,6 +2795,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
           )
         )
         .groupBy(smsMessages.from, smsMessages.direction);
+      
+      console.log('[Usage API] Message stats:', messageStats.length, 'rows');
       
       // Query calls grouped by phone number
       const callStats = await db
@@ -2870,6 +2876,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
         totals.totalCost += (usage.messagesSent + usage.messagesReceived) * 0.0075; // $0.0075 per message
         totals.totalCost += (usage.callsMade + usage.callsReceived) * 0.013; // $0.013 per minute (assuming 1 min avg)
       });
+      
+      console.log('[Usage API] Totals:', totals);
+      console.log('[Usage API] By number count:', Object.values(usageByNumber).length);
       
       res.json({
         totals,

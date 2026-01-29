@@ -174,15 +174,19 @@ export default function PhoneNumbers() {
     
     setLoadingUsage(true);
     try {
+      console.log('Fetching usage data for account:', currentAccount.id);
       const res = await fetch(`/api/accounts/${currentAccount.id}/phone-numbers/usage`, {
         credentials: 'include'
       });
       
       if (res.ok) {
         const data = await res.json();
+        console.log('Usage data received:', data);
         setUsageData(data);
       } else {
-        console.error('Failed to fetch usage data');
+        console.error('Failed to fetch usage data, status:', res.status);
+        const errorText = await res.text();
+        console.error('Error response:', errorText);
       }
     } catch (error) {
       console.error('Error fetching usage data:', error);
