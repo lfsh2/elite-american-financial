@@ -71,84 +71,129 @@ export async function importContacts(
     errorDetails: [],
   };
 
+  // Validate and normalize all contacts upfront
+  const validContacts: Array<{ row: ContactImportRow; phone: string; index: number }> = [];
+  
   for (let i = 0; i < rows.length; i++) {
     const row = rows[i];
     
-    try {
-      // Validate phone number
-      if (!row.phoneNumber || !isValidPhoneNumber(row.phoneNumber)) {
-        result.errors++;
-        result.errorDetails.push({ row: i + 1, error: 'Invalid phone number' });
-        continue;
-      }
+    if (!row.phoneNumber || !isValidPhoneNumber(row.phoneNumber)) {
+      result.errors++;
+      result.errorDetails.push({ row: i + 1, error: 'Invalid phone number' });
+      continue;
+    }
+    
+    const normalizedPhone = normalizePhoneNumber(row.phoneNumber);
+    validContacts.push({ row, phone: normalizedPhone, index: i });
+  }
 
-      // Normalize phone number to E.164 format
-      const normalizedPhone = normalizePhoneNumber(row.phoneNumber);
+  if (validContacts.length === 0) {
+    return result;
+  }
 
-      // Check for duplicate
-      const existing = await db
-        .select()
-        .from(contacts)
-        .where(and(
-          eq(contacts.userId, userId),
-          eq(contacts.phoneNumber, normalizedPhone)
-        ))
-        .limit(1);
+  // BATCH QUERY: Check all existing contacts in ONE query
+  const phoneNumbers = validContacts.map(c => c.phone);
+  const existingContacts = await db
+    .select()
+    .from(contacts)
+    .where(and(
+      eq(contacts.userId, userId),
+      inArray(contacts.phoneNumber, phoneNumbers)
+    ));
 
-      let contactId: number;
+  const existingMap = new Map(existingContacts.map(c => [c.phoneNumber, c]));
 
-      if (existing.length > 0) {
-        // Update existing contact
-        contactId = existing[0].id;
-        await db
-          .update(contacts)
-          .set({
-            firstName: row.firstName || existing[0].firstName,
-            lastName: row.lastName || existing[0].lastName,
-            email: row.email || existing[0].email,
-            tags: row.tags || existing[0].tags,
-          })
-          .where(eq(contacts.id, contactId));
-        result.duplicates++;
-      } else {
-        // Insert new contact
-        const [newContact] = await db
-          .insert(contacts)
-          .values({
-            userId,
-            phoneNumber: normalizedPhone,
-            firstName: row.firstName,
-            lastName: row.lastName,
-            email: row.email,
-            tags: row.tags,
-            createdAt: new Date(),
-          })
-          .returning();
-        contactId = newContact.id;
-        result.imported++;
-      }
+  // Separate into updates and inserts
+  const toUpdate: Array<{ id: number; data: any }> = [];
+  const toInsert: any[] = [];
+  const contactPhoneMap = new Map<string, number>(); // phone -> contactId
 
-      // Add to contact list if specified
-      if (contactListId) {
-        const existingMember = await db
-          .select()
-          .from(contactListMembers)
-          .where(and(
-            eq(contactListMembers.contactListId, contactListId),
-            eq(contactListMembers.contactId, contactId)
-          ))
-          .limit(1);
-
-        if (existingMember.length === 0) {
-          await db.insert(contactListMembers).values({
-            contactListId,
-            contactId,
-          });
+  for (const { row, phone } of validContacts) {
+    const existing = existingMap.get(phone);
+    
+    if (existing) {
+      toUpdate.push({
+        id: existing.id,
+        data: {
+          firstName: row.firstName || existing.firstName,
+          lastName: row.lastName || existing.lastName,
+          email: row.email || existing.email,
+          tags: row.tags || existing.tags,
         }
+      });
+      contactPhoneMap.set(phone, existing.id);
+      result.duplicates++;
+    } else {
+      toInsert.push({
+        userId,
+        phoneNumber: phone,
+        firstName: row.firstName,
+        lastName: row.lastName,
+        email: row.email,
+        tags: row.tags,
+        createdAt: new Date(),
+      });
+    }
+  }
+
+  // BATCH INSERT: Insert all new contacts at once
+  if (toInsert.length > 0) {
+    try {
+      const insertedContacts = await db
+        .insert(contacts)
+        .values(toInsert)
+        .returning();
+      
+      insertedContacts.forEach(contact => {
+        contactPhoneMap.set(contact.phoneNumber, contact.id);
+      });
+      
+      result.imported = insertedContacts.length;
+    } catch (error: any) {
+      console.error('Batch insert error:', error);
+      result.errors += toInsert.length;
+    }
+  }
+
+  // BATCH UPDATE: Update existing contacts in transaction
+  if (toUpdate.length > 0) {
+    try {
+      await db.transaction(async (tx) => {
+        for (const { id, data } of toUpdate) {
+          await tx.update(contacts).set(data).where(eq(contacts.id, id));
+        }
+      });
+    } catch (error: any) {
+      console.error('Batch update error:', error);
+    }
+  }
+
+  // Add to contact list if specified
+  if (contactListId && contactPhoneMap.size > 0) {
+    try {
+      const allContactIds = Array.from(contactPhoneMap.values());
+
+      // BATCH QUERY: Check existing memberships
+      const existingMembers = await db
+        .select()
+        .from(contactListMembers)
+        .where(and(
+          eq(contactListMembers.contactListId, contactListId),
+          inArray(contactListMembers.contactId, allContactIds)
+        ));
+
+      const existingMemberIds = new Set(existingMembers.map(m => m.contactId));
+
+      // BATCH INSERT: Add new memberships
+      const newMemberships = allContactIds
+        .filter(id => !existingMemberIds.has(id))
+        .map(contactId => ({ contactListId, contactId }));
+
+      if (newMemberships.length > 0) {
+        await db.insert(contactListMembers).values(newMemberships);
       }
     } catch (error: any) {
-      result.errors++;
-      result.errorDetails.push({ row: i + 1, error: error.message });
+      console.error('Contact list membership error:', error);
     }
   }
 
