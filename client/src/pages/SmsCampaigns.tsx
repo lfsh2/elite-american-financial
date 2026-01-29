@@ -596,25 +596,39 @@ export default function SmsCampaigns() {
       if (!listRes.ok) throw new Error('Failed to create contact list');
       const listData = await listRes.json();
 
-      // Import contacts
+      // Import contacts in chunks to avoid payload size limits
       const selectedContacts = uploadedContacts.filter(c => c.selected);
-      const importRes = await fetch('/api/campaigns/contacts/import', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        credentials: 'include',
-        body: JSON.stringify({
-          accountId,
-          contactListId: listData.id,
-          contacts: selectedContacts,
-        }),
-      });
+      const chunkSize = 1000; // Import 1000 contacts at a time
+      let totalImported = 0;
 
-      if (!importRes.ok) throw new Error('Failed to import contacts');
-      const importData = await importRes.json();
+      for (let i = 0; i < selectedContacts.length; i += chunkSize) {
+        const chunk = selectedContacts.slice(i, i + chunkSize);
+        
+        const importRes = await fetch('/api/campaigns/contacts/import', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          credentials: 'include',
+          body: JSON.stringify({
+            accountId,
+            contactListId: listData.id,
+            contacts: chunk,
+          }),
+        });
+
+        if (!importRes.ok) {
+          throw new Error(`Failed to import contacts chunk ${Math.floor(i / chunkSize) + 1}`);
+        }
+        
+        const importData = await importRes.json();
+        totalImported += importData.imported || 0;
+        
+        // Update progress
+        setUploadProgress(Math.round(((i + chunk.length) / selectedContacts.length) * 100));
+      }
 
       toast({
         title: 'Success',
-        description: `Created list "${newListName}" with ${importData.imported} contacts`,
+        description: `Created list "${newListName}" with ${totalImported} contacts`,
       });
 
       // Reset and refresh
@@ -622,6 +636,7 @@ export default function SmsCampaigns() {
       setNewListName('');
       setNewListDescription('');
       setUploadedContacts([]);
+      setUploadProgress(0);
       fetchData();
     } catch (error: any) {
       console.error('Error creating list:', error);
