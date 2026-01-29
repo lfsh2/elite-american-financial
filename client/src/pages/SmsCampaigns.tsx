@@ -400,17 +400,69 @@ export default function SmsCampaigns() {
     }
   };
 
-  // Handle large file upload with streaming
+  // Handle large file upload with streaming and immediate chunked import
   const handleLargeFileUpload = async (file: File) => {
-    const CHUNK_SIZE = 1024 * 1024; // 1MB chunks
     const reader = file.stream().getReader();
     const decoder = new TextDecoder();
     
     let buffer = '';
     let lineNumber = 0;
     let headers: string[] = [];
-    const allContacts: Contact[] = [];
+    let contactBatch: Contact[] = [];
     let processedBytes = 0;
+    let totalContacts = 0;
+    const BATCH_SIZE = 500; // Process and import 500 contacts at a time
+
+    // Create contact list first
+    const accountId = currentAccount?.id ? parseInt(String(currentAccount.id).replace('acc_', '')) : undefined;
+    
+    if (!newListName) {
+      toast({
+        title: 'Missing Information',
+        description: 'Please provide a list name before uploading',
+        variant: 'destructive'
+      });
+      return;
+    }
+
+    const listRes = await fetch('/api/campaigns/contact-lists', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      credentials: 'include',
+      body: JSON.stringify({
+        accountId,
+        name: newListName,
+        description: newListDescription,
+      }),
+    });
+
+    if (!listRes.ok) {
+      throw new Error('Failed to create contact list');
+    }
+    const listData = await listRes.json();
+
+    // Function to import a batch of contacts
+    const importBatch = async (contacts: Contact[]) => {
+      if (contacts.length === 0) return;
+      
+      const importRes = await fetch('/api/campaigns/contacts/import', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        body: JSON.stringify({
+          accountId,
+          contactListId: listData.id,
+          contacts,
+        }),
+      });
+
+      if (!importRes.ok) {
+        throw new Error('Failed to import contact batch');
+      }
+      
+      const importData = await importRes.json();
+      totalContacts += importData.imported || 0;
+    };
 
     try {
       while (true) {
@@ -460,7 +512,13 @@ export default function SmsCampaigns() {
                 }
               });
               
-              allContacts.push(contact);
+              contactBatch.push(contact);
+              
+              // Import batch when it reaches BATCH_SIZE
+              if (contactBatch.length >= BATCH_SIZE) {
+                await importBatch(contactBatch);
+                contactBatch = [];
+              }
             }
             
             lineNumber++;
@@ -498,20 +556,34 @@ export default function SmsCampaigns() {
                 }
               });
               
-              allContacts.push(contact);
+              contactBatch.push(contact);
             }
           }
+          
+          // Import any remaining contacts in the batch
+          if (contactBatch.length > 0) {
+            await importBatch(contactBatch);
+          }
+          
           break;
         }
       }
       
-      setUploadedContacts(allContacts);
       setUploadProgress(100);
       
       toast({
-        title: 'File Uploaded',
-        description: `Found ${allContacts.length.toLocaleString()} contacts in the file`,
+        title: 'Import Complete',
+        description: `Successfully imported ${totalContacts.toLocaleString()} contacts to "${newListName}"`,
       });
+      
+      // Reset and refresh
+      setShowNewList(false);
+      setNewListName('');
+      setNewListDescription('');
+      setUploadedContacts([]);
+      setUploadProgress(0);
+      fetchData();
+      
     } catch (error) {
       console.error('Error streaming file:', error);
       throw error;
