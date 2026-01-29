@@ -1743,16 +1743,64 @@ export default function SmsCampaigns() {
                 )}
                 {campaignStep < 3 ? (
                   <Button 
-                    onClick={() => setCampaignStep(prev => prev + 1)}
-                    disabled={
-                      (campaignStep === 1 && (
-                        !newCampaign.name || 
-                        (numberSelectionMode === 'single' && !newCampaign.fromNumber) ||
-                        (numberSelectionMode === 'select' && selectedFromNumbers.size === 0) ||
-                        (numberSelectionMode === 'all' && filteredNumbers.length === 0)
-                      )) ||
-                      (campaignStep === 2 && !newCampaign.messageTemplate)
-                    }
+                    onClick={() => {
+                      console.log('[Campaign] Next clicked - Step:', campaignStep);
+                      console.log('[Campaign] Validation:', {
+                        name: newCampaign.name,
+                        mode: numberSelectionMode,
+                        fromNumber: newCampaign.fromNumber,
+                        selectedCount: selectedFromNumbers.size,
+                        filteredCount: filteredNumbers.length
+                      });
+                      
+                      // Validate Step 1
+                      if (campaignStep === 1) {
+                        if (!newCampaign.name) {
+                          toast({
+                            title: 'Missing Information',
+                            description: 'Please enter a campaign name',
+                            variant: 'destructive'
+                          });
+                          return;
+                        }
+                        if (numberSelectionMode === 'single' && !newCampaign.fromNumber) {
+                          toast({
+                            title: 'Missing Information',
+                            description: 'Please select a phone number',
+                            variant: 'destructive'
+                          });
+                          return;
+                        }
+                        if (numberSelectionMode === 'select' && selectedFromNumbers.size === 0) {
+                          toast({
+                            title: 'Missing Information',
+                            description: 'Please select at least one phone number',
+                            variant: 'destructive'
+                          });
+                          return;
+                        }
+                        if (numberSelectionMode === 'all' && filteredNumbers.length === 0) {
+                          toast({
+                            title: 'Missing Information',
+                            description: 'No phone numbers available',
+                            variant: 'destructive'
+                          });
+                          return;
+                        }
+                      }
+                      
+                      // Validate Step 2
+                      if (campaignStep === 2 && !newCampaign.messageTemplate) {
+                        toast({
+                          title: 'Missing Information',
+                          description: 'Please enter a message template',
+                          variant: 'destructive'
+                        });
+                        return;
+                      }
+                      
+                      setCampaignStep(prev => prev + 1);
+                    }}
                   >
                     Next
                     <ChevronRight className="ml-2 h-4 w-4" />
