@@ -360,7 +360,7 @@ export default function SmsCampaigns() {
     return contacts;
   };
 
-  // Handle file upload with chunked processing for large files
+  // Handle file upload - parse and show preview
   const handleFileUpload = async (event: React.ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
     if (!file) return;
@@ -369,11 +369,8 @@ export default function SmsCampaigns() {
     setUploadProgress(0);
 
     try {
-      // For large files (>5MB), process in chunks
-      if (file.size > 5 * 1024 * 1024) {
-        await handleLargeFileUpload(file);
-      } else {
-        // For small files, use existing method
+      // For small files (<5MB), parse and show preview
+      if (file.size <= 5 * 1024 * 1024) {
         const text = await file.text();
         setUploadProgress(30);
         
@@ -386,6 +383,16 @@ export default function SmsCampaigns() {
         toast({
           title: 'File Uploaded',
           description: `Found ${contacts.length} contacts in the file`,
+        });
+      } else {
+        // For large files (>5MB), show preview of first 1000 contacts
+        const contacts = await parseLargeFilePreview(file);
+        setUploadedContacts(contacts);
+        setUploadProgress(100);
+        
+        toast({
+          title: 'File Uploaded',
+          description: `Large file detected. Showing preview of ${contacts.length} contacts. Full import will happen when you create the list.`,
         });
       }
     } catch (error) {
@@ -400,8 +407,82 @@ export default function SmsCampaigns() {
     }
   };
 
+  // Parse large file preview (first 1000 contacts)
+  const parseLargeFilePreview = async (file: File): Promise<Contact[]> => {
+    const reader = file.stream().getReader();
+    const decoder = new TextDecoder();
+    
+    let buffer = '';
+    let lineNumber = 0;
+    let headers: string[] = [];
+    const contacts: Contact[] = [];
+    const MAX_PREVIEW = 1000;
+
+    try {
+      while (contacts.length < MAX_PREVIEW) {
+        const { done, value } = await reader.read();
+        
+        if (value) {
+          buffer += decoder.decode(value, { stream: !done });
+          
+          const lines = buffer.split('\n');
+          buffer = lines.pop() || '';
+          
+          for (const line of lines) {
+            if (!line.trim()) continue;
+            
+            if (lineNumber === 0) {
+              headers = parseCSVLine(line).map(h => h.toLowerCase().trim());
+              lineNumber++;
+              continue;
+            }
+            
+            const values = parseCSVLine(line);
+            const phoneIndex = headers.findIndex(h => h.includes('phone') || h.includes('number') || h.includes('mobile'));
+            
+            if (phoneIndex >= 0 && values[phoneIndex]) {
+              const firstNameIndex = headers.findIndex(h => h.includes('first') || h === 'name');
+              const lastNameIndex = headers.findIndex(h => h.includes('last'));
+              const emailIndex = headers.findIndex(h => h.includes('email'));
+              
+              const contact: any = {
+                phoneNumber: values[phoneIndex],
+                firstName: firstNameIndex >= 0 ? values[firstNameIndex] : undefined,
+                lastName: lastNameIndex >= 0 ? values[lastNameIndex] : undefined,
+                email: emailIndex >= 0 ? values[emailIndex] : undefined,
+                selected: true,
+              };
+              
+              headers.forEach((header, index) => {
+                if (index !== phoneIndex && index !== firstNameIndex && 
+                    index !== lastNameIndex && index !== emailIndex && values[index]) {
+                  const fieldName = header.replace(/\s+/g, '_').toLowerCase();
+                  contact[fieldName] = values[index];
+                }
+              });
+              
+              contacts.push(contact);
+              
+              if (contacts.length >= MAX_PREVIEW) break;
+            }
+            
+            lineNumber++;
+          }
+        }
+        
+        if (done) break;
+      }
+      
+      reader.cancel();
+      return contacts;
+    } catch (error) {
+      console.error('Error parsing preview:', error);
+      throw error;
+    }
+  };
+
   // Handle large file upload with streaming and immediate chunked import
-  const handleLargeFileUpload = async (file: File) => {
+  const handleLargeFileStreamingImport = async (file: File, contactListId: number, accountId?: number) => {
     const reader = file.stream().getReader();
     const decoder = new TextDecoder();
     
@@ -413,34 +494,6 @@ export default function SmsCampaigns() {
     let totalContacts = 0;
     const BATCH_SIZE = 500; // Process and import 500 contacts at a time
 
-    // Create contact list first
-    const accountId = currentAccount?.id ? parseInt(String(currentAccount.id).replace('acc_', '')) : undefined;
-    
-    if (!newListName) {
-      toast({
-        title: 'Missing Information',
-        description: 'Please provide a list name before uploading',
-        variant: 'destructive'
-      });
-      return;
-    }
-
-    const listRes = await fetch('/api/campaigns/contact-lists', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      credentials: 'include',
-      body: JSON.stringify({
-        accountId,
-        name: newListName,
-        description: newListDescription,
-      }),
-    });
-
-    if (!listRes.ok) {
-      throw new Error('Failed to create contact list');
-    }
-    const listData = await listRes.json();
-
     // Function to import a batch of contacts
     const importBatch = async (contacts: Contact[]) => {
       if (contacts.length === 0) return;
@@ -451,7 +504,7 @@ export default function SmsCampaigns() {
         credentials: 'include',
         body: JSON.stringify({
           accountId,
-          contactListId: listData.id,
+          contactListId,
           contacts,
         }),
       });
@@ -668,40 +721,53 @@ export default function SmsCampaigns() {
       if (!listRes.ok) throw new Error('Failed to create contact list');
       const listData = await listRes.json();
 
-      // Import contacts in chunks to avoid payload size limits
       const selectedContacts = uploadedContacts.filter(c => c.selected);
-      const chunkSize = 1000; // Import 1000 contacts at a time
-      let totalImported = 0;
-
-      for (let i = 0; i < selectedContacts.length; i += chunkSize) {
-        const chunk = selectedContacts.slice(i, i + chunkSize);
+      
+      // Check if we need streaming import for large files
+      const uploadedFile = (document.querySelector('input[type="file"]') as HTMLInputElement)?.files?.[0];
+      
+      if (uploadedFile && uploadedFile.size > 5 * 1024 * 1024) {
+        // Large file - use streaming import
+        await handleLargeFileStreamingImport(uploadedFile, listData.id, accountId);
         
-        const importRes = await fetch('/api/campaigns/contacts/import', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          credentials: 'include',
-          body: JSON.stringify({
-            accountId,
-            contactListId: listData.id,
-            contacts: chunk,
-          }),
+        toast({
+          title: 'Success',
+          description: `Created list "${newListName}" and imported all contacts from large file`,
         });
+      } else {
+        // Small file or preview - use chunked import
+        const chunkSize = 1000;
+        let totalImported = 0;
 
-        if (!importRes.ok) {
-          throw new Error(`Failed to import contacts chunk ${Math.floor(i / chunkSize) + 1}`);
+        for (let i = 0; i < selectedContacts.length; i += chunkSize) {
+          const chunk = selectedContacts.slice(i, i + chunkSize);
+          
+          const importRes = await fetch('/api/campaigns/contacts/import', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            credentials: 'include',
+            body: JSON.stringify({
+              accountId,
+              contactListId: listData.id,
+              contacts: chunk,
+            }),
+          });
+
+          if (!importRes.ok) {
+            throw new Error(`Failed to import contacts chunk ${Math.floor(i / chunkSize) + 1}`);
+          }
+          
+          const importData = await importRes.json();
+          totalImported += importData.imported || 0;
+          
+          setUploadProgress(Math.round(((i + chunk.length) / selectedContacts.length) * 100));
         }
         
-        const importData = await importRes.json();
-        totalImported += importData.imported || 0;
-        
-        // Update progress
-        setUploadProgress(Math.round(((i + chunk.length) / selectedContacts.length) * 100));
+        toast({
+          title: 'Success',
+          description: `Created list "${newListName}" with ${totalImported} contacts`,
+        });
       }
-
-      toast({
-        title: 'Success',
-        description: `Created list "${newListName}" with ${totalImported} contacts`,
-      });
 
       // Reset and refresh
       setShowNewList(false);
