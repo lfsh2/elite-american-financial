@@ -4358,18 +4358,28 @@ export async function registerRoutes(app: Express): Promise<Server> {
   const { campaignService } = await import('./services/campaignService');
 
   /**
-   * Get all contact lists
+   * Get all contact lists (optimized with limit)
    */
   app.get("/api/campaigns/contact-lists", async (req, res) => {
     try {
       const accountId = req.query.accountId ? parseInt(req.query.accountId as string) : undefined;
       const userId = (req as any).user?.id || 1;
+      const limit = req.query.limit ? parseInt(req.query.limit as string) : 100;
       
-      let query = db.select().from(contactLists).where(eq(contactLists.userId, userId));
+      let query = db
+        .select()
+        .from(contactLists)
+        .where(eq(contactLists.userId, userId))
+        .orderBy(contactLists.createdAt)
+        .limit(limit);
+        
       if (accountId) {
-        query = db.select().from(contactLists).where(
-          and(eq(contactLists.userId, userId), eq(contactLists.accountId, accountId))
-        ) as any;
+        query = db
+          .select()
+          .from(contactLists)
+          .where(and(eq(contactLists.userId, userId), eq(contactLists.accountId, accountId)))
+          .orderBy(contactLists.createdAt)
+          .limit(limit) as any;
       }
       
       const lists = await query;
@@ -4673,15 +4683,26 @@ export async function registerRoutes(app: Express): Promise<Server> {
   });
 
   /**
-   * Get all SMS campaigns
+   * Get all SMS campaigns (optimized with limit and ordering)
    */
   app.get("/api/campaigns/sms-campaigns", async (req, res) => {
     try {
       const accountId = req.query.accountId ? parseInt(req.query.accountId as string) : undefined;
+      const limit = req.query.limit ? parseInt(req.query.limit as string) : 100;
       
-      let query = db.select().from(smsCampaigns);
+      let query = db
+        .select()
+        .from(smsCampaigns)
+        .orderBy(smsCampaigns.createdAt)
+        .limit(limit);
+        
       if (accountId) {
-        query = query.where(eq(smsCampaigns.accountId, accountId)) as any;
+        query = db
+          .select()
+          .from(smsCampaigns)
+          .where(eq(smsCampaigns.accountId, accountId))
+          .orderBy(smsCampaigns.createdAt)
+          .limit(limit) as any;
       }
       
       const campaigns = await query;

@@ -193,75 +193,74 @@ export default function SmsCampaigns() {
     try {
       const accountId = currentAccount?.id ? parseInt(String(currentAccount.id).replace('acc_', '')) : undefined;
       
-      // Fetch campaigns
-      const campaignsRes = await fetch(`/api/campaigns/sms-campaigns${accountId ? `?accountId=${accountId}` : ''}`, {
-        credentials: 'include'
-      });
+      // Fetch campaigns, contact lists, and accounts in parallel
+      const [campaignsRes, listsRes, accountsRes] = await Promise.all([
+        fetch(`/api/campaigns/sms-campaigns${accountId ? `?accountId=${accountId}` : ''}`, {
+          credentials: 'include'
+        }),
+        fetch(`/api/campaigns/contact-lists${accountId ? `?accountId=${accountId}` : ''}`, {
+          credentials: 'include'
+        }),
+        fetch('/api/accounts', { credentials: 'include' })
+      ]);
+
+      // Process campaigns
       if (campaignsRes.ok) {
         const data = await campaignsRes.json();
         setCampaigns(data.campaigns || []);
       }
 
-      // Fetch contact lists
-      const listsUrl = `/api/campaigns/contact-lists${accountId ? `?accountId=${accountId}` : ''}`;
-      const listsRes = await fetch(listsUrl, {
-        credentials: 'include'
-      });
+      // Process contact lists
       if (listsRes.ok) {
         const data = await listsRes.json();
         setContactLists(data.lists || []);
-      } else {
-        console.error('Failed to fetch contact lists:', listsRes.status);
       }
 
-      // Fetch phone numbers from Twilio/Commio account
-      if (currentAccount?.id) {
-        const phonesRes = await fetch(`/api/accounts/${currentAccount.id}/phone-numbers`, {
-          credentials: 'include'
-        });
-        if (phonesRes.ok) {
-          const data = await phonesRes.json();
-          // Only include numbers if account is Twilio or Commio
-          const accountsRes = await fetch('/api/accounts', { credentials: 'include' });
-          if (accountsRes.ok) {
-            const accountsData = await accountsRes.json();
-            const account = accountsData.accounts?.find((acc: any) => acc.id === currentAccount.id);
-            if (account?.provider === 'twilio' || account?.provider === 'commio') {
+      // Process phone numbers
+      if (accountsRes.ok) {
+        const accountsData = await accountsRes.json();
+        const smsAccounts = (accountsData.accounts || []).filter(
+          (acc: any) => acc.provider === 'twilio' || acc.provider === 'commio'
+        );
+
+        if (currentAccount?.id) {
+          // Single account mode
+          const account = smsAccounts.find((acc: any) => acc.id === currentAccount.id);
+          if (account) {
+            const phonesRes = await fetch(`/api/accounts/${currentAccount.id}/phone-numbers`, {
+              credentials: 'include'
+            });
+            if (phonesRes.ok) {
+              const data = await phonesRes.json();
               setPhoneNumbers(data.phoneNumbers || []);
-            } else {
-              setPhoneNumbers([]); // Don't show numbers from other providers
             }
+          } else {
+            setPhoneNumbers([]);
           }
-        }
-      } else {
-        // Fetch from all accounts if no specific account selected
-        const accountsRes = await fetch('/api/accounts', { credentials: 'include' });
-        if (accountsRes.ok) {
-          const accountsData = await accountsRes.json();
-          const allPhoneNumbers: any[] = [];
-          
-          for (const acc of accountsData.accounts || []) {
+        } else {
+          // All accounts mode - fetch phone numbers in parallel
+          const phonePromises = smsAccounts.map(async (acc: any) => {
             try {
               const phonesRes = await fetch(`/api/accounts/${acc.id}/phone-numbers`, {
                 credentials: 'include'
               });
               if (phonesRes.ok) {
                 const data = await phonesRes.json();
-                // Only include Twilio and Commio numbers for SMS sending
-                const numbersWithAccount = (data.phoneNumbers || [])
-                  .filter((pn: any) => acc.provider === 'twilio' || acc.provider === 'commio')
-                  .map((pn: any) => ({
-                    ...pn,
-                    accountId: acc.id,
-                    accountName: acc.name,
-                    provider: acc.provider
-                  }));
-                allPhoneNumbers.push(...numbersWithAccount);
+                return (data.phoneNumbers || []).map((pn: any) => ({
+                  ...pn,
+                  accountId: acc.id,
+                  accountName: acc.name,
+                  provider: acc.provider
+                }));
               }
             } catch (e) {
               console.error(`Failed to fetch phone numbers for account ${acc.id}:`, e);
             }
-          }
+            return [];
+          });
+
+          const phoneNumberArrays = await Promise.all(phonePromises);
+          const allPhoneNumbers = phoneNumberArrays.flat();
           setPhoneNumbers(allPhoneNumbers);
         }
       }
@@ -1049,7 +1048,7 @@ export default function SmsCampaigns() {
                           </TableRow>
                         </TableHeader>
                         <TableBody>
-                          {uploadedContacts.map((contact, index) => (
+                          {uploadedContacts.slice(0, 100).map((contact, index) => (
                             <TableRow key={index} className={!contact.selected ? 'opacity-50' : ''}>
                               <TableCell>
                                 <Checkbox 
@@ -1063,6 +1062,13 @@ export default function SmsCampaigns() {
                               <TableCell>{contact.email || '-'}</TableCell>
                             </TableRow>
                           ))}
+                          {uploadedContacts.length > 100 && (
+                            <TableRow>
+                              <TableCell colSpan={5} className="text-center text-sm text-muted-foreground py-4">
+                                Showing first 100 of {uploadedContacts.length} contacts. All contacts will be imported.
+                              </TableCell>
+                            </TableRow>
+                          )}
                         </TableBody>
                       </Table>
                     </ScrollArea>
@@ -1710,7 +1716,19 @@ export default function SmsCampaigns() {
               <CardDescription>Manage your SMS marketing campaigns with parallel batch sending</CardDescription>
             </CardHeader>
             <CardContent>
-              {campaigns.length === 0 ? (
+              {isLoading ? (
+                <div className="space-y-3">
+                  {[1, 2, 3].map((i) => (
+                    <div key={i} className="flex items-center space-x-4 p-4 border rounded-lg">
+                      <div className="h-4 w-4 bg-gray-200 rounded animate-pulse" />
+                      <div className="flex-1 space-y-2">
+                        <div className="h-4 bg-gray-200 rounded w-1/4 animate-pulse" />
+                        <div className="h-3 bg-gray-200 rounded w-1/2 animate-pulse" />
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              ) : campaigns.length === 0 ? (
                 <div className="text-center py-12">
                   <MessageSquare className="h-16 w-16 mx-auto text-muted-foreground opacity-50 mb-4" />
                   <h3 className="text-lg font-medium mb-2">No campaigns yet</h3>
