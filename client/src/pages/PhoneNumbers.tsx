@@ -101,6 +101,10 @@ export default function PhoneNumbers() {
   const [searchArea, setSearchArea] = useState('');
   const [numberType, setNumberType] = useState('local');
   const [selectedCapabilities, setSelectedCapabilities] = useState<string[]>(['voice', 'sms']);
+  
+  // Usage data state
+  const [usageData, setUsageData] = useState<any>(null);
+  const [loadingUsage, setLoadingUsage] = useState(false);
 
   const phoneNumbers = rawPhoneNumbers.map((pn: any, index) => ({
     id: pn.id || index.toString(),
@@ -156,6 +160,41 @@ export default function PhoneNumbers() {
       return `(${number.substring(2, 5)}) ${number.substring(5, 8)}-${number.substring(8)}`;
     }
     return number;
+  };
+
+  // Fetch usage data when Usage tab is selected
+  React.useEffect(() => {
+    if (activeTab === 'usage' && currentAccount?.id) {
+      fetchUsageData();
+    }
+  }, [activeTab, currentAccount?.id]);
+
+  const fetchUsageData = async () => {
+    if (!currentAccount?.id) return;
+    
+    setLoadingUsage(true);
+    try {
+      const res = await fetch(`/api/accounts/${currentAccount.id}/phone-numbers/usage`, {
+        credentials: 'include'
+      });
+      
+      if (res.ok) {
+        const data = await res.json();
+        setUsageData(data);
+      } else {
+        console.error('Failed to fetch usage data');
+      }
+    } catch (error) {
+      console.error('Error fetching usage data:', error);
+    } finally {
+      setLoadingUsage(false);
+    }
+  };
+
+  // Get usage for a specific phone number
+  const getUsageForNumber = (phoneNumber: string) => {
+    if (!usageData?.byNumber) return null;
+    return usageData.byNumber.find((u: any) => u.phoneNumber === phoneNumber);
   };
 
   const toggleSort = (field: 'number' | 'name' | 'date') => {
@@ -502,8 +541,14 @@ export default function PhoneNumbers() {
                       <CardTitle className="text-sm font-medium text-muted-foreground">Total Messages</CardTitle>
                     </CardHeader>
                     <CardContent>
-                      <div className="text-2xl font-bold">0</div>
-                      <p className="text-xs text-muted-foreground mt-1">Last 30 days</p>
+                      {loadingUsage ? (
+                        <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
+                      ) : (
+                        <>
+                          <div className="text-2xl font-bold">{usageData?.totals?.totalMessages?.toLocaleString() || 0}</div>
+                          <p className="text-xs text-muted-foreground mt-1">Last 30 days</p>
+                        </>
+                      )}
                     </CardContent>
                   </Card>
                   <Card>
@@ -511,8 +556,14 @@ export default function PhoneNumbers() {
                       <CardTitle className="text-sm font-medium text-muted-foreground">Total Calls</CardTitle>
                     </CardHeader>
                     <CardContent>
-                      <div className="text-2xl font-bold">0</div>
-                      <p className="text-xs text-muted-foreground mt-1">Last 30 days</p>
+                      {loadingUsage ? (
+                        <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
+                      ) : (
+                        <>
+                          <div className="text-2xl font-bold">{usageData?.totals?.totalCalls?.toLocaleString() || 0}</div>
+                          <p className="text-xs text-muted-foreground mt-1">Last 30 days</p>
+                        </>
+                      )}
                     </CardContent>
                   </Card>
                   <Card>
@@ -520,8 +571,14 @@ export default function PhoneNumbers() {
                       <CardTitle className="text-sm font-medium text-muted-foreground">Total Cost</CardTitle>
                     </CardHeader>
                     <CardContent>
-                      <div className="text-2xl font-bold">$0.00</div>
-                      <p className="text-xs text-muted-foreground mt-1">Last 30 days</p>
+                      {loadingUsage ? (
+                        <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
+                      ) : (
+                        <>
+                          <div className="text-2xl font-bold">${usageData?.totals?.totalCost?.toFixed(2) || '0.00'}</div>
+                          <p className="text-xs text-muted-foreground mt-1">Last 30 days</p>
+                        </>
+                      )}
                     </CardContent>
                   </Card>
                 </div>
@@ -555,33 +612,46 @@ export default function PhoneNumbers() {
                             </div>
                           </TableCell>
                         </TableRow>
+                      ) : loadingUsage ? (
+                        <TableRow>
+                          <TableCell colSpan={7} className="text-center py-12">
+                            <Loader2 className="h-8 w-8 animate-spin mx-auto text-muted-foreground" />
+                          </TableCell>
+                        </TableRow>
                       ) : (
-                        filteredNumbers.map((number: any) => (
-                          <TableRow key={number.id}>
-                            <TableCell className="font-medium font-mono">
-                              {formatPhoneNumber(number.phoneNumber)}
-                            </TableCell>
-                            <TableCell>
-                              <Badge 
-                                variant="outline" 
-                                className={
-                                  number.provider?.toLowerCase() === 'twilio' 
-                                    ? 'border-red-300 text-red-600 bg-red-50' 
-                                    : number.provider?.toLowerCase() === 'commio'
-                                    ? 'border-blue-300 text-blue-600 bg-blue-50'
-                                    : 'border-gray-300 text-gray-600 bg-gray-50'
-                                }
-                              >
-                                {number.provider ? number.provider.charAt(0).toUpperCase() + number.provider.slice(1) : 'Unknown'}
-                              </Badge>
-                            </TableCell>
-                            <TableCell className="text-right">0</TableCell>
-                            <TableCell className="text-right">0</TableCell>
-                            <TableCell className="text-right">0</TableCell>
-                            <TableCell className="text-right">0</TableCell>
-                            <TableCell className="text-right text-muted-foreground">$0.00</TableCell>
-                          </TableRow>
-                        ))
+                        filteredNumbers.map((number: any) => {
+                          const usage = getUsageForNumber(number.phoneNumber);
+                          const cost = usage 
+                            ? (usage.messagesSent + usage.messagesReceived) * 0.0075 + (usage.callsMade + usage.callsReceived) * 0.013
+                            : 0;
+                          
+                          return (
+                            <TableRow key={number.id}>
+                              <TableCell className="font-medium font-mono">
+                                {formatPhoneNumber(number.phoneNumber)}
+                              </TableCell>
+                              <TableCell>
+                                <Badge 
+                                  variant="outline" 
+                                  className={
+                                    number.provider?.toLowerCase() === 'twilio' 
+                                      ? 'border-red-300 text-red-600 bg-red-50' 
+                                      : number.provider?.toLowerCase() === 'commio'
+                                      ? 'border-blue-300 text-blue-600 bg-blue-50'
+                                      : 'border-gray-300 text-gray-600 bg-gray-50'
+                                  }
+                                >
+                                  {number.provider ? number.provider.charAt(0).toUpperCase() + number.provider.slice(1) : 'Unknown'}
+                                </Badge>
+                              </TableCell>
+                              <TableCell className="text-right">{usage?.messagesSent?.toLocaleString() || 0}</TableCell>
+                              <TableCell className="text-right">{usage?.messagesReceived?.toLocaleString() || 0}</TableCell>
+                              <TableCell className="text-right">{usage?.callsMade?.toLocaleString() || 0}</TableCell>
+                              <TableCell className="text-right">{usage?.callsReceived?.toLocaleString() || 0}</TableCell>
+                              <TableCell className="text-right text-muted-foreground">${cost.toFixed(2)}</TableCell>
+                            </TableRow>
+                          );
+                        })
                       )}
                     </TableBody>
                   </Table>

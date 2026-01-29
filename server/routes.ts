@@ -35,9 +35,11 @@ import {
   contactLists,
   contacts,
   campaignRecipients,
+  smsMessages,
+  voiceCalls,
 } from "@shared/schema";
 import { db } from "./db";
-import { eq, and } from "drizzle-orm";
+import { eq, and, sql } from "drizzle-orm";
 import { ZodError } from "zod";
 import { fromZodError } from "zod-validation-error";
 
@@ -2753,6 +2755,133 @@ export async function registerRoutes(app: Express): Promise<Server> {
     } catch (error) {
       console.error("Error fetching phone numbers:", error);
       res.status(500).json({ error: "Failed to fetch phone numbers" });
+    }
+  });
+
+  /**
+   * Get usage statistics for phone numbers
+   */
+  app.get("/api/accounts/:id/phone-numbers/usage", async (req, res) => {
+    try {
+      const { id } = req.params;
+      const userId = (req as any).user?.id || 1;
+      
+      // Parse account ID
+      const accountId = id === 'acc_master_twilio' ? null : parseInt(id.replace('acc_', ''));
+      
+      // Get date range (default to last 30 days)
+      const endDate = new Date();
+      const startDate = new Date();
+      startDate.setDate(startDate.getDate() - 30);
+      
+      // Query messages grouped by phone number
+      const messageStats = await db
+        .select({
+          phoneNumber: smsMessages.from,
+          direction: smsMessages.direction,
+          count: sql<number>`count(*)::int`,
+        })
+        .from(smsMessages)
+        .where(
+          and(
+            eq(smsMessages.userId, userId),
+            accountId ? eq(smsMessages.accountId, accountId) : sql`true`,
+            sql`${smsMessages.sentAt} >= ${startDate}`,
+            sql`${smsMessages.sentAt} <= ${endDate}`
+          )
+        )
+        .groupBy(smsMessages.from, smsMessages.direction);
+      
+      // Query calls grouped by phone number
+      const callStats = await db
+        .select({
+          phoneNumber: voiceCalls.from,
+          direction: voiceCalls.direction,
+          count: sql<number>`count(*)::int`,
+          totalDuration: sql<number>`sum(${voiceCalls.duration})::int`,
+        })
+        .from(voiceCalls)
+        .where(
+          and(
+            eq(voiceCalls.userId, userId),
+            accountId ? eq(voiceCalls.accountId, accountId) : sql`true`,
+            sql`${voiceCalls.startTime} >= ${startDate}`,
+            sql`${voiceCalls.startTime} <= ${endDate}`
+          )
+        )
+        .groupBy(voiceCalls.from, voiceCalls.direction);
+      
+      // Aggregate by phone number
+      const usageByNumber: Record<string, any> = {};
+      
+      // Process messages
+      messageStats.forEach(stat => {
+        if (!usageByNumber[stat.phoneNumber]) {
+          usageByNumber[stat.phoneNumber] = {
+            phoneNumber: stat.phoneNumber,
+            messagesSent: 0,
+            messagesReceived: 0,
+            callsMade: 0,
+            callsReceived: 0,
+            totalDuration: 0,
+          };
+        }
+        
+        if (stat.direction === 'outbound' || stat.direction === 'outbound-api') {
+          usageByNumber[stat.phoneNumber].messagesSent += stat.count;
+        } else if (stat.direction === 'inbound') {
+          usageByNumber[stat.phoneNumber].messagesReceived += stat.count;
+        }
+      });
+      
+      // Process calls
+      callStats.forEach(stat => {
+        if (!usageByNumber[stat.phoneNumber]) {
+          usageByNumber[stat.phoneNumber] = {
+            phoneNumber: stat.phoneNumber,
+            messagesSent: 0,
+            messagesReceived: 0,
+            callsMade: 0,
+            callsReceived: 0,
+            totalDuration: 0,
+          };
+        }
+        
+        if (stat.direction === 'outbound' || stat.direction === 'outbound-api') {
+          usageByNumber[stat.phoneNumber].callsMade += stat.count;
+        } else if (stat.direction === 'inbound') {
+          usageByNumber[stat.phoneNumber].callsReceived += stat.count;
+        }
+        usageByNumber[stat.phoneNumber].totalDuration += stat.totalDuration || 0;
+      });
+      
+      // Calculate totals
+      const totals = {
+        totalMessages: 0,
+        totalCalls: 0,
+        totalCost: 0, // Will be calculated based on provider rates
+      };
+      
+      Object.values(usageByNumber).forEach((usage: any) => {
+        totals.totalMessages += usage.messagesSent + usage.messagesReceived;
+        totals.totalCalls += usage.callsMade + usage.callsReceived;
+        
+        // Estimate costs (rough estimates, adjust based on actual provider rates)
+        totals.totalCost += (usage.messagesSent + usage.messagesReceived) * 0.0075; // $0.0075 per message
+        totals.totalCost += (usage.callsMade + usage.callsReceived) * 0.013; // $0.013 per minute (assuming 1 min avg)
+      });
+      
+      res.json({
+        totals,
+        byNumber: Object.values(usageByNumber),
+        period: {
+          start: startDate.toISOString(),
+          end: endDate.toISOString(),
+        },
+      });
+    } catch (error) {
+      console.error("Error fetching usage statistics:", error);
+      res.status(500).json({ error: "Failed to fetch usage statistics" });
     }
   });
 
