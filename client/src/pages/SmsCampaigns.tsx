@@ -280,6 +280,34 @@ export default function SmsCampaigns() {
     }
   };
 
+  // Helper function to parse CSV line with quoted fields
+  const parseCSVLine = (line: string): string[] => {
+    const result: string[] = [];
+    let current = '';
+    let inQuotes = false;
+    
+    for (let i = 0; i < line.length; i++) {
+      const char = line[i];
+      const nextChar = line[i + 1];
+      
+      if (char === '"') {
+        if (inQuotes && nextChar === '"') {
+          current += '"';
+          i++; // Skip next quote
+        } else {
+          inQuotes = !inQuotes;
+        }
+      } else if (char === ',' && !inQuotes) {
+        result.push(current.trim());
+        current = '';
+      } else {
+        current += char;
+      }
+    }
+    result.push(current.trim());
+    return result;
+  };
+
   // Parse CSV file with proper handling of quoted fields
   const parseCSV = (text: string): Contact[] => {
     const lines = text.split('\n').filter(line => line.trim());
@@ -291,34 +319,6 @@ export default function SmsCampaigns() {
       });
       return [];
     }
-
-    // Helper function to parse CSV line with quoted fields
-    const parseCSVLine = (line: string): string[] => {
-      const result: string[] = [];
-      let current = '';
-      let inQuotes = false;
-      
-      for (let i = 0; i < line.length; i++) {
-        const char = line[i];
-        const nextChar = line[i + 1];
-        
-        if (char === '"') {
-          if (inQuotes && nextChar === '"') {
-            current += '"';
-            i++; // Skip next quote
-          } else {
-            inQuotes = !inQuotes;
-          }
-        } else if (char === ',' && !inQuotes) {
-          result.push(current.trim());
-          current = '';
-        } else {
-          current += char;
-        }
-      }
-      result.push(current.trim());
-      return result;
-    };
 
     const headers = parseCSVLine(lines[0]).map(h => h.toLowerCase().trim());
     const phoneIndex = headers.findIndex(h => h.includes('phone') || h.includes('number') || h.includes('mobile'));
@@ -364,7 +364,7 @@ export default function SmsCampaigns() {
     return contacts;
   };
 
-  // Handle file upload
+  // Handle file upload with chunked processing for large files
   const handleFileUpload = async (event: React.ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
     if (!file) return;
@@ -373,19 +373,25 @@ export default function SmsCampaigns() {
     setUploadProgress(0);
 
     try {
-      const text = await file.text();
-      setUploadProgress(30);
-      
-      const contacts = parseCSV(text);
-      setUploadProgress(70);
-      
-      setUploadedContacts(contacts);
-      setUploadProgress(100);
-      
-      toast({
-        title: 'File Uploaded',
-        description: `Found ${contacts.length} contacts in the file`,
-      });
+      // For large files (>5MB), process in chunks
+      if (file.size > 5 * 1024 * 1024) {
+        await handleLargeFileUpload(file);
+      } else {
+        // For small files, use existing method
+        const text = await file.text();
+        setUploadProgress(30);
+        
+        const contacts = parseCSV(text);
+        setUploadProgress(70);
+        
+        setUploadedContacts(contacts);
+        setUploadProgress(100);
+        
+        toast({
+          title: 'File Uploaded',
+          description: `Found ${contacts.length} contacts in the file`,
+        });
+      }
     } catch (error) {
       console.error('Error parsing file:', error);
       toast({
@@ -395,6 +401,124 @@ export default function SmsCampaigns() {
       });
     } finally {
       setIsUploading(false);
+    }
+  };
+
+  // Handle large file upload with streaming
+  const handleLargeFileUpload = async (file: File) => {
+    const CHUNK_SIZE = 1024 * 1024; // 1MB chunks
+    const reader = file.stream().getReader();
+    const decoder = new TextDecoder();
+    
+    let buffer = '';
+    let lineNumber = 0;
+    let headers: string[] = [];
+    const allContacts: Contact[] = [];
+    let processedBytes = 0;
+
+    try {
+      while (true) {
+        const { done, value } = await reader.read();
+        
+        if (value) {
+          processedBytes += value.length;
+          buffer += decoder.decode(value, { stream: !done });
+          
+          // Process complete lines
+          const lines = buffer.split('\n');
+          buffer = lines.pop() || ''; // Keep incomplete line in buffer
+          
+          for (const line of lines) {
+            if (!line.trim()) continue;
+            
+            if (lineNumber === 0) {
+              // Parse headers
+              headers = parseCSVLine(line).map(h => h.toLowerCase().trim());
+              lineNumber++;
+              continue;
+            }
+            
+            // Parse contact
+            const values = parseCSVLine(line);
+            const phoneIndex = headers.findIndex(h => h.includes('phone') || h.includes('number') || h.includes('mobile'));
+            
+            if (phoneIndex >= 0 && values[phoneIndex]) {
+              const firstNameIndex = headers.findIndex(h => h.includes('first') || h === 'name');
+              const lastNameIndex = headers.findIndex(h => h.includes('last'));
+              const emailIndex = headers.findIndex(h => h.includes('email'));
+              
+              const contact: any = {
+                phoneNumber: values[phoneIndex],
+                firstName: firstNameIndex >= 0 ? values[firstNameIndex] : undefined,
+                lastName: lastNameIndex >= 0 ? values[lastNameIndex] : undefined,
+                email: emailIndex >= 0 ? values[emailIndex] : undefined,
+                selected: true,
+              };
+              
+              // Add custom fields
+              headers.forEach((header, index) => {
+                if (index !== phoneIndex && index !== firstNameIndex && 
+                    index !== lastNameIndex && index !== emailIndex && values[index]) {
+                  const fieldName = header.replace(/\s+/g, '_').toLowerCase();
+                  contact[fieldName] = values[index];
+                }
+              });
+              
+              allContacts.push(contact);
+            }
+            
+            lineNumber++;
+          }
+          
+          // Update progress
+          const progress = Math.min(90, (processedBytes / file.size) * 90);
+          setUploadProgress(progress);
+        }
+        
+        if (done) {
+          // Process any remaining line in buffer
+          if (buffer.trim() && headers.length > 0) {
+            const values = parseCSVLine(buffer);
+            const phoneIndex = headers.findIndex(h => h.includes('phone') || h.includes('number') || h.includes('mobile'));
+            
+            if (phoneIndex >= 0 && values[phoneIndex]) {
+              const firstNameIndex = headers.findIndex(h => h.includes('first') || h === 'name');
+              const lastNameIndex = headers.findIndex(h => h.includes('last'));
+              const emailIndex = headers.findIndex(h => h.includes('email'));
+              
+              const contact: any = {
+                phoneNumber: values[phoneIndex],
+                firstName: firstNameIndex >= 0 ? values[firstNameIndex] : undefined,
+                lastName: lastNameIndex >= 0 ? values[lastNameIndex] : undefined,
+                email: emailIndex >= 0 ? values[emailIndex] : undefined,
+                selected: true,
+              };
+              
+              headers.forEach((header, index) => {
+                if (index !== phoneIndex && index !== firstNameIndex && 
+                    index !== lastNameIndex && index !== emailIndex && values[index]) {
+                  const fieldName = header.replace(/\s+/g, '_').toLowerCase();
+                  contact[fieldName] = values[index];
+                }
+              });
+              
+              allContacts.push(contact);
+            }
+          }
+          break;
+        }
+      }
+      
+      setUploadedContacts(allContacts);
+      setUploadProgress(100);
+      
+      toast({
+        title: 'File Uploaded',
+        description: `Found ${allContacts.length.toLocaleString()} contacts in the file`,
+      });
+    } catch (error) {
+      console.error('Error streaming file:', error);
+      throw error;
     }
   };
 
