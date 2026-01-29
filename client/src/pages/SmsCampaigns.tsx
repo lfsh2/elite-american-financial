@@ -365,19 +365,23 @@ export default function SmsCampaigns() {
     const file = event.target.files?.[0];
     if (!file) return;
 
+    console.log('[Upload] Starting file upload:', file.name, 'Size:', file.size);
     setIsUploading(true);
     setUploadProgress(0);
 
     try {
       // For small files (<5MB), parse and show preview
       if (file.size <= 5 * 1024 * 1024) {
+        console.log('[Upload] Small file - parsing all contacts');
         const text = await file.text();
         setUploadProgress(30);
         
         const contacts = parseCSV(text);
+        console.log('[Upload] Parsed contacts:', contacts.length);
         setUploadProgress(70);
         
         setUploadedContacts(contacts);
+        console.log('[Upload] Set uploadedContacts state');
         setUploadProgress(100);
         
         toast({
@@ -386,8 +390,11 @@ export default function SmsCampaigns() {
         });
       } else {
         // For large files (>5MB), show preview of first 1000 contacts
+        console.log('[Upload] Large file - parsing preview');
         const contacts = await parseLargeFilePreview(file);
+        console.log('[Upload] Parsed preview contacts:', contacts.length);
         setUploadedContacts(contacts);
+        console.log('[Upload] Set uploadedContacts state');
         setUploadProgress(100);
         
         toast({
@@ -396,7 +403,7 @@ export default function SmsCampaigns() {
         });
       }
     } catch (error) {
-      console.error('Error parsing file:', error);
+      console.error('[Upload] Error parsing file:', error);
       toast({
         title: 'Upload Failed',
         description: 'Failed to parse the CSV file',
@@ -694,10 +701,13 @@ export default function SmsCampaigns() {
 
   // Create contact list and import contacts
   const handleCreateListAndImport = async () => {
+    console.log('[Import] Starting import - newListName:', newListName, 'uploadedContacts:', uploadedContacts.length);
+    
     if (!newListName || uploadedContacts.length === 0) {
+      console.log('[Import] Validation failed - newListName:', !!newListName, 'hasContacts:', uploadedContacts.length > 0);
       toast({
         title: 'Missing Information',
-        description: 'Please provide a list name and upload contacts',
+        description: !newListName ? 'Please provide a list name' : 'Please upload contacts first',
         variant: 'destructive'
       });
       return;
