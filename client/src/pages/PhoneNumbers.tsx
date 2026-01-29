@@ -356,7 +356,8 @@ export default function PhoneNumbers() {
                 </Badge>
               ))}
             </div>
-            <TabsContent value={activeTab} className="mt-4">
+            {/* Active Numbers Tab */}
+            <TabsContent value="active" className="mt-4">
               <div className="rounded-md border">
                 <Table>
                   <TableHeader>
@@ -451,6 +452,140 @@ export default function PhoneNumbers() {
                     )}
                   </TableBody>
                 </Table>
+              </div>
+            </TabsContent>
+
+            {/* Porting Status Tab */}
+            <TabsContent value="porting" className="mt-4">
+              <div className="rounded-md border">
+                <Table>
+                  <TableHeader>
+                    <TableRow>
+                      <TableHead>Phone Number</TableHead>
+                      <TableHead>Provider</TableHead>
+                      <TableHead>Port Status</TableHead>
+                      <TableHead>Submitted Date</TableHead>
+                      <TableHead>Expected Completion</TableHead>
+                      <TableHead>Notes</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    <TableRow>
+                      <TableCell colSpan={6} className="text-center py-12">
+                        <div className="flex flex-col items-center gap-3">
+                          <Phone className="h-12 w-12 text-muted-foreground/50" />
+                          <div>
+                            <p className="text-sm font-medium text-muted-foreground">No porting requests</p>
+                            <p className="text-xs text-muted-foreground mt-1">
+                              Port numbers from other carriers will appear here
+                            </p>
+                          </div>
+                          <Button variant="outline" size="sm" className="mt-2">
+                            <Plus className="h-4 w-4 mr-2" />
+                            Start Port Request
+                          </Button>
+                        </div>
+                      </TableCell>
+                    </TableRow>
+                  </TableBody>
+                </Table>
+              </div>
+            </TabsContent>
+
+            {/* Usage Tab */}
+            <TabsContent value="usage" className="mt-4">
+              <div className="space-y-4">
+                {/* Usage Summary Cards */}
+                <div className="grid gap-4 md:grid-cols-3">
+                  <Card>
+                    <CardHeader className="pb-3">
+                      <CardTitle className="text-sm font-medium text-muted-foreground">Total Messages</CardTitle>
+                    </CardHeader>
+                    <CardContent>
+                      <div className="text-2xl font-bold">0</div>
+                      <p className="text-xs text-muted-foreground mt-1">Last 30 days</p>
+                    </CardContent>
+                  </Card>
+                  <Card>
+                    <CardHeader className="pb-3">
+                      <CardTitle className="text-sm font-medium text-muted-foreground">Total Calls</CardTitle>
+                    </CardHeader>
+                    <CardContent>
+                      <div className="text-2xl font-bold">0</div>
+                      <p className="text-xs text-muted-foreground mt-1">Last 30 days</p>
+                    </CardContent>
+                  </Card>
+                  <Card>
+                    <CardHeader className="pb-3">
+                      <CardTitle className="text-sm font-medium text-muted-foreground">Total Cost</CardTitle>
+                    </CardHeader>
+                    <CardContent>
+                      <div className="text-2xl font-bold">$0.00</div>
+                      <p className="text-xs text-muted-foreground mt-1">Last 30 days</p>
+                    </CardContent>
+                  </Card>
+                </div>
+
+                {/* Usage by Number Table */}
+                <div className="rounded-md border">
+                  <Table>
+                    <TableHeader>
+                      <TableRow>
+                        <TableHead>Phone Number</TableHead>
+                        <TableHead>Provider</TableHead>
+                        <TableHead className="text-right">Messages Sent</TableHead>
+                        <TableHead className="text-right">Messages Received</TableHead>
+                        <TableHead className="text-right">Calls Made</TableHead>
+                        <TableHead className="text-right">Calls Received</TableHead>
+                        <TableHead className="text-right">Total Cost</TableHead>
+                      </TableRow>
+                    </TableHeader>
+                    <TableBody>
+                      {filteredNumbers.length === 0 ? (
+                        <TableRow>
+                          <TableCell colSpan={7} className="text-center py-12">
+                            <div className="flex flex-col items-center gap-3">
+                              <MessageSquare className="h-12 w-12 text-muted-foreground/50" />
+                              <div>
+                                <p className="text-sm font-medium text-muted-foreground">No usage data</p>
+                                <p className="text-xs text-muted-foreground mt-1">
+                                  Usage statistics will appear here once you start using your numbers
+                                </p>
+                              </div>
+                            </div>
+                          </TableCell>
+                        </TableRow>
+                      ) : (
+                        filteredNumbers.map((number: any) => (
+                          <TableRow key={number.id}>
+                            <TableCell className="font-medium font-mono">
+                              {formatPhoneNumber(number.phoneNumber)}
+                            </TableCell>
+                            <TableCell>
+                              <Badge 
+                                variant="outline" 
+                                className={
+                                  number.provider?.toLowerCase() === 'twilio' 
+                                    ? 'border-red-300 text-red-600 bg-red-50' 
+                                    : number.provider?.toLowerCase() === 'commio'
+                                    ? 'border-blue-300 text-blue-600 bg-blue-50'
+                                    : 'border-gray-300 text-gray-600 bg-gray-50'
+                                }
+                              >
+                                {number.provider ? number.provider.charAt(0).toUpperCase() + number.provider.slice(1) : 'Unknown'}
+                              </Badge>
+                            </TableCell>
+                            <TableCell className="text-right">0</TableCell>
+                            <TableCell className="text-right">0</TableCell>
+                            <TableCell className="text-right">0</TableCell>
+                            <TableCell className="text-right">0</TableCell>
+                            <TableCell className="text-right text-muted-foreground">$0.00</TableCell>
+                          </TableRow>
+                        ))
+                      )}
+                    </TableBody>
+                  </Table>
+                </div>
               </div>
             </TabsContent>
           </Tabs>
