@@ -1722,7 +1722,13 @@ export default function SmsCampaigns() {
                           <div className="text-blue-700">Campaign Name:</div>
                           <div className="text-blue-900 font-medium">{newCampaign.name}</div>
                           <div className="text-blue-700">From Number:</div>
-                          <div className="text-blue-900 font-medium">{newCampaign.fromNumber}</div>
+                          <div className="text-blue-900 font-medium">
+                            {newCampaign.fromNumber ? (
+                              newCampaign.fromNumber.includes(',') 
+                                ? `${newCampaign.fromNumber.split(',').length} numbers selected`
+                                : newCampaign.fromNumber
+                            ) : 'Not selected'}
+                          </div>
                           <div className="text-blue-700">Recipients:</div>
                           <div className="text-blue-900 font-medium">
                             {contactLists.find(l => String(l.id) === newCampaign.contactListId)?.contactCount || 0} contacts
@@ -1797,6 +1803,21 @@ export default function SmsCampaigns() {
                           variant: 'destructive'
                         });
                         return;
+                      }
+                      
+                      // Save phone numbers to campaign state when leaving Step 1
+                      if (campaignStep === 1) {
+                        let fromNumberValue = '';
+                        if (numberSelectionMode === 'single') {
+                          fromNumberValue = newCampaign.fromNumber;
+                        } else if (numberSelectionMode === 'select') {
+                          fromNumberValue = Array.from(selectedFromNumbers).join(',');
+                        } else if (numberSelectionMode === 'all') {
+                          fromNumberValue = filteredNumbers.map(pn => pn.phoneNumber).join(',');
+                        }
+                        
+                        console.log('[Campaign] Saving phone numbers:', fromNumberValue);
+                        setNewCampaign(prev => ({ ...prev, fromNumber: fromNumberValue }));
                       }
                       
                       setCampaignStep(prev => prev + 1);
