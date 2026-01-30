@@ -821,6 +821,7 @@ export default function SmsCampaigns() {
           description: newCampaign.description,
           messageTemplate: newCampaign.messageTemplate,
           fromNumber: newCampaign.fromNumber,
+          contactListId: newCampaign.contactListId ? parseInt(newCampaign.contactListId) : undefined,
         }),
       });
 
