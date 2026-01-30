@@ -1,0 +1,139 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Contact List Diagnostic</title>
+    <style>
+        body {
+            font-family: monospace;
+            padding: 20px;
+            background: #1e1e1e;
+            color: #d4d4d4;
+        }
+        .result {
+            background: #252526;
+            padding: 15px;
+            border-radius: 5px;
+            margin: 10px 0;
+            border-left: 4px solid #007acc;
+        }
+        .error {
+            border-left-color: #f48771;
+        }
+        .success {
+            border-left-color: #89d185;
+        }
+        button {
+            background: #007acc;
+            color: white;
+            border: none;
+            padding: 10px 20px;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 14px;
+        }
+        button:hover {
+            background: #005a9e;
+        }
+        input {
+            padding: 8px;
+            border: 1px solid #3c3c3c;
+            background: #252526;
+            color: #d4d4d4;
+            border-radius: 4px;
+            margin-right: 10px;
+        }
+        pre {
+            background: #1e1e1e;
+            padding: 10px;
+            border-radius: 4px;
+            overflow-x: auto;
+        }
+    </style>
+</head>
+<body>
+    <h1>📊 Contact List Diagnostic Tool</h1>
+    
+    <div>
+        <label>Contact List ID: </label>
+        <input type="number" id="listId" value="6" placeholder="Enter list ID">
+        <button onclick="checkContactList()">Check Contact List</button>
+    </div>
+    
+    <div id="results"></div>
+
+    <script>
+        async function checkContactList() {
+            const listId = document.getElementById('listId').value;
+            const resultsDiv = document.getElementById('results');
+            
+            resultsDiv.innerHTML = '<div class="result">Loading...</div>';
+            
+            try {
+                const response = await fetch(`http://localhost:3000/api/campaigns/contact-lists/${listId}/diagnostic`, {
+                    credentials: 'include'
+                });
+                
+                if (!response.ok) {
+                    throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+                }
+                
+                const data = await response.json();
+                
+                // Determine if there's a problem
+                const hasProblem = data.actualMemberCount === 0 && data.list.reportedCount > 0;
+                
+                let html = `
+                    <div class="result ${hasProblem ? 'error' : 'success'}">
+                        <h2>${hasProblem ? '❌ PROBLEM FOUND' : '✅ CONTACT LIST OK'}</h2>
+                        
+                        <h3>Contact List Info:</h3>
+                        <ul>
+                            <li><strong>ID:</strong> ${data.list.id}</li>
+                            <li><strong>Name:</strong> ${data.list.name}</li>
+                            <li><strong>Reported Count:</strong> ${data.list.reportedCount}</li>
+                            <li><strong>Actual Members:</strong> ${data.actualMemberCount}</li>
+                            <li><strong>Total Contacts in DB:</strong> ${data.totalContactsInDatabase}</li>
+                        </ul>
+                        
+                        ${hasProblem ? `
+                            <div style="background: #5a1d1d; padding: 10px; border-radius: 4px; margin: 10px 0;">
+                                <strong>⚠️ Issue:</strong> The contact list shows ${data.list.reportedCount} contacts 
+                                but only ${data.actualMemberCount} are actually linked!<br><br>
+                                <strong>Cause:</strong> Contacts were created but not added to contactListMembers table.<br>
+                                <strong>Solution:</strong> Re-import the contacts or manually link them.
+                            </div>
+                        ` : ''}
+                        
+                        <h3>Sample Members (first 10):</h3>
+                        ${data.sampleMembers.length > 0 ? `
+                            <pre>${JSON.stringify(data.sampleMembers, null, 2)}</pre>
+                        ` : '<p style="color: #f48771;">No members found!</p>'}
+                    </div>
+                `;
+                
+                resultsDiv.innerHTML = html;
+                
+                // Also log to console
+                console.log('=== CONTACT LIST DIAGNOSTIC ===');
+                console.log('Full data:', data);
+                console.log('================================');
+                
+            } catch (error) {
+                resultsDiv.innerHTML = `
+                    <div class="result error">
+                        <h2>❌ Error</h2>
+                        <p>${error.message}</p>
+                        <p style="color: #858585;">Make sure your server is running on localhost:3000</p>
+                    </div>
+                `;
+                console.error('Error:', error);
+            }
+        }
+        
+        // Auto-run on page load
+        window.addEventListener('load', () => {
+            checkContactList();
+        });
+    </script>
+</body>
+</html>
