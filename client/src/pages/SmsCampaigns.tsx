@@ -829,7 +829,8 @@ export default function SmsCampaigns() {
 
       // Add recipients if contact list selected
       if (newCampaign.contactListId) {
-        await fetch(`/api/campaigns/sms-campaigns/${data.campaign.id}/recipients`, {
+        console.log('[Campaign] Adding recipients - contactListId:', newCampaign.contactListId);
+        const recipientsRes = await fetch(`/api/campaigns/sms-campaigns/${data.campaign.id}/recipients`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           credentials: 'include',
@@ -837,6 +838,15 @@ export default function SmsCampaigns() {
             contactListId: parseInt(newCampaign.contactListId),
           }),
         });
+
+        if (!recipientsRes.ok) {
+          const errorData = await recipientsRes.json();
+          console.error('[Campaign] Failed to add recipients:', errorData);
+          throw new Error(errorData.error || 'Failed to add recipients to campaign');
+        }
+
+        const recipientsData = await recipientsRes.json();
+        console.log('[Campaign] Recipients added:', recipientsData);
       }
 
       toast({
