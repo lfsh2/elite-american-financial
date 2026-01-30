@@ -172,6 +172,7 @@ export async function importContacts(
   if (contactListId && contactPhoneMap.size > 0) {
     try {
       const allContactIds = Array.from(contactPhoneMap.values());
+      console.log('[Import] Adding contacts to list - contactListId:', contactListId, 'contactCount:', allContactIds.length);
 
       // BATCH QUERY: Check existing memberships
       const existingMembers = await db
@@ -183,17 +184,20 @@ export async function importContacts(
         ));
 
       const existingMemberIds = new Set(existingMembers.map(m => m.contactId));
+      console.log('[Import] Existing members:', existingMemberIds.size);
 
       // BATCH INSERT: Add new memberships
       const newMemberships = allContactIds
         .filter(id => !existingMemberIds.has(id))
         .map(contactId => ({ contactListId, contactId }));
 
+      console.log('[Import] New memberships to add:', newMemberships.length);
       if (newMemberships.length > 0) {
         await db.insert(contactListMembers).values(newMemberships);
+        console.log('[Import] Successfully added memberships');
       }
     } catch (error: any) {
-      console.error('Contact list membership error:', error);
+      console.error('[Import] Contact list membership error:', error);
     }
   }
 
