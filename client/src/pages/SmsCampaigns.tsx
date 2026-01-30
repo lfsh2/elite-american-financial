@@ -650,6 +650,43 @@ export default function SmsCampaigns() {
     }
   };
 
+  // Delete campaign
+  const handleDeleteCampaign = async (campaignId: number, campaignName: string) => {
+    if (!confirm(`Are you sure you want to delete "${campaignName}"? This action cannot be undone.`)) {
+      return;
+    }
+
+    try {
+      const res = await fetch(`/api/campaigns/sms-campaigns/${campaignId}`, {
+        method: 'DELETE',
+        credentials: 'include'
+      });
+
+      if (!res.ok) {
+        const errorData = await res.json().catch(() => ({}));
+        throw new Error(errorData.error || 'Failed to delete campaign');
+      }
+
+      // Immediately update the UI by filtering out the deleted campaign
+      setCampaigns(prev => prev.filter(c => c.id !== campaignId));
+
+      toast({
+        title: 'Success',
+        description: 'Campaign deleted successfully',
+      });
+
+      // Refresh data to ensure consistency
+      await fetchData();
+    } catch (error: any) {
+      console.error('Error deleting campaign:', error);
+      toast({
+        title: 'Error',
+        description: error.message || 'Failed to delete campaign',
+        variant: 'destructive'
+      });
+    }
+  };
+
   // Delete contact list
   const handleDeleteList = async (listId: number, listName: string) => {
     if (!confirm(`Are you sure you want to delete "${listName}"? This will also delete all contacts in this list.`)) {
@@ -2075,7 +2112,10 @@ export default function SmsCampaigns() {
                                     View Message
                                   </DropdownMenuItem>
                                   <DropdownMenuSeparator />
-                                  <DropdownMenuItem className="text-red-600">
+                                  <DropdownMenuItem 
+                                    className="text-red-600"
+                                    onClick={() => handleDeleteCampaign(campaign.id, campaign.name)}
+                                  >
                                     <Trash2 className="mr-2 h-4 w-4" />
                                     Delete
                                   </DropdownMenuItem>

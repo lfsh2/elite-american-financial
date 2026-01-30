@@ -4726,6 +4726,26 @@ export async function registerRoutes(app: Express): Promise<Server> {
   });
 
   /**
+   * Delete SMS campaign
+   */
+  app.delete("/api/campaigns/sms-campaigns/:campaignId", async (req, res) => {
+    try {
+      const campaignId = parseInt(req.params.campaignId);
+      
+      // Delete campaign recipients first
+      await db.delete(campaignRecipients).where(eq(campaignRecipients.smsCampaignId, campaignId));
+      
+      // Delete campaign
+      await db.delete(smsCampaigns).where(eq(smsCampaigns.id, campaignId));
+      
+      res.json({ success: true, message: "Campaign deleted successfully" });
+    } catch (error: any) {
+      console.error("Error deleting SMS campaign:", error);
+      res.status(500).json({ error: error.message || "Failed to delete SMS campaign" });
+    }
+  });
+
+  /**
    * Get SMS campaign statistics
    */
   app.get("/api/campaigns/sms-campaigns/:campaignId/stats", async (req, res) => {
