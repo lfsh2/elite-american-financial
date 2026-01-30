@@ -769,6 +769,8 @@ export async function addRecipientsFromContactList(
   smsCampaignId: number,
   contactListId: number
 ): Promise<{ added: number; skipped: number }> {
+  console.log('[Campaign] Adding recipients - campaignId:', smsCampaignId, 'contactListId:', contactListId);
+  
   // Get campaign
   const [campaign] = await db
     .select()
@@ -779,6 +781,8 @@ export async function addRecipientsFromContactList(
     throw new Error('Campaign not found');
   }
 
+  console.log('[Campaign] Found campaign:', campaign.name);
+
   // Get contacts from list
   const listContacts = await db
     .select({
@@ -787,6 +791,8 @@ export async function addRecipientsFromContactList(
     .from(contactListMembers)
     .innerJoin(contacts, eq(contactListMembers.contactId, contacts.id))
     .where(eq(contactListMembers.contactListId, contactListId));
+
+  console.log('[Campaign] Found contacts in list:', listContacts.length);
 
   // Get opt-out list for this account
   const optOuts = await db
@@ -839,6 +845,16 @@ export async function addRecipientsFromContactList(
     added++;
   }
 
+  console.log('[Campaign] Recipients processed - added:', added, 'skipped:', skipped);
+
+  if (added === 0 && listContacts.length === 0) {
+    throw new Error('No contacts found in the selected contact list');
+  }
+
+  if (added === 0 && listContacts.length > 0) {
+    throw new Error('All contacts were skipped (already added or opted out)');
+  }
+
   // Update campaign recipient count
   await db
     .update(smsCampaigns)
@@ -849,6 +865,7 @@ export async function addRecipientsFromContactList(
     })
     .where(eq(smsCampaigns.id, smsCampaignId));
 
+  console.log('[Campaign] Successfully added recipients to campaign');
   return { added, skipped };
 }
 
