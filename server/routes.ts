@@ -33,6 +33,7 @@ import {
   messagingCampaigns,
   smsCampaigns,
   contactLists,
+  contactListMembers,
   contacts,
   campaignRecipients,
   smsMessages,
@@ -4545,6 +4546,62 @@ export async function registerRoutes(app: Express): Promise<Server> {
     } catch (error: any) {
       console.error("Error submitting messaging campaign:", error);
       res.status(500).json({ error: error.message || "Failed to submit messaging campaign" });
+    }
+  });
+
+  /**
+   * Diagnostic: Check contact list members
+   */
+  app.get("/api/campaigns/contact-lists/:id/diagnostic", async (req, res) => {
+    try {
+      const listId = parseInt(req.params.id);
+      
+      // Get list info
+      const [list] = await db
+        .select()
+        .from(contactLists)
+        .where(eq(contactLists.id, listId));
+      
+      if (!list) {
+        return res.status(404).json({ error: "Contact list not found" });
+      }
+      
+      // Count members
+      const members = await db
+        .select({
+          contactId: contactListMembers.contactId,
+          phoneNumber: contacts.phoneNumber,
+          firstName: contacts.firstName,
+          lastName: contacts.lastName,
+        })
+        .from(contactListMembers)
+        .innerJoin(contacts, eq(contactListMembers.contactId, contacts.id))
+        .where(eq(contactListMembers.contactListId, listId))
+        .limit(10);
+      
+      const totalMembers = await db
+        .select({ count: sql<number>`count(*)` })
+        .from(contactListMembers)
+        .where(eq(contactListMembers.contactListId, listId));
+      
+      const totalContacts = await db
+        .select({ count: sql<number>`count(*)` })
+        .from(contacts)
+        .where(eq(contacts.userId, list.userId));
+      
+      res.json({
+        list: {
+          id: list.id,
+          name: list.name,
+          reportedCount: list.contactCount,
+        },
+        actualMemberCount: totalMembers[0]?.count || 0,
+        totalContactsInDatabase: totalContacts[0]?.count || 0,
+        sampleMembers: members,
+      });
+    } catch (error: any) {
+      console.error("Error checking contact list:", error);
+      res.status(500).json({ error: error.message });
     }
   });
 
