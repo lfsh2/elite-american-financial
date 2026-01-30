@@ -879,14 +879,20 @@ export default function SmsCampaigns() {
 
   // Start campaign with batch sending
   const handleStartCampaign = async (campaignId: number, campaign?: SmsCampaign) => {
-    // Determine which numbers to use (respects provider filter)
+    // Use the phone numbers saved in the campaign (from campaign creation)
     let numbersToUse: string[] = [];
-    if (numberSelectionMode === 'all') {
-      numbersToUse = filteredNumbers.map(pn => pn.phoneNumber);
-    } else if (numberSelectionMode === 'select') {
-      numbersToUse = Array.from(selectedFromNumbers);
-    } else if (campaign?.fromNumber) {
-      numbersToUse = [campaign.fromNumber];
+    
+    if (campaign?.fromNumber) {
+      // Parse comma-separated phone numbers from campaign
+      numbersToUse = campaign.fromNumber.split(',').map(n => n.trim()).filter(n => n);
+      console.log('[Campaign] Using saved phone numbers from campaign:', numbersToUse);
+    } else {
+      // Fallback to current selection (shouldn't happen for saved campaigns)
+      if (numberSelectionMode === 'all') {
+        numbersToUse = filteredNumbers.map(pn => pn.phoneNumber);
+      } else if (numberSelectionMode === 'select') {
+        numbersToUse = Array.from(selectedFromNumbers);
+      }
     }
 
     if (numbersToUse.length === 0) {
@@ -897,6 +903,8 @@ export default function SmsCampaigns() {
       });
       return;
     }
+
+    console.log('[Campaign] Starting campaign with', numbersToUse.length, 'phone numbers');
 
     setIsSending(true);
     setShowProgress(true);
