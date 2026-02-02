@@ -400,7 +400,7 @@ export default function SmsInbox() {
         phone: conversation.contactPhone,
         firstName,
         lastName,
-        email: `${firstName.toLowerCase().replace(/[^a-z]/g, '') || 'contact'}@example.com`,
+        email: '', // Leave blank if no email registered
         source: 'SMS Campaign',
       });
     };
@@ -1292,7 +1292,9 @@ export default function SmsInbox() {
                 </div>
                 <div className="p-3 bg-gray-50 rounded-lg">
                   <p className="text-xs text-gray-500 mb-1">Email</p>
-                  <p className="font-medium text-blue-500">{selectedContact.email}</p>
+                  <p className={`font-medium ${selectedContact.email ? 'text-blue-500' : 'text-gray-400'}`}>
+                    {selectedContact.email || '—'}
+                  </p>
                 </div>
                 <div className="p-3 bg-gray-50 rounded-lg">
                   <p className="text-xs text-gray-500 mb-1">Phone</p>
