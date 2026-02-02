@@ -38,6 +38,7 @@ import {
   campaignRecipients,
   smsMessages,
   voiceCalls,
+  accounts,
 } from "@shared/schema";
 import { db } from "./db";
 import { eq, and, sql } from "drizzle-orm";
@@ -696,6 +697,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
         userId = 1,
         messagesPerNumber = 2000,
         concurrentPerNumber = 10,
+        dripMode = false,
+        messagesPerMinute = 30,
       } = req.body;
 
       if (!recipients || !Array.isArray(recipients) || recipients.length === 0) {
@@ -710,77 +713,110 @@ export async function registerRoutes(app: Express): Promise<Server> {
         return res.status(400).json({ message: "Phone numbers array is required" });
       }
 
-      // Build phone number configs with credentials from accounts
+      // Build phone number configs with credentials - simplified approach
       const phoneNumberConfigs: PhoneNumberConfig[] = [];
       
-      // Get all accounts for user once
+      // Get accounts with provider info using accountService
       const accountsData = await accountService.getAccountsForUser(userId);
       const userAccounts = accountsData.accounts || [];
       
+      console.log(`[BatchSMS] Found ${userAccounts.length} accounts for user ${userId}`);
+      
       for (const pn of phoneNumbers) {
-        let config: PhoneNumberConfig | null = null;
-
+        console.log(`[BatchSMS] Looking for phone number: ${pn.phoneNumber}`);
+        let foundInAccount = false;
+        
+        // Find which account owns this phone number
         for (const account of userAccounts) {
-          // Extract numeric account ID from "acc_1" format
-          const accountIdNum = parseInt(account.id.replace('acc_', ''));
-          
-          if (account.provider === 'twilio') {
-            try {
-              const twilioNumbers = await communicationService.getPhoneNumbers(account.id);
-              const found = twilioNumbers.find((n: any) => n.phoneNumber === pn.phoneNumber);
-              if (found) {
-                // Get full credentials from account
-                const creds = await accountService.getAccountCredentials(accountIdNum);
-                if (creds) {
-                  config = {
-                    phoneNumber: pn.phoneNumber,
-                    provider: 'twilio',
-                    accountSid: creds.accountSid,
-                    authToken: creds.authToken,
-                  };
+          try {
+            const accountIdNum = parseInt(account.id.replace('acc_', ''));
+            
+            // Get phone numbers using the same method as /api/accounts/:id/phone-numbers
+            const accountData = await accountService.getAccountById(accountIdNum);
+            if (!accountData) continue;
+            
+            // Check imported phone numbers first (for Commio)
+            const settings = (accountData.settings || {}) as Record<string, any>;
+            let accountPhones: any[] = [];
+            
+            if (settings.importedPhoneNumbers && settings.importedPhoneNumbers.length > 0) {
+              accountPhones = settings.importedPhoneNumbers;
+            } else {
+              // Try to get from provider API
+              const provider = await accountService.getProviderForAccount(accountIdNum);
+              if (provider) {
+                try {
+                  const apiPhones = await provider.getPhoneNumbers();
+                  accountPhones = apiPhones;
+                } catch (e) {
+                  // Provider API failed, continue
                 }
-                break;
               }
-            } catch (e) {
-              // Continue to next account
             }
-          } else if (account.provider === 'commio') {
-            try {
-              const commioNumbers = await communicationService.getPhoneNumbers(account.id);
-              const found = commioNumbers.find((n: any) => n.phoneNumber === pn.phoneNumber);
-              if (found) {
-                // Get full credentials from account
-                const creds = await accountService.getAccountCredentials(accountIdNum);
-                if (creds) {
-                  config = {
+            
+            console.log(`[BatchSMS] Account ${account.id} (${account.provider}) has ${accountPhones.length} numbers`);
+            
+            const found = accountPhones.find((n: any) => n.phoneNumber === pn.phoneNumber);
+            
+            if (found) {
+              foundInAccount = true;
+              console.log(`[BatchSMS] Found ${pn.phoneNumber} in account ${account.id} (${account.provider})`);
+              
+              // Get credentials from database
+              const creds = await accountService.getAccountCredentials(accountIdNum);
+              const providerType = account.provider as 'twilio' | 'commio';
+              
+              if (providerType === 'twilio' && creds?.accountSid && creds?.authToken) {
+                phoneNumberConfigs.push({
+                  phoneNumber: pn.phoneNumber,
+                  provider: 'twilio',
+                  accountSid: creds.accountSid,
+                  authToken: creds.authToken,
+                });
+                console.log(`[BatchSMS] ✓ Added Twilio number ${pn.phoneNumber}`);
+              } else if (providerType === 'commio') {
+                // For Commio/ThinQ: 
+                // - apiKey = username (amuniz1) for Basic Auth
+                // - authToken = API token for Basic Auth  
+                // - accountSid = numeric account ID (22956) for URL path
+                const thinqUsername = creds?.apiKey; // "amuniz1"
+                const thinqToken = creds?.authToken; // API token
+                const thinqAccountId = creds?.accountSid; // "22956" for URL
+                
+                if (thinqUsername && thinqToken) {
+                  phoneNumberConfigs.push({
                     phoneNumber: pn.phoneNumber,
                     provider: 'commio',
-                    apiKey: creds.apiKey,
-                    apiSecret: creds.apiSecret,
-                  };
+                    apiKey: thinqUsername,
+                    apiSecret: thinqToken,
+                    commioAccountId: thinqAccountId,
+                  });
+                  console.log(`[BatchSMS] ✓ Added Commio number ${pn.phoneNumber} (account: ${thinqAccountId}, user: ${thinqUsername})`);
+                } else {
+                  console.log(`[BatchSMS] ✗ Commio account ${account.id} missing credentials (need apiKey and authToken)`);
                 }
-                break;
               }
-            } catch (e) {
-              // Continue to next account
+              break; // Found the account, move to next phone number
             }
+          } catch (e) {
+            console.error(`[BatchSMS] Error checking account ${account.id}:`, e);
           }
         }
-
-        if (config) {
-          phoneNumberConfigs.push(config);
-        } else {
-          console.log(`[BatchSMS] No credentials found for ${pn.phoneNumber}, skipping`);
+        
+        if (!foundInAccount) {
+          console.log(`[BatchSMS] ✗ Phone number ${pn.phoneNumber} not found in any account`);
         }
       }
 
       if (phoneNumberConfigs.length === 0) {
-        return res.status(400).json({ message: "No valid phone number configurations found. Check that phone numbers belong to configured accounts." });
+        return res.status(400).json({ 
+          message: "No valid phone number configurations found. Check that phone numbers belong to configured accounts with valid credentials." 
+        });
       }
 
-      console.log(`[BatchSMS API] Starting batch: ${recipients.length} recipients, ${phoneNumberConfigs.length} numbers`);
+      console.log(`[BatchSMS] Starting batch: ${recipients.length} recipients, ${phoneNumberConfigs.length} numbers, dripMode=${dripMode}`);
 
-      // Start batch send (this runs in background)
+      // Start batch send
       const result = await batchSmsService.sendBatch({
         recipients,
         message,
@@ -789,6 +825,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
         userId,
         messagesPerNumber,
         concurrentPerNumber,
+        dripMode,
+        messagesPerMinute,
       });
 
       return res.status(200).json({
@@ -797,7 +835,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
         sent: result.sent,
         failed: result.failed,
         duration: result.duration,
-        errors: result.errors.slice(0, 100), // Limit errors in response
+        errors: result.errors.slice(0, 100),
       });
     } catch (error) {
       console.error('[BatchSMS API] Error:', error);

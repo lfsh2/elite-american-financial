@@ -17,6 +17,7 @@ interface PhoneNumberConfig {
   authToken?: string;
   apiKey?: string;
   apiSecret?: string;
+  commioAccountId?: string; // ThinQ numeric account ID for URL path
 }
 
 interface BatchSendOptions {
@@ -127,28 +128,42 @@ class BatchSmsService {
     apiSecret: string,
     from: string,
     to: string,
-    body: string
+    body: string,
+    accountId?: string
   ): Promise<{ success: boolean; messageSid?: string; error?: string }> {
     try {
-      const response = await fetch('https://api.commio.com/v1/messages', {
+      // ThinQ/Commio API: https://api.thinq.com/account/{account_id}/product/origination/sms/send
+      // URL uses accountId (numeric like "22956"), Auth uses apiKey:apiSecret (username:token)
+      const thinqAccountId = accountId || apiKey;
+      const url = `https://api.thinq.com/account/${thinqAccountId}/product/origination/sms/send`;
+      
+      console.log(`[BatchSMS] Commio request: URL account=${thinqAccountId}, auth user=${apiKey}`);
+      
+      const response = await fetch(url, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
           'Authorization': `Basic ${Buffer.from(`${apiKey}:${apiSecret}`).toString('base64')}`,
         },
         body: JSON.stringify({
-          from,
-          to,
-          text: body,
+          from_did: from.replace(/[^\d]/g, ''), // Remove all non-digits for ThinQ
+          to_did: to.replace(/[^\d]/g, ''),
+          message: body,
         }),
       });
 
+      const responseText = await response.text();
+      console.log(`[BatchSMS] Commio response: ${response.status} - ${responseText.substring(0, 200)}`);
+      
       if (response.ok) {
-        const data = await response.json();
-        return { success: true, messageSid: data.id || data.message_id };
+        try {
+          const data = JSON.parse(responseText);
+          return { success: true, messageSid: data.guid || data.id || `commio_${Date.now()}` };
+        } catch {
+          return { success: true, messageSid: `commio_${Date.now()}` };
+        }
       } else {
-        const errorData = await response.text();
-        return { success: false, error: `Commio error: ${errorData}` };
+        return { success: false, error: `Commio error (${response.status}): ${responseText}` };
       }
     } catch (error: any) {
       return { success: false, error: error.message || 'Commio send failed' };
@@ -243,7 +258,7 @@ class BatchSmsService {
           const client = this.getTwilioClient(phoneConfig.accountSid, phoneConfig.authToken);
           result = await this.sendViaTwilio(client, phoneConfig.phoneNumber, recipient.phone, personalizedMessage);
         } else if (phoneConfig.provider === 'commio' && phoneConfig.apiKey && phoneConfig.apiSecret) {
-          result = await this.sendViaCommio(phoneConfig.apiKey, phoneConfig.apiSecret, phoneConfig.phoneNumber, recipient.phone, personalizedMessage);
+          result = await this.sendViaCommio(phoneConfig.apiKey, phoneConfig.apiSecret, phoneConfig.phoneNumber, recipient.phone, personalizedMessage, phoneConfig.commioAccountId);
         } else {
           console.log(`[BatchSMS] Invalid config for ${phoneConfig.phoneNumber}: provider=${phoneConfig.provider}, hasSid=${!!phoneConfig.accountSid}, hasToken=${!!phoneConfig.authToken}, hasApiKey=${!!phoneConfig.apiKey}`);
           result = { success: false, error: 'Invalid provider configuration' };
