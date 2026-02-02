@@ -798,15 +798,34 @@ export async function addRecipientsFromContactList(
 
   console.log('[Campaign] Found contacts in list:', listContacts.length);
 
-  // Get opt-out list for this account
-  const optOuts = await db
-    .select()
-    .from(optOutList)
-    .where(eq(optOutList.accountId, campaign.accountId!));
+  // Get opt-out list for this account (handle null accountId)
+  let optOutNumbers = new Set<string>();
+  if (campaign.accountId) {
+    const optOuts = await db
+      .select()
+      .from(optOutList)
+      .where(eq(optOutList.accountId, campaign.accountId));
+    optOutNumbers = new Set(optOuts.map(o => o.phoneNumber));
+  }
 
-  const optOutNumbers = new Set(optOuts.map(o => o.phoneNumber));
+  // Get existing recipients to avoid duplicates
+  const existingRecipients = await db
+    .select({ phoneNumber: campaignRecipients.phoneNumber })
+    .from(campaignRecipients)
+    .where(eq(campaignRecipients.smsCampaignId, smsCampaignId));
+  
+  const existingNumbers = new Set(existingRecipients.map(r => r.phoneNumber));
 
-  let added = 0;
+  // Filter and prepare recipients for batch insert
+  const recipientsToAdd: Array<{
+    smsCampaignId: number;
+    contactId: number;
+    phoneNumber: string;
+    firstName: string | null;
+    lastName: string | null;
+    status: string;
+  }> = [];
+
   let skipped = 0;
 
   for (const { contact } of listContacts) {
@@ -822,22 +841,12 @@ export async function addRecipientsFromContactList(
     }
 
     // Check if already added
-    const existing = await db
-      .select()
-      .from(campaignRecipients)
-      .where(and(
-        eq(campaignRecipients.smsCampaignId, smsCampaignId),
-        eq(campaignRecipients.phoneNumber, contact.phoneNumber)
-      ))
-      .limit(1);
-
-    if (existing.length > 0) {
+    if (existingNumbers.has(contact.phoneNumber)) {
       skipped++;
       continue;
     }
 
-    // Add recipient
-    await db.insert(campaignRecipients).values({
+    recipientsToAdd.push({
       smsCampaignId,
       contactId: contact.id,
       phoneNumber: contact.phoneNumber,
@@ -846,24 +855,34 @@ export async function addRecipientsFromContactList(
       status: 'pending',
     });
 
-    added++;
+    // Add to set to prevent duplicates within this batch
+    existingNumbers.add(contact.phoneNumber);
   }
 
-  console.log('[Campaign] Recipients processed - added:', added, 'skipped:', skipped);
+  console.log('[Campaign] Recipients to add:', recipientsToAdd.length, 'skipped:', skipped);
 
-  if (added === 0 && listContacts.length === 0) {
+  if (recipientsToAdd.length === 0 && listContacts.length === 0) {
     throw new Error('No contacts found in the selected contact list');
   }
 
-  if (added === 0 && listContacts.length > 0) {
-    throw new Error('All contacts were skipped (already added or opted out)');
+  // Batch insert recipients in chunks of 1000
+  const BATCH_SIZE = 1000;
+  let added = 0;
+
+  for (let i = 0; i < recipientsToAdd.length; i += BATCH_SIZE) {
+    const batch = recipientsToAdd.slice(i, i + BATCH_SIZE);
+    await db.insert(campaignRecipients).values(batch);
+    added += batch.length;
+    console.log('[Campaign] Inserted batch', Math.floor(i / BATCH_SIZE) + 1, '- total added:', added);
   }
+
+  console.log('[Campaign] Recipients processed - added:', added, 'skipped:', skipped);
 
   // Update campaign recipient count
   await db
     .update(smsCampaigns)
     .set({
-      recipientCount: sql`${smsCampaigns.recipientCount} + ${added}`,
+      recipientCount: added,
       contactListId,
       updatedAt: new Date(),
     })
