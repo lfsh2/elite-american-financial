@@ -1132,6 +1132,13 @@ export default function SmsCampaigns() {
           Draft
         </Badge>
       );
+    } else if (statusLower === 'in_progress' || statusLower === 'in progress' || statusLower === 'inprogress') {
+      return (
+        <Badge className="bg-gray-100 text-gray-800 hover:bg-gray-100">
+          <Loader2 className="w-3 h-3 mr-1 animate-spin" />
+          In Progress
+        </Badge>
+      );
     } else {
       return (
         <Badge variant="outline">
