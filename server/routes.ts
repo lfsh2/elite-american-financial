@@ -4851,8 +4851,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
       }
 
       // Get Commio account credentials
-      const userAccounts = await accountService.getAccountsForUser(campaign.userId);
-      const commioAccount = userAccounts.find(a => a.provider === 'commio');
+      const { accounts: userAccounts } = await accountService.getAccountsForUser(campaign.userId);
+      const commioAccount = userAccounts.find((a: any) => a.provider === 'commio');
       
       if (!commioAccount) {
         return res.status(400).json({ error: "No Commio account found for this user" });
@@ -4922,8 +4922,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const limit = req.query.limit ? parseInt(req.query.limit as string) : 100;
 
       // Get Commio account
-      const userAccounts = await accountService.getAccountsForUser(userId);
-      const commioAccount = userAccounts.find(a => a.provider === 'commio');
+      const { accounts: userAccounts } = await accountService.getAccountsForUser(userId);
+      const commioAccount = userAccounts.find((a: any) => a.provider === 'commio');
       
       if (!commioAccount) {
         return res.status(400).json({ error: "No Commio account found" });
@@ -4961,8 +4961,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const endDate = req.query.endDate ? new Date(req.query.endDate as string) : undefined;
 
       // Get Commio account
-      const userAccounts = await accountService.getAccountsForUser(userId);
-      const commioAccount = userAccounts.find(a => a.provider === 'commio');
+      const { accounts: userAccounts } = await accountService.getAccountsForUser(userId);
+      const commioAccount = userAccounts.find((a: any) => a.provider === 'commio');
       
       if (!commioAccount) {
         return res.status(400).json({ error: "No Commio account found" });
@@ -4999,8 +4999,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const userId = (req as any).user?.id || 1;
 
       // Get Commio account
-      const userAccounts = await accountService.getAccountsForUser(userId);
-      const commioAccount = userAccounts.find(a => a.provider === 'commio');
+      const { accounts: userAccounts } = await accountService.getAccountsForUser(userId);
+      const commioAccount = userAccounts.find((a: any) => a.provider === 'commio');
       
       if (!commioAccount) {
         return res.status(400).json({ error: "No Commio account found" });

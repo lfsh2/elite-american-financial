@@ -2120,15 +2120,35 @@ export default function SmsCampaigns() {
                 variant="outline" 
                 size="sm"
                 onClick={async () => {
+                  const sentCount = prompt('Enter total SMS sent count from Commio dashboard:', '11178');
+                  if (!sentCount) return;
+                  
+                  const sent = parseInt(sentCount);
+                  if (isNaN(sent)) {
+                    toast({ title: 'Error', description: 'Please enter a valid number', variant: 'destructive' });
+                    return;
+                  }
+
+                  // Update the most recent campaign with recipients
+                  const campaignWithRecipients = campaigns.find(c => c.recipientCount > 0);
+                  if (!campaignWithRecipients) {
+                    toast({ title: 'Error', description: 'No campaigns with recipients found', variant: 'destructive' });
+                    return;
+                  }
+
                   try {
-                    toast({ title: 'Syncing...', description: 'Fetching usage data from Commio...' });
-                    const res = await fetch('/api/campaigns/sync-all-metrics', { method: 'POST', credentials: 'include' });
-                    if (!res.ok) throw new Error('Failed to sync');
-                    const data = await res.json();
-                    toast({ 
-                      title: 'Metrics Synced', 
-                      description: `Total outbound: ${data.usage?.outbound?.toLocaleString() || 0} SMS` 
+                    const res = await fetch(`/api/campaigns/sms-campaigns/${campaignWithRecipients.id}`, {
+                      method: 'PUT',
+                      headers: { 'Content-Type': 'application/json' },
+                      credentials: 'include',
+                      body: JSON.stringify({ 
+                        sentCount: sent, 
+                        status: 'completed',
+                        deliveredCount: sent,
+                      }),
                     });
+                    if (!res.ok) throw new Error('Failed to update');
+                    toast({ title: 'Updated', description: `Set sent count to ${sent.toLocaleString()}` });
                     fetchData();
                   } catch (e: any) {
                     toast({ title: 'Error', description: e.message, variant: 'destructive' });
@@ -2136,7 +2156,7 @@ export default function SmsCampaigns() {
                 }}
               >
                 <RefreshCw className="mr-2 h-4 w-4" />
-                Sync from Commio
+                Update Sent Count
               </Button>
             </CardHeader>
             <CardContent>
