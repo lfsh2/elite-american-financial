@@ -626,4 +626,95 @@ export class CommioProvider implements ICommunicationProvider {
     console.error('[Commio] All SMS report endpoints failed');
     return { messages: [], total: 0, sent: 0, delivered: 0, failed: 0 };
   }
+
+  /**
+   * Get SMS usage/billing data from Commio/ThinQ API
+   * This fetches the outbound SMS quantity from the billing endpoint
+   */
+  async getSmsUsage(options?: {
+    startDate?: Date;
+    endDate?: Date;
+  }): Promise<{
+    outbound: number;
+    inbound: number;
+    total: number;
+    cost: number;
+  }> {
+    const endpoints = [
+      '/billing/usage',
+      '/billing/sms',
+      '/usage/sms',
+      '/product/origination/sms/usage',
+      '/origination/sms/usage',
+      '/account/usage',
+      '/usage',
+    ];
+
+    for (const endpoint of endpoints) {
+      try {
+        const params = new URLSearchParams();
+        if (options?.startDate) params.set('start_date', options.startDate.toISOString().split('T')[0]);
+        if (options?.endDate) params.set('end_date', options.endDate.toISOString().split('T')[0]);
+
+        const queryString = params.toString() ? `?${params.toString()}` : '';
+        console.log(`[Commio] Fetching SMS usage from: ${endpoint}${queryString}`);
+        
+        const response = await this.apiRequest<any>('GET', `${endpoint}${queryString}`);
+        
+        // Parse response - look for SMS outbound usage
+        let outbound = 0, inbound = 0, cost = 0;
+        
+        // Try different response structures
+        if (response.sms_outbound !== undefined) {
+          outbound = response.sms_outbound;
+          inbound = response.sms_inbound || 0;
+          cost = response.sms_cost || response.cost || 0;
+        } else if (response.messaging?.outbound !== undefined) {
+          outbound = response.messaging.outbound;
+          inbound = response.messaging.inbound || 0;
+          cost = response.messaging.cost || 0;
+        } else if (response.usage?.sms !== undefined) {
+          outbound = response.usage.sms.outbound || response.usage.sms.sent || 0;
+          inbound = response.usage.sms.inbound || response.usage.sms.received || 0;
+          cost = response.usage.sms.cost || 0;
+        } else if (Array.isArray(response)) {
+          // Array of usage records
+          for (const record of response) {
+            if (record.type === 'sms_outbound' || record.item?.includes('Outbound')) {
+              outbound += record.quantity || record.count || 0;
+              cost += record.cost || record.amount || 0;
+            } else if (record.type === 'sms_inbound' || record.item?.includes('Inbound')) {
+              inbound += record.quantity || record.count || 0;
+            }
+          }
+        } else if (response.rows && Array.isArray(response.rows)) {
+          for (const record of response.rows) {
+            if (record.type === 'sms_outbound' || record.item?.includes('Outbound')) {
+              outbound += record.quantity || record.count || 0;
+              cost += record.cost || record.amount || 0;
+            }
+          }
+        } else {
+          // Try to find any numeric value that could be the count
+          outbound = response.quantity || response.count || response.total || response.sent || 0;
+          cost = response.cost || response.amount || response.total_cost || 0;
+        }
+
+        console.log(`[Commio] SMS Usage: outbound=${outbound}, inbound=${inbound}, cost=${cost}`);
+        
+        return {
+          outbound,
+          inbound,
+          total: outbound + inbound,
+          cost,
+        };
+      } catch (error: any) {
+        console.log(`[Commio] Endpoint ${endpoint} failed: ${error.message}`);
+        continue;
+      }
+    }
+
+    console.error('[Commio] All SMS usage endpoints failed');
+    return { outbound: 0, inbound: 0, total: 0, cost: 0 };
+  }
 }

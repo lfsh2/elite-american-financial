@@ -4952,6 +4952,118 @@ export async function registerRoutes(app: Express): Promise<Server> {
   });
 
   /**
+   * Get Commio SMS usage/billing data
+   */
+  app.get("/api/commio/sms-usage", async (req, res) => {
+    try {
+      const userId = (req as any).user?.id || 1;
+      const startDate = req.query.startDate ? new Date(req.query.startDate as string) : undefined;
+      const endDate = req.query.endDate ? new Date(req.query.endDate as string) : undefined;
+
+      // Get Commio account
+      const userAccounts = await accountService.getAccountsForUser(userId);
+      const commioAccount = userAccounts.find(a => a.provider === 'commio');
+      
+      if (!commioAccount) {
+        return res.status(400).json({ error: "No Commio account found" });
+      }
+
+      const accountIdNum = parseInt(commioAccount.id.replace('acc_', ''));
+      const creds = await accountService.getAccountCredentials(accountIdNum);
+      
+      if (!creds?.accountSid || !creds?.authToken) {
+        return res.status(400).json({ error: "Commio credentials not configured" });
+      }
+
+      const { CommioProvider } = await import('./providers/commio.provider');
+      const commioProvider = new CommioProvider({
+        accountSid: creds.accountSid,
+        authToken: creds.authToken,
+        apiKey: creds.apiKey,
+      });
+
+      const usage = await commioProvider.getSmsUsage({ startDate, endDate });
+      res.json(usage);
+    } catch (error: any) {
+      console.error("Error fetching Commio SMS usage:", error);
+      res.status(500).json({ error: error.message || "Failed to fetch SMS usage" });
+    }
+  });
+
+  /**
+   * Sync all campaigns with Commio usage data
+   * Uses the total outbound count to update campaign metrics
+   */
+  app.post("/api/campaigns/sync-all-metrics", async (req, res) => {
+    try {
+      const userId = (req as any).user?.id || 1;
+
+      // Get Commio account
+      const userAccounts = await accountService.getAccountsForUser(userId);
+      const commioAccount = userAccounts.find(a => a.provider === 'commio');
+      
+      if (!commioAccount) {
+        return res.status(400).json({ error: "No Commio account found" });
+      }
+
+      const accountIdNum = parseInt(commioAccount.id.replace('acc_', ''));
+      const creds = await accountService.getAccountCredentials(accountIdNum);
+      
+      if (!creds?.accountSid || !creds?.authToken) {
+        return res.status(400).json({ error: "Commio credentials not configured" });
+      }
+
+      const { CommioProvider } = await import('./providers/commio.provider');
+      const commioProvider = new CommioProvider({
+        accountSid: creds.accountSid,
+        authToken: creds.authToken,
+        apiKey: creds.apiKey,
+      });
+
+      // Get total SMS usage from Commio
+      const usage = await commioProvider.getSmsUsage();
+      
+      // Get all campaigns for this user
+      const campaigns = await db
+        .select()
+        .from(smsCampaigns)
+        .where(eq(smsCampaigns.userId, userId));
+
+      // Calculate total recipients across all campaigns
+      const totalRecipients = campaigns.reduce((sum, c) => sum + (c.recipientCount || 0), 0);
+      
+      // If we have usage data and campaigns, distribute the sent count proportionally
+      if (usage.outbound > 0 && totalRecipients > 0) {
+        for (const campaign of campaigns) {
+          if (campaign.recipientCount && campaign.recipientCount > 0) {
+            // Proportional distribution based on recipient count
+            const proportion = campaign.recipientCount / totalRecipients;
+            const estimatedSent = Math.round(usage.outbound * proportion);
+            
+            await db
+              .update(smsCampaigns)
+              .set({
+                sentCount: estimatedSent,
+                status: estimatedSent > 0 ? 'completed' : campaign.status,
+                updatedAt: new Date(),
+              })
+              .where(eq(smsCampaigns.id, campaign.id));
+          }
+        }
+      }
+
+      res.json({
+        success: true,
+        usage,
+        campaignsUpdated: campaigns.length,
+      });
+    } catch (error: any) {
+      console.error("Error syncing all campaign metrics:", error);
+      res.status(500).json({ error: error.message || "Failed to sync campaign metrics" });
+    }
+  });
+
+  /**
    * Get all SMS campaigns (optimized with limit and ordering)
    */
   app.get("/api/campaigns/sms-campaigns", async (req, res) => {

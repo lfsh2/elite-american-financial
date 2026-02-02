@@ -2111,9 +2111,33 @@ export default function SmsCampaigns() {
           )}
 
           <Card>
-            <CardHeader>
-              <CardTitle>SMS Campaigns</CardTitle>
-              <CardDescription>Manage your SMS marketing campaigns with parallel batch sending</CardDescription>
+            <CardHeader className="flex flex-row items-center justify-between">
+              <div>
+                <CardTitle>SMS Campaigns</CardTitle>
+                <CardDescription>Manage your SMS marketing campaigns with parallel batch sending</CardDescription>
+              </div>
+              <Button 
+                variant="outline" 
+                size="sm"
+                onClick={async () => {
+                  try {
+                    toast({ title: 'Syncing...', description: 'Fetching usage data from Commio...' });
+                    const res = await fetch('/api/campaigns/sync-all-metrics', { method: 'POST', credentials: 'include' });
+                    if (!res.ok) throw new Error('Failed to sync');
+                    const data = await res.json();
+                    toast({ 
+                      title: 'Metrics Synced', 
+                      description: `Total outbound: ${data.usage?.outbound?.toLocaleString() || 0} SMS` 
+                    });
+                    fetchData();
+                  } catch (e: any) {
+                    toast({ title: 'Error', description: e.message, variant: 'destructive' });
+                  }
+                }}
+              >
+                <RefreshCw className="mr-2 h-4 w-4" />
+                Sync from Commio
+              </Button>
             </CardHeader>
             <CardContent>
               {isLoading ? (
