@@ -747,6 +747,7 @@ export interface CreateSmsCampaignData {
   scheduledAt?: Date;
   sendingRate?: number;
   timezone?: string;
+  customVariables?: Record<string, string>; // Default values for custom merge tags
 }
 
 /**
@@ -755,11 +756,15 @@ export interface CreateSmsCampaignData {
 export async function createSmsCampaign(
   data: CreateSmsCampaignData
 ): Promise<SmsCampaign> {
+  const { customVariables, ...campaignData } = data;
+  
   const [campaign] = await db
     .insert(smsCampaigns)
     .values({
-      ...data,
+      ...campaignData,
       status: 'draft',
+      // Store customVariables in metadata field
+      metadata: customVariables ? { customVariables } : undefined,
     })
     .returning();
 

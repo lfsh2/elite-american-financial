@@ -152,6 +152,7 @@ export default function SmsCampaigns() {
     fromNumber: '',
     fromAccountId: '',
     contactListId: '',
+    customVariables: {} as Record<string, string>, // Custom variable default values
   });
   
   // Multi-select phone numbers for batch sending (Twilio-style)
@@ -859,6 +860,7 @@ export default function SmsCampaigns() {
           messageTemplate: newCampaign.messageTemplate,
           fromNumber: newCampaign.fromNumber,
           contactListId: newCampaign.contactListId ? parseInt(newCampaign.contactListId) : undefined,
+          customVariables: Object.keys(newCampaign.customVariables).length > 0 ? newCampaign.customVariables : undefined,
         }),
       });
 
@@ -982,12 +984,21 @@ export default function SmsCampaigns() {
         headers: { 'Content-Type': 'application/json' },
         credentials: 'include',
         body: JSON.stringify({
-          recipients: recipients.map((r: any) => ({
-            phone: r.phoneNumber,
-            name: r.firstName ? `${r.firstName} ${r.lastName || ''}`.trim() : undefined,
-            firstName: r.firstName,
-            lastName: r.lastName,
-          })),
+          recipients: recipients.map((r: any) => {
+            // Start with campaign's default custom variables (stored in metadata), then overlay contact-specific values
+            const metadata = (campaign as any)?.metadata || {};
+            const campaignDefaults = metadata.customVariables || {};
+            const customFields = r.customFields || {};
+            return {
+              phone: r.phoneNumber,
+              name: r.firstName ? `${r.firstName} ${r.lastName || ''}`.trim() : undefined,
+              firstName: r.firstName,
+              lastName: r.lastName,
+              // Apply campaign defaults first, then contact-specific values override
+              ...campaignDefaults,
+              ...customFields,
+            };
+          }),
           message: campaign?.messageTemplate || '',
           phoneNumbers: phoneNumberConfigs,
           campaignId,
@@ -1701,24 +1712,71 @@ export default function SmsCampaigns() {
                           </div>
                         </div>
                         <p className="text-xs text-blue-700 mt-2">
-                          💡 You can also use custom fields from your CSV: <code className="bg-white px-1.5 py-0.5 rounded">{'{dollar_amount}'}</code>, <code className="bg-white px-1.5 py-0.5 rounded">{'{company}'}</code>, etc.
+                          💡 Custom fields from your CSV (like <code className="bg-white px-1.5 py-0.5 rounded">{'{dollar_amount}'}</code>) will be replaced automatically. Set default values below for any variables not in your data.
                         </p>
                       </div>
                     </div>
+                    
+                    {/* Custom Variables Section */}
+                    {(() => {
+                      // Detect custom variables in the message template
+                      const standardVars = ['first_name', 'last_name', 'phone', 'phone_number', 'name', 'firstName', 'lastName', 'phoneNumber'];
+                      const varMatches = newCampaign.messageTemplate.match(/\{([a-zA-Z_][a-zA-Z0-9_]*)\}/g) || [];
+                      const customVars = [...new Set(varMatches
+                        .map(v => v.replace(/[{}]/g, ''))
+                        .filter(v => !standardVars.includes(v))
+                      )];
+                      
+                      if (customVars.length === 0) return null;
+                      
+                      return (
+                        <div className="bg-amber-50 border border-amber-200 rounded-lg p-3">
+                          <p className="text-xs font-medium text-amber-900 mb-2">📝 Custom Variables Detected:</p>
+                          <p className="text-xs text-amber-700 mb-3">
+                            These variables will be replaced with values from your contact list. If a contact doesn't have a value, the default below will be used.
+                          </p>
+                          <div className="space-y-2">
+                            {customVars.map(varName => (
+                              <div key={varName} className="flex items-center gap-2">
+                                <code className="bg-white px-2 py-1 rounded text-amber-700 text-xs min-w-[120px]">{`{${varName}}`}</code>
+                                <Input
+                                  placeholder={`Default value for ${varName}`}
+                                  className="h-8 text-sm flex-1"
+                                  value={newCampaign.customVariables[varName] || ''}
+                                  onChange={(e) => setNewCampaign(prev => ({
+                                    ...prev,
+                                    customVariables: { ...prev.customVariables, [varName]: e.target.value }
+                                  }))}
+                                />
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      );
+                    })()}
+                    
                     <div className="bg-gray-50 rounded-lg p-4">
                       <Label className="text-sm font-medium">Preview</Label>
                       <div className="mt-2 p-3 bg-white rounded border text-sm">
-                        {newCampaign.messageTemplate
-                          .replace(/\{\{firstName\}\}/g, 'John')
-                          .replace(/\{first_name\}/g, 'John')
-                          .replace(/\{\{lastName\}\}/g, 'Doe')
-                          .replace(/\{last_name\}/g, 'Doe')
-                          .replace(/\{\{phoneNumber\}\}/g, '+1234567890')
-                          .replace(/\{phone_number\}/g, '+1234567890')
-                          .replace(/\{phone\}/g, '+1234567890')
-                          .replace(/\{dollar_amount\}/g, '$50,000')
-                          .replace(/\{company\}/g, 'Acme Corp')
-                          || 'Your message preview will appear here...'}
+                        {(() => {
+                          let preview = newCampaign.messageTemplate
+                            .replace(/\{\{firstName\}\}/g, 'John')
+                            .replace(/\{first_name\}/g, 'John')
+                            .replace(/\{\{lastName\}\}/g, 'Doe')
+                            .replace(/\{last_name\}/g, 'Doe')
+                            .replace(/\{\{phoneNumber\}\}/g, '+1234567890')
+                            .replace(/\{phone_number\}/g, '+1234567890')
+                            .replace(/\{phone\}/g, '+1234567890');
+                          
+                          // Replace custom variables with their default values
+                          Object.entries(newCampaign.customVariables).forEach(([key, value]) => {
+                            if (value) {
+                              preview = preview.replace(new RegExp(`\\{${key}\\}`, 'g'), value);
+                            }
+                          });
+                          
+                          return preview || 'Your message preview will appear here...';
+                        })()}
                       </div>
                       <p className="text-xs text-muted-foreground mt-2">
                         {newCampaign.messageTemplate.length} characters
