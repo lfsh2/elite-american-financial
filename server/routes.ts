@@ -4833,6 +4833,125 @@ export async function registerRoutes(app: Express): Promise<Server> {
   });
 
   /**
+   * Sync SMS metrics from Commio API
+   * Fetches delivery reports and updates campaign counts
+   */
+  app.post("/api/campaigns/sms-campaigns/:campaignId/sync-metrics", async (req, res) => {
+    try {
+      const campaignId = parseInt(req.params.campaignId);
+      
+      // Get campaign details
+      const [campaign] = await db
+        .select()
+        .from(smsCampaigns)
+        .where(eq(smsCampaigns.id, campaignId));
+      
+      if (!campaign) {
+        return res.status(404).json({ error: "Campaign not found" });
+      }
+
+      // Get Commio account credentials
+      const userAccounts = await accountService.getAccountsForUser(campaign.userId);
+      const commioAccount = userAccounts.find(a => a.provider === 'commio');
+      
+      if (!commioAccount) {
+        return res.status(400).json({ error: "No Commio account found for this user" });
+      }
+
+      const accountIdNum = parseInt(commioAccount.id.replace('acc_', ''));
+      const creds = await accountService.getAccountCredentials(accountIdNum);
+      
+      if (!creds?.accountSid || !creds?.authToken) {
+        return res.status(400).json({ error: "Commio credentials not configured" });
+      }
+
+      // Create Commio provider instance
+      const { CommioProvider } = await import('./providers/commio.provider');
+      const commioProvider = new CommioProvider({
+        accountSid: creds.accountSid,
+        authToken: creds.authToken,
+        apiKey: creds.apiKey,
+      });
+
+      // Fetch SMS reports from Commio
+      const startDate = campaign.startedAt || campaign.createdAt;
+      const endDate = campaign.completedAt || new Date();
+      
+      const reports = await commioProvider.getSmsReports({
+        startDate: new Date(startDate),
+        endDate: new Date(endDate),
+        limit: 1000,
+      });
+
+      // Update campaign with metrics
+      const [updated] = await db
+        .update(smsCampaigns)
+        .set({
+          sentCount: reports.sent,
+          deliveredCount: reports.delivered,
+          failedCount: reports.failed,
+          updatedAt: new Date(),
+        })
+        .where(eq(smsCampaigns.id, campaignId))
+        .returning();
+
+      res.json({
+        success: true,
+        campaign: updated,
+        metrics: {
+          total: reports.total,
+          sent: reports.sent,
+          delivered: reports.delivered,
+          failed: reports.failed,
+        },
+      });
+    } catch (error: any) {
+      console.error("Error syncing campaign metrics:", error);
+      res.status(500).json({ error: error.message || "Failed to sync campaign metrics" });
+    }
+  });
+
+  /**
+   * Get Commio SMS reports directly
+   */
+  app.get("/api/commio/sms-reports", async (req, res) => {
+    try {
+      const userId = (req as any).user?.id || 1;
+      const startDate = req.query.startDate ? new Date(req.query.startDate as string) : new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
+      const endDate = req.query.endDate ? new Date(req.query.endDate as string) : new Date();
+      const limit = req.query.limit ? parseInt(req.query.limit as string) : 100;
+
+      // Get Commio account
+      const userAccounts = await accountService.getAccountsForUser(userId);
+      const commioAccount = userAccounts.find(a => a.provider === 'commio');
+      
+      if (!commioAccount) {
+        return res.status(400).json({ error: "No Commio account found" });
+      }
+
+      const accountIdNum = parseInt(commioAccount.id.replace('acc_', ''));
+      const creds = await accountService.getAccountCredentials(accountIdNum);
+      
+      if (!creds?.accountSid || !creds?.authToken) {
+        return res.status(400).json({ error: "Commio credentials not configured" });
+      }
+
+      const { CommioProvider } = await import('./providers/commio.provider');
+      const commioProvider = new CommioProvider({
+        accountSid: creds.accountSid,
+        authToken: creds.authToken,
+        apiKey: creds.apiKey,
+      });
+
+      const reports = await commioProvider.getSmsReports({ startDate, endDate, limit });
+      res.json(reports);
+    } catch (error: any) {
+      console.error("Error fetching Commio SMS reports:", error);
+      res.status(500).json({ error: error.message || "Failed to fetch SMS reports" });
+    }
+  });
+
+  /**
    * Get all SMS campaigns (optimized with limit and ordering)
    */
   app.get("/api/campaigns/sms-campaigns", async (req, res) => {

@@ -651,6 +651,43 @@ export default function SmsCampaigns() {
     }
   };
 
+  // Sync metrics from Commio API
+  const handleSyncMetrics = async (campaignId: number) => {
+    try {
+      toast({
+        title: 'Syncing Metrics',
+        description: 'Fetching delivery reports from Commio...',
+      });
+
+      const res = await fetch(`/api/campaigns/sms-campaigns/${campaignId}/sync-metrics`, {
+        method: 'POST',
+        credentials: 'include'
+      });
+
+      if (!res.ok) {
+        const errorData = await res.json().catch(() => ({}));
+        throw new Error(errorData.error || 'Failed to sync metrics');
+      }
+
+      const data = await res.json();
+      
+      toast({
+        title: 'Metrics Synced',
+        description: `Sent: ${data.metrics.sent}, Delivered: ${data.metrics.delivered}, Failed: ${data.metrics.failed}`,
+      });
+
+      // Refresh data
+      await fetchData();
+    } catch (error: any) {
+      console.error('Error syncing metrics:', error);
+      toast({
+        title: 'Error',
+        description: error.message || 'Failed to sync metrics from Commio',
+        variant: 'destructive'
+      });
+    }
+  };
+
   // Delete campaign
   const handleDeleteCampaign = async (campaignId: number, campaignName: string) => {
     if (!confirm(`Are you sure you want to delete "${campaignName}"? This action cannot be undone.`)) {
@@ -2185,6 +2222,10 @@ export default function SmsCampaigns() {
                                   <DropdownMenuItem>
                                     <MessageSquare className="mr-2 h-4 w-4" />
                                     View Message
+                                  </DropdownMenuItem>
+                                  <DropdownMenuItem onClick={() => handleSyncMetrics(campaign.id)}>
+                                    <RefreshCw className="mr-2 h-4 w-4" />
+                                    Sync Metrics
                                   </DropdownMenuItem>
                                   <DropdownMenuSeparator />
                                   <DropdownMenuItem 

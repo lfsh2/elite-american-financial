@@ -531,4 +531,99 @@ export class CommioProvider implements ICommunicationProvider {
     const analytics = await this.getAnalytics();
     return analytics.metrics;
   }
+
+  /**
+   * Get SMS delivery reports from Commio/ThinQ API
+   * ThinQ API endpoint: /account/{account_id}/product/origination/sms/report
+   */
+  async getSmsReports(options?: { 
+    startDate?: Date; 
+    endDate?: Date; 
+    limit?: number;
+    page?: number;
+  }): Promise<{
+    messages: Array<{
+      guid: string;
+      from: string;
+      to: string;
+      status: string;
+      direction: string;
+      timestamp: string;
+      error_code?: string;
+      error_message?: string;
+    }>;
+    total: number;
+    sent: number;
+    delivered: number;
+    failed: number;
+  }> {
+    const endpoints = [
+      '/product/origination/sms/report',
+      '/product/origination/sms/list',
+      '/product/origination/sms/history',
+      '/origination/sms/report',
+    ];
+
+    for (const endpoint of endpoints) {
+      try {
+        const params = new URLSearchParams();
+        if (options?.startDate) params.set('start_date', options.startDate.toISOString().split('T')[0]);
+        if (options?.endDate) params.set('end_date', options.endDate.toISOString().split('T')[0]);
+        if (options?.limit) params.set('limit', options.limit.toString());
+        if (options?.page) params.set('page', options.page.toString());
+
+        const queryString = params.toString() ? `?${params.toString()}` : '';
+        console.log(`[Commio] Fetching SMS reports from: ${endpoint}${queryString}`);
+        
+        const response = await this.apiRequest<any>('GET', `${endpoint}${queryString}`);
+        
+        // Parse response - ThinQ may return different structures
+        const messages = response.rows || response.data || response.messages || response || [];
+        const messageList = Array.isArray(messages) ? messages : [];
+        
+        // Calculate stats
+        let sent = 0, delivered = 0, failed = 0;
+        const formattedMessages = messageList.map((m: any) => {
+          const status = (m.status || m.delivery_status || 'unknown').toLowerCase();
+          
+          if (status === 'delivered' || status === 'sent' || status === 'accepted') {
+            delivered++;
+            sent++;
+          } else if (status === 'failed' || status === 'undelivered' || status === 'rejected') {
+            failed++;
+            sent++;
+          } else if (status === 'queued' || status === 'sending') {
+            sent++;
+          }
+          
+          return {
+            guid: m.guid || m.id || m.message_id,
+            from: m.from_did || m.from || m.source,
+            to: m.to_did || m.to || m.destination,
+            status: status,
+            direction: m.direction || 'outbound',
+            timestamp: m.timestamp || m.created_at || m.sent_at,
+            error_code: m.error_code,
+            error_message: m.error_message || m.error,
+          };
+        });
+
+        console.log(`[Commio] Found ${messageList.length} messages: ${sent} sent, ${delivered} delivered, ${failed} failed`);
+        
+        return {
+          messages: formattedMessages,
+          total: response.total || messageList.length,
+          sent,
+          delivered,
+          failed,
+        };
+      } catch (error: any) {
+        console.log(`[Commio] Endpoint ${endpoint} failed: ${error.message}`);
+        continue;
+      }
+    }
+
+    console.error('[Commio] All SMS report endpoints failed');
+    return { messages: [], total: 0, sent: 0, delivered: 0, failed: 0 };
+  }
 }
