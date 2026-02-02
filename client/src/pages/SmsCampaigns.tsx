@@ -941,6 +941,7 @@ export default function SmsCampaigns() {
         fromNumber: '',
         fromAccountId: '',
         contactListId: '',
+        customVariables: {},
       });
       fetchData();
     } catch (error: any) {
@@ -1185,18 +1186,21 @@ export default function SmsCampaigns() {
     }
   };
 
-  // Calculate stats
+  // Calculate stats from campaigns
   const stats = {
     totalCampaigns: campaigns.length,
-    activeCampaigns: campaigns.filter(c => c.status === 'sending').length,
+    activeCampaigns: campaigns.filter(c => c.status === 'sending' || c.status === 'in_progress').length,
     completedCampaigns: campaigns.filter(c => c.status === 'completed').length,
     totalSent: campaigns.reduce((sum, c) => sum + (c.sentCount || 0), 0),
     totalDelivered: campaigns.reduce((sum, c) => sum + (c.deliveredCount || 0), 0),
+    totalFailed: campaigns.reduce((sum, c) => sum + (c.failedCount || 0), 0),
+    totalRecipients: campaigns.reduce((sum, c) => sum + (c.recipientCount || 0), 0),
     totalContacts: contactLists.reduce((sum, l) => sum + (l.contactCount || 0), 0),
   };
 
-  const deliveryRate = stats.totalSent > 0 
-    ? Math.round((stats.totalDelivered / stats.totalSent) * 100) 
+  // Delivery rate = sent / total recipients (how many we successfully sent to)
+  const deliveryRate = stats.totalRecipients > 0 
+    ? Math.round((stats.totalSent / stats.totalRecipients) * 100) 
     : 0;
 
   if (isLoading) {
@@ -2063,11 +2067,11 @@ export default function SmsCampaigns() {
 
         <Card>
           <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-            <CardTitle className="text-sm font-medium">Total Contacts</CardTitle>
+            <CardTitle className="text-sm font-medium">Total Recipients</CardTitle>
             <Users className="h-4 w-4 text-muted-foreground" />
           </CardHeader>
           <CardContent>
-            <div className="text-2xl font-bold">{stats.totalContacts.toLocaleString()}</div>
+            <div className="text-2xl font-bold">{stats.totalRecipients.toLocaleString()}</div>
           </CardContent>
         </Card>
       </div>
