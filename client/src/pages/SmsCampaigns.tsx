@@ -1720,10 +1720,11 @@ export default function SmsCampaigns() {
                     {/* Custom Variables Section */}
                     {(() => {
                       // Detect custom variables in the message template
+                      // Supports both {variable} and ${variable} formats
                       const standardVars = ['first_name', 'last_name', 'phone', 'phone_number', 'name', 'firstName', 'lastName', 'phoneNumber'];
-                      const varMatches = newCampaign.messageTemplate.match(/\{([a-zA-Z_][a-zA-Z0-9_]*)\}/g) || [];
+                      const varMatches = newCampaign.messageTemplate.match(/\$?\{([a-zA-Z_][a-zA-Z0-9_]*)\}/g) || [];
                       const customVars = [...new Set(varMatches
-                        .map(v => v.replace(/[{}]/g, ''))
+                        .map(v => v.replace(/[${}]/g, '')) // Remove $, {, and }
                         .filter(v => !standardVars.includes(v))
                       )];
                       
@@ -1769,9 +1770,10 @@ export default function SmsCampaigns() {
                             .replace(/\{phone\}/g, '+1234567890');
                           
                           // Replace custom variables with their default values
+                          // Supports both {variable} and ${variable} formats
                           Object.entries(newCampaign.customVariables).forEach(([key, value]) => {
                             if (value) {
-                              preview = preview.replace(new RegExp(`\\{${key}\\}`, 'g'), value);
+                              preview = preview.replace(new RegExp(`\\$?\\{${key}\\}`, 'g'), value);
                             }
                           });
                           

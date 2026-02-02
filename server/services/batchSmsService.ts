@@ -85,9 +85,9 @@ class BatchSmsService {
     result = result.replace(/\{\{name\}\}/gi, recipient.name || firstName);
     result = result.replace(/\{name\}/gi, recipient.name || firstName);
     
-    // Replace custom fields (e.g., {dollar_amount}, {custom_field})
-    // Match any {field_name} or {{fieldName}} pattern
-    const customFieldPattern = /\{([a-zA-Z_][a-zA-Z0-9_]*)\}/g;
+    // Replace custom fields (e.g., {dollar_amount}, ${dollar_amount}, {custom_field})
+    // Match any {field_name}, ${field_name}, or {{fieldName}} pattern
+    const customFieldPattern = /\$?\{([a-zA-Z_][a-zA-Z0-9_]*)\}/g;
     result = result.replace(customFieldPattern, (match, fieldName) => {
       // Try snake_case field name
       if (recipient[fieldName] !== undefined) {
