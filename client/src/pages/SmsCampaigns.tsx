@@ -978,6 +978,14 @@ export default function SmsCampaigns() {
         };
       });
 
+      // Update campaign status to 'sending' before starting
+      await fetch(`/api/campaigns/sms-campaigns/${campaignId}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        body: JSON.stringify({ status: 'sending' }),
+      });
+
       // Use batch API for parallel sending with drip mode
       const batchRes = await fetch('/api/sms/batch', {
         method: 'POST',

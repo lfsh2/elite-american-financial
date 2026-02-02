@@ -4764,6 +4764,41 @@ export async function registerRoutes(app: Express): Promise<Server> {
   });
 
   /**
+   * Update SMS campaign (status, counts, etc.)
+   */
+  app.put("/api/campaigns/sms-campaigns/:campaignId", async (req, res) => {
+    try {
+      const campaignId = parseInt(req.params.campaignId);
+      const { status, sentCount, deliveredCount, failedCount } = req.body;
+      
+      const updateData: any = { updatedAt: new Date() };
+      if (status !== undefined) updateData.status = status;
+      if (sentCount !== undefined) updateData.sentCount = sentCount;
+      if (deliveredCount !== undefined) updateData.deliveredCount = deliveredCount;
+      if (failedCount !== undefined) updateData.failedCount = failedCount;
+      
+      // Set timestamps based on status
+      if (status === 'sending' && !updateData.startedAt) {
+        updateData.startedAt = new Date();
+      }
+      if (status === 'completed') {
+        updateData.completedAt = new Date();
+      }
+      
+      const [updated] = await db
+        .update(smsCampaigns)
+        .set(updateData)
+        .where(eq(smsCampaigns.id, campaignId))
+        .returning();
+      
+      res.json({ success: true, campaign: updated });
+    } catch (error: any) {
+      console.error("Error updating SMS campaign:", error);
+      res.status(500).json({ error: error.message || "Failed to update SMS campaign" });
+    }
+  });
+
+  /**
    * Delete SMS campaign
    */
   app.delete("/api/campaigns/sms-campaigns/:campaignId", async (req, res) => {
