@@ -95,9 +95,9 @@ export const Sidebar = memo(function Sidebar() {
           <Link href="/dashboard">
             <div className="flex items-center justify-center cursor-pointer">
               <img 
-                src="/elite-financial-logo.png" 
-                alt="Elite Financial" 
-                className="h-12 object-contain"
+                src="/logo.png" 
+                alt="TextFlow" 
+                className="h-10 object-contain"
               />
             </div>
           </Link>

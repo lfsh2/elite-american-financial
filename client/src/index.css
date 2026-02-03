@@ -342,12 +342,12 @@
   }
 }
 
-header img[src*="textflow-modern-logo"] {
+header img[src*="logo"] {
   animation: logo-pulse 3s infinite ease-in-out;
   transition: transform 0.3s ease;
 }
 
-header:hover img[src*="textflow-modern-logo"] {
+header:hover img[src*="logo"] {
   transform: scale(1.05) rotate(5deg);
 }
 
