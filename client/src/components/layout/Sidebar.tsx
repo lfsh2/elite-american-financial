@@ -91,13 +91,13 @@ export const Sidebar = memo(function Sidebar() {
     <div className="hidden border-r bg-white md:block w-64">
       <div className="flex h-full max-h-screen flex-col gap-2">
         {/* Logo */}
-        <div className="flex h-24 items-center justify-center border-b px-2">
+        <div className="flex h-16 items-center justify-center border-b px-1">
           <Link href="/dashboard">
-            <div className="flex items-center justify-center cursor-pointer">
+            <div className="flex items-center justify-center cursor-pointer w-full">
               <img 
                 src="/image.png" 
                 alt="TextFlow" 
-                className="h-20 max-w-[220px] object-contain"
+                className="h-12 w-full max-w-[240px] object-contain"
               />
             </div>
           </Link>
