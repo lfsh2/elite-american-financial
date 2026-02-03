@@ -97,7 +97,7 @@ export const Sidebar = memo(function Sidebar() {
               <img 
                 src="/image.png" 
                 alt="TextFlow" 
-                className="h-16 w-[250px] object-contain scale-125"
+                className="h-16 w-[250px] object-contain scale-150"
               />
             </div>
           </Link>
