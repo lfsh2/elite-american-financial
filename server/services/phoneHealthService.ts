@@ -184,41 +184,59 @@ export class PhoneHealthService {
     account: typeof accounts.$inferSelect,
     dateRange: DateRange
   ): Promise<PhoneNumberHealth[]> {
-    if (!account.accountSid || !account.authToken) {
+    const providerCode = await this.getProviderCode(account);
+    let phoneNumbers: any[] = [];
+
+    // First check for imported phone numbers (used by Commio accounts)
+    const settings = (account.settings || {}) as Record<string, any>;
+    if (settings.importedPhoneNumbers && settings.importedPhoneNumbers.length > 0) {
+      console.log(`[PhoneHealth] Using ${settings.importedPhoneNumbers.length} imported numbers for account ${account.id}`);
+      phoneNumbers = settings.importedPhoneNumbers.map((pn: any) => ({
+        sid: pn.phoneNumber,
+        phoneNumber: pn.phoneNumber,
+        friendlyName: pn.friendlyName || pn.phoneNumber,
+        capabilities: pn.capabilities || { sms: true, voice: true, mms: false },
+        status: pn.status || 'active',
+        dateCreated: pn.dateCreated || new Date().toISOString(),
+      }));
+    } else if (account.accountSid && account.authToken) {
+      // Try to get from provider API
+      try {
+        const provider = await this.getProvider(account);
+        phoneNumbers = await provider.getPhoneNumbers();
+      } catch (error) {
+        console.error(`[PhoneHealth] Error fetching numbers from provider for account ${account.id}:`, error);
+        return [];
+      }
+    } else {
       return [];
     }
 
-    try {
-      const provider = await this.getProvider(account);
-      const phoneNumbers = await provider.getPhoneNumbers();
-
-      const providerCode = await this.getProviderCode(account);
-
-      // Process phone numbers in parallel
-      const healthChecks = await Promise.all(
-        phoneNumbers.map(async (phoneNumber) => {
-          const activityMetrics = await this.getActivityMetrics(
-            phoneNumber.phoneNumber,
-            account.id,
-            dateRange.startDate,
-            dateRange.endDate
-          );
-
-          return this.calculateHealth(
-            phoneNumber,
-            providerCode as 'twilio' | 'commio',
-            account.id.toString(),
-            account.name,
-            activityMetrics
-          );
-        })
-      );
-
-      return healthChecks;
-    } catch (error) {
-      console.error(`[PhoneHealth] Error checking account ${account.id}:`, error);
+    if (phoneNumbers.length === 0) {
       return [];
     }
+
+    // Process phone numbers in parallel
+    const healthChecks = await Promise.all(
+      phoneNumbers.map(async (phoneNumber) => {
+        const activityMetrics = await this.getActivityMetrics(
+          phoneNumber.phoneNumber,
+          account.id,
+          dateRange.startDate,
+          dateRange.endDate
+        );
+
+        return this.calculateHealth(
+          phoneNumber,
+          providerCode as 'twilio' | 'commio',
+          account.id.toString(),
+          account.name,
+          activityMetrics
+        );
+      })
+    );
+
+    return healthChecks;
   }
 
   /**
