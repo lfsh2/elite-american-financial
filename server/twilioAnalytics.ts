@@ -58,6 +58,7 @@ export interface TwilioAnalyticsData {
     friendlyName: string;
     capabilities: { sms: boolean; voice: boolean; mms: boolean };
     dateCreated: Date;
+    a2pStatus?: 'registered' | 'pending' | 'not_registered' | 'unknown';
   }>;
   messages: {
     today: TwilioMessageRecord[];
@@ -269,24 +270,63 @@ class TwilioAnalyticsService {
     if (!this.client) throw new Error('Twilio client not initialized');
 
     try {
-      const numbers = await this.client.incomingPhoneNumbers.list({ limit: 20 });
-      return numbers.map(n => ({
-        phoneNumber: n.phoneNumber,
-        friendlyName: n.friendlyName,
-        capabilities: {
-          sms: n.capabilities.sms,
-          voice: n.capabilities.voice,
-          mms: n.capabilities.mms
-        },
-        dateCreated: new Date(n.dateCreated)
-      }));
+      const numbers = await this.client.incomingPhoneNumbers.list({ limit: 100 });
+      
+      // Fetch A2P registration status by checking messaging services
+      let a2pPhoneNumbers: Set<string> = new Set();
+      
+      try {
+        const messagingServices = await this.client.messaging.v1.services.list({ limit: 50 });
+        
+        for (const service of messagingServices) {
+          try {
+            const servicePhoneNumbers = await this.client.messaging.v1
+              .services(service.sid)
+              .phoneNumbers.list({ limit: 100 });
+            
+            for (const pn of servicePhoneNumbers) {
+              a2pPhoneNumbers.add(pn.phoneNumber);
+            }
+          } catch (e) {
+            // Service might not have phone numbers
+          }
+        }
+      } catch (e) {
+        console.log('[TwilioAnalytics] Could not fetch messaging services for A2P status');
+      }
+      
+      return numbers.map(n => {
+        const hasSms = n.capabilities?.sms === true;
+        let a2pStatus: 'registered' | 'pending' | 'not_registered' | 'unknown';
+        
+        if (a2pPhoneNumbers.has(n.phoneNumber)) {
+          a2pStatus = 'registered';
+        } else if (hasSms) {
+          a2pStatus = 'not_registered';
+        } else {
+          a2pStatus = 'unknown';
+        }
+        
+        return {
+          phoneNumber: n.phoneNumber,
+          friendlyName: n.friendlyName,
+          capabilities: {
+            sms: hasSms,
+            voice: n.capabilities?.voice || false,
+            mms: n.capabilities?.mms || false
+          },
+          dateCreated: new Date(n.dateCreated),
+          a2pStatus,
+        };
+      });
     } catch (error) {
       console.error('Error fetching phone numbers:', error);
       return [{
         phoneNumber: this.phoneNumber || '+15551234567',
         friendlyName: 'Primary Number',
         capabilities: { sms: true, voice: true, mms: true },
-        dateCreated: new Date()
+        dateCreated: new Date(),
+        a2pStatus: 'unknown',
       }];
     }
   }
