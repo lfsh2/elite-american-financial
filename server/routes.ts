@@ -2738,6 +2738,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
             capabilities: pn.capabilities,
             status: 'active',
             dateCreated: pn.dateCreated,
+            a2pStatus: (pn as any).a2pStatus || 'unknown',
           })),
           total: twilioAnalytics.phoneNumbers.length,
         });
@@ -2766,6 +2767,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
             capabilities: pn.capabilities || { sms: true, voice: true, mms: false },
             status: pn.status || 'active',
             dateCreated: pn.dateCreated || new Date().toISOString(),
+            a2pStatus: pn.a2pStatus || 'unknown',
           })),
           total: settings.importedPhoneNumbers.length,
           source: 'imported',
@@ -2787,6 +2789,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
           capabilities: pn.capabilities,
           status: pn.status,
           dateCreated: pn.dateCreated,
+          a2pStatus: pn.a2pStatus || 'unknown',
         })),
         total: phoneNumbers.length,
         source: 'api',
