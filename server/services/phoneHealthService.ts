@@ -168,13 +168,26 @@ export class PhoneHealthService {
    */
   private async getAccountsForUser(userId: number, accountId?: number) {
     if (accountId) {
-      return db.select()
+      const result = await db.select()
         .from(accounts)
         .where(eq(accounts.id, accountId));
+      console.log(`[PhoneHealth] Found ${result.length} accounts for accountId ${accountId}`);
+      return result;
     }
 
     // Get all accounts for user (you may need to adjust based on your schema)
-    return db.select().from(accounts);
+    const allAccounts = await db.select().from(accounts);
+    console.log(`[PhoneHealth] Found ${allAccounts.length} total accounts to check`);
+    
+    // Log each account's provider
+    for (const acc of allAccounts) {
+      const providerCode = await this.getProviderCode(acc);
+      const settings = (acc.settings || {}) as Record<string, any>;
+      const importedCount = settings.importedPhoneNumbers?.length || 0;
+      console.log(`[PhoneHealth] Account ${acc.id}: ${acc.name}, provider: ${providerCode}, imported: ${importedCount}, hasCreds: ${!!(acc.accountSid && acc.authToken)}`);
+    }
+    
+    return allAccounts;
   }
 
   /**
@@ -187,10 +200,12 @@ export class PhoneHealthService {
     const providerCode = await this.getProviderCode(account);
     let phoneNumbers: any[] = [];
 
+    console.log(`[PhoneHealth] Checking account ${account.id} (${account.name}), provider: ${providerCode}`);
+
     // First check for imported phone numbers (used by Commio accounts)
     const settings = (account.settings || {}) as Record<string, any>;
     if (settings.importedPhoneNumbers && settings.importedPhoneNumbers.length > 0) {
-      console.log(`[PhoneHealth] Using ${settings.importedPhoneNumbers.length} imported numbers for account ${account.id}`);
+      console.log(`[PhoneHealth] Using ${settings.importedPhoneNumbers.length} imported numbers for account ${account.id} (${providerCode})`);
       phoneNumbers = settings.importedPhoneNumbers.map((pn: any) => ({
         sid: pn.phoneNumber,
         phoneNumber: pn.phoneNumber,
@@ -202,19 +217,25 @@ export class PhoneHealthService {
     } else if (account.accountSid && account.authToken) {
       // Try to get from provider API
       try {
+        console.log(`[PhoneHealth] Fetching numbers from ${providerCode} API for account ${account.id}`);
         const provider = await this.getProvider(account);
         phoneNumbers = await provider.getPhoneNumbers();
+        console.log(`[PhoneHealth] Got ${phoneNumbers.length} numbers from ${providerCode} API`);
       } catch (error) {
         console.error(`[PhoneHealth] Error fetching numbers from provider for account ${account.id}:`, error);
         return [];
       }
     } else {
+      console.log(`[PhoneHealth] Account ${account.id} has no credentials and no imported numbers`);
       return [];
     }
 
     if (phoneNumbers.length === 0) {
+      console.log(`[PhoneHealth] No phone numbers found for account ${account.id}`);
       return [];
     }
+
+    console.log(`[PhoneHealth] Processing ${phoneNumbers.length} numbers for account ${account.id} (${providerCode})`);
 
     // Process phone numbers in parallel
     const healthChecks = await Promise.all(
