@@ -203,7 +203,22 @@ export class PhoneHealthService {
     console.log(`[PhoneHealth] Checking account ${account.id} (${account.name}), provider: ${providerCode}`);
 
     // First check for imported phone numbers (used by Commio accounts)
-    const settings = (account.settings || {}) as Record<string, any>;
+    // Settings might be a string (from DB) or object, handle both cases
+    let settings: Record<string, any> = {};
+    if (account.settings) {
+      if (typeof account.settings === 'string') {
+        try {
+          settings = JSON.parse(account.settings);
+        } catch (e) {
+          console.error(`[PhoneHealth] Failed to parse settings for account ${account.id}`);
+        }
+      } else {
+        settings = account.settings as Record<string, any>;
+      }
+    }
+    
+    console.log(`[PhoneHealth] Account ${account.id} settings type: ${typeof account.settings}, importedPhoneNumbers: ${settings.importedPhoneNumbers?.length || 0}`);
+    
     if (settings.importedPhoneNumbers && settings.importedPhoneNumbers.length > 0) {
       console.log(`[PhoneHealth] Using ${settings.importedPhoneNumbers.length} imported numbers for account ${account.id} (${providerCode})`);
       phoneNumbers = settings.importedPhoneNumbers.map((pn: any) => ({
