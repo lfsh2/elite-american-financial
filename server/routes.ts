@@ -349,7 +349,23 @@ export async function registerRoutes(app: Express): Promise<Server> {
         return res.status(500).json({ message: result.error || "Failed to send SMS", success: false });
       }
       
-      // Save to storage with server-set values and provider code
+      // Save to database for persistence (conversations API uses database)
+      const numericAccountId = accountId ? parseInt(accountId.toString().replace('acc_', '')) : undefined;
+      const messageId = await messageService.storeMessage({
+        userId,
+        accountId: numericAccountId,
+        to,
+        from,
+        body,
+        direction: direction || 'outbound',
+        status: 'sent',
+        sentAt: new Date(),
+        messageSid: result.sid,
+        mediaUrls: mediaUrls || [],
+        providerCode: providerCode,
+      });
+      
+      // Also save to in-memory storage for backward compatibility
       const message = await storage.createSmsMessage({
         userId,
         to,
@@ -372,8 +388,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
         credits: 1
       });
       
-      console.log(`[SMS] Message sent successfully via ${providerCode}:`, result.sid);
-      return res.status(201).json({ ...message, success: true, messageSid: result.sid, provider: providerCode });
+      console.log(`[SMS] Message sent successfully via ${providerCode}:`, result.sid, `DB ID: ${messageId}`);
+      return res.status(201).json({ ...message, id: messageId, success: true, messageSid: result.sid, provider: providerCode });
     } catch (error) {
       console.error('[SMS] Error:', error);
       return res.status(500).json({ message: "Failed to send SMS", error: String(error) });
