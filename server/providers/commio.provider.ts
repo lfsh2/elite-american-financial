@@ -159,6 +159,8 @@ export class CommioProvider implements ICommunicationProvider {
             status: n.status || 'active',
             monthlyCost: n.monthly_cost || n.price,
             dateCreated: n.created_at || n.purchase_date || new Date().toISOString(),
+            // Commio/ThinQ numbers are typically A2P registered through their platform
+            a2pStatus: (n.sms_enabled ?? n.features?.sms ?? true) ? 'registered' as const : 'unknown' as const,
           }));
         }
       } catch (error: any) {

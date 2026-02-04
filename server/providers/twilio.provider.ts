@@ -69,19 +69,93 @@ export class TwilioProvider implements ICommunicationProvider {
   async getPhoneNumbers(): Promise<PhoneNumber[]> {
     const numbers = await this.client.incomingPhoneNumbers.list({ limit: 100 });
     
-    return numbers.map(n => ({
-      sid: n.sid,
-      phoneNumber: n.phoneNumber,
-      friendlyName: n.friendlyName,
-      capabilities: {
-        sms: n.capabilities?.sms || false,
-        voice: n.capabilities?.voice || false,
-        mms: n.capabilities?.mms || false,
-        fax: n.capabilities?.fax || false,
-      },
-      status: 'active',
-      dateCreated: n.dateCreated.toISOString(),
-    }));
+    // Fetch A2P registration status for phone numbers
+    // Get all messaging services and their phone numbers to determine A2P status
+    let a2pPhoneNumbers: Set<string> = new Set();
+    let pendingA2pPhoneNumbers: Set<string> = new Set();
+    
+    try {
+      // Get messaging services
+      const messagingServices = await this.client.messaging.v1.services.list({ limit: 50 });
+      
+      for (const service of messagingServices) {
+        try {
+          // Get phone numbers in this messaging service
+          const servicePhoneNumbers = await this.client.messaging.v1
+            .services(service.sid)
+            .phoneNumbers.list({ limit: 100 });
+          
+          // Check if this messaging service has an A2P campaign
+          // Services with usecase like "notifications", "marketing", etc. are typically A2P registered
+          const isA2pService = service.useInboundWebhookOnNumber === false || 
+                               service.usecase === 'notifications' ||
+                               service.usecase === 'marketing' ||
+                               service.usecase === 'verification' ||
+                               service.usecase === 'alerts';
+          
+          for (const pn of servicePhoneNumbers) {
+            if (isA2pService) {
+              a2pPhoneNumbers.add(pn.phoneNumber);
+            }
+          }
+        } catch (e) {
+          // Service might not have phone numbers, continue
+        }
+      }
+      
+      // Also try to get US A2P Brand Registrations to check campaign status
+      try {
+        const campaigns = await this.client.messaging.v1.services.list({ limit: 20 });
+        // If we have any campaigns, mark associated numbers
+        for (const campaign of campaigns) {
+          if (campaign.sid) {
+            try {
+              const campaignNumbers = await this.client.messaging.v1
+                .services(campaign.sid)
+                .phoneNumbers.list({ limit: 50 });
+              for (const cn of campaignNumbers) {
+                a2pPhoneNumbers.add(cn.phoneNumber);
+              }
+            } catch (e) {
+              // Continue
+            }
+          }
+        }
+      } catch (e) {
+        // A2P API might not be available
+      }
+    } catch (e) {
+      console.log('[Twilio] Could not fetch messaging services for A2P status:', e);
+    }
+    
+    return numbers.map(n => {
+      // Determine A2P status
+      let a2pStatus: 'registered' | 'pending' | 'not_registered' | 'unknown' = 'unknown';
+      
+      if (a2pPhoneNumbers.has(n.phoneNumber)) {
+        a2pStatus = 'registered';
+      } else if (pendingA2pPhoneNumbers.has(n.phoneNumber)) {
+        a2pStatus = 'pending';
+      } else if (n.capabilities?.sms) {
+        // SMS-capable numbers without A2P registration
+        a2pStatus = 'not_registered';
+      }
+      
+      return {
+        sid: n.sid,
+        phoneNumber: n.phoneNumber,
+        friendlyName: n.friendlyName,
+        capabilities: {
+          sms: n.capabilities?.sms || false,
+          voice: n.capabilities?.voice || false,
+          mms: n.capabilities?.mms || false,
+          fax: n.capabilities?.fax || false,
+        },
+        status: 'active',
+        dateCreated: n.dateCreated.toISOString(),
+        a2pStatus,
+      };
+    });
   }
 
   async searchAvailableNumbers(options: PurchaseNumberOptions): Promise<PhoneNumber[]> {

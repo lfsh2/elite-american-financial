@@ -36,6 +36,8 @@ export interface PhoneNumberCapabilities {
   fax?: boolean;
 }
 
+export type A2PStatus = 'registered' | 'pending' | 'not_registered' | 'unknown';
+
 export interface PhoneNumber {
   sid: string;
   phoneNumber: string;
@@ -44,6 +46,7 @@ export interface PhoneNumber {
   status: 'active' | 'released' | 'pending';
   monthlyCost?: number;
   dateCreated: string;
+  a2pStatus?: A2PStatus;
 }
 
 export interface PurchaseNumberOptions {
