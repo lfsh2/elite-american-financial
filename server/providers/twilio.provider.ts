@@ -128,17 +128,26 @@ export class TwilioProvider implements ICommunicationProvider {
       console.log('[Twilio] Could not fetch messaging services for A2P status:', e);
     }
     
+    console.log(`[Twilio] Found ${a2pPhoneNumbers.size} A2P registered numbers in messaging services`);
+    
     return numbers.map(n => {
       // Determine A2P status
-      let a2pStatus: 'registered' | 'pending' | 'not_registered' | 'unknown' = 'unknown';
+      // Default: SMS-capable numbers without A2P registration show as "not_registered"
+      // Voice-only numbers show as "unknown" (A2P doesn't apply)
+      let a2pStatus: 'registered' | 'pending' | 'not_registered' | 'unknown';
+      
+      const hasSms = n.capabilities?.sms === true;
       
       if (a2pPhoneNumbers.has(n.phoneNumber)) {
         a2pStatus = 'registered';
       } else if (pendingA2pPhoneNumbers.has(n.phoneNumber)) {
         a2pStatus = 'pending';
-      } else if (n.capabilities?.sms) {
-        // SMS-capable numbers without A2P registration
+      } else if (hasSms) {
+        // SMS-capable numbers NOT in a messaging service = not registered for A2P
         a2pStatus = 'not_registered';
+      } else {
+        // Voice-only numbers - A2P doesn't apply
+        a2pStatus = 'unknown';
       }
       
       return {
@@ -146,7 +155,7 @@ export class TwilioProvider implements ICommunicationProvider {
         phoneNumber: n.phoneNumber,
         friendlyName: n.friendlyName,
         capabilities: {
-          sms: n.capabilities?.sms || false,
+          sms: hasSms,
           voice: n.capabilities?.voice || false,
           mms: n.capabilities?.mms || false,
           fax: n.capabilities?.fax || false,
