@@ -17,7 +17,10 @@ import {
   Image as ImageIcon,
   Globe,
   ShoppingCart,
-  Loader2
+  Loader2,
+  ShieldCheck,
+  ShieldAlert,
+  AlertTriangle
 } from 'lucide-react';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
@@ -70,6 +73,7 @@ interface PhoneNumber {
   };
   status: string;
   dateCreated: string;
+  a2pStatus?: 'registered' | 'pending' | 'not_registered' | 'unknown';
 }
 
 interface AvailableNumber {
@@ -115,7 +119,50 @@ export default function PhoneNumbers() {
     dateCreated: pn.dateCreated || new Date().toISOString(),
     provider: pn._provider || pn.provider || 'unknown',
     accountName: pn._accountName || pn.accountName || '',
+    a2pStatus: pn.a2pStatus || pn.a2p_status || 'unknown',
   }));
+
+  // A2P registration counts
+  const a2pCounts = useMemo(() => {
+    const registered = phoneNumbers.filter(p => p.a2pStatus === 'registered').length;
+    const pending = phoneNumbers.filter(p => p.a2pStatus === 'pending').length;
+    const notRegistered = phoneNumbers.filter(p => p.a2pStatus === 'not_registered' || p.a2pStatus === 'unknown').length;
+    return { registered, pending, notRegistered };
+  }, [phoneNumbers]);
+
+  // Helper function to get A2P status badge
+  const getA2PStatusBadge = (a2pStatus: string) => {
+    switch (a2pStatus) {
+      case 'registered':
+        return (
+          <Badge className="bg-green-100 text-green-800 hover:bg-green-100 border-green-200">
+            <ShieldCheck className="w-3 h-3 mr-1" />
+            A2P Registered
+          </Badge>
+        );
+      case 'pending':
+        return (
+          <Badge className="bg-yellow-100 text-yellow-800 hover:bg-yellow-100 border-yellow-200">
+            <AlertTriangle className="w-3 h-3 mr-1" />
+            A2P Pending
+          </Badge>
+        );
+      case 'not_registered':
+        return (
+          <Badge className="bg-red-100 text-red-800 hover:bg-red-100 border-red-200">
+            <ShieldAlert className="w-3 h-3 mr-1" />
+            Not Registered
+          </Badge>
+        );
+      default:
+        return (
+          <Badge variant="outline" className="text-gray-500">
+            <ShieldAlert className="w-3 h-3 mr-1" />
+            Unknown
+          </Badge>
+        );
+    }
+  };
 
   // Provider counts for summary badges
   const providerCounts = useMemo(() => {
@@ -305,7 +352,7 @@ export default function PhoneNumbers() {
         </div>
       </div>
 
-      <div className="grid gap-4 md:grid-cols-4">
+      <div className="grid gap-4 md:grid-cols-5">
         <Card>
           <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
             <CardTitle className="text-sm font-medium">Total Numbers</CardTitle>
@@ -319,12 +366,34 @@ export default function PhoneNumbers() {
 
         <Card>
           <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-            <CardTitle className="text-sm font-medium">Voice Enabled</CardTitle>
-            <PhoneCall className="h-4 w-4 text-muted-foreground" />
+            <CardTitle className="text-sm font-medium">A2P Registered</CardTitle>
+            <ShieldCheck className="h-4 w-4 text-green-600" />
           </CardHeader>
           <CardContent>
-            <div className="text-2xl font-bold">{stats.voiceEnabled}</div>
-            <p className="text-xs text-muted-foreground">Can make/receive calls</p>
+            <div className="text-2xl font-bold text-green-600">{a2pCounts.registered}</div>
+            <p className="text-xs text-muted-foreground">Compliant for messaging</p>
+          </CardContent>
+        </Card>
+
+        <Card>
+          <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+            <CardTitle className="text-sm font-medium">A2P Pending</CardTitle>
+            <AlertTriangle className="h-4 w-4 text-yellow-600" />
+          </CardHeader>
+          <CardContent>
+            <div className="text-2xl font-bold text-yellow-600">{a2pCounts.pending}</div>
+            <p className="text-xs text-muted-foreground">Registration in progress</p>
+          </CardContent>
+        </Card>
+
+        <Card>
+          <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+            <CardTitle className="text-sm font-medium">Not Registered</CardTitle>
+            <ShieldAlert className="h-4 w-4 text-red-600" />
+          </CardHeader>
+          <CardContent>
+            <div className="text-2xl font-bold text-red-600">{a2pCounts.notRegistered}</div>
+            <p className="text-xs text-muted-foreground">Needs A2P registration</p>
           </CardContent>
         </Card>
 
@@ -336,17 +405,6 @@ export default function PhoneNumbers() {
           <CardContent>
             <div className="text-2xl font-bold">{stats.smsEnabled}</div>
             <p className="text-xs text-muted-foreground">Can send/receive SMS</p>
-          </CardContent>
-        </Card>
-
-        <Card>
-          <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-            <CardTitle className="text-sm font-medium">MMS Enabled</CardTitle>
-            <ImageIcon className="h-4 w-4 text-muted-foreground" />
-          </CardHeader>
-          <CardContent>
-            <div className="text-2xl font-bold">{stats.mmsEnabled}</div>
-            <p className="text-xs text-muted-foreground">Can send/receive MMS</p>
           </CardContent>
         </Card>
       </div>
@@ -420,6 +478,7 @@ export default function PhoneNumbers() {
                       </TableHead>
                       <TableHead>Capabilities</TableHead>
                       <TableHead>Status</TableHead>
+                      <TableHead>A2P Status</TableHead>
                       <TableHead className="cursor-pointer" onClick={() => toggleSort('date')}>
                         <div className="flex items-center">
                           Purchase Date
@@ -432,7 +491,7 @@ export default function PhoneNumbers() {
                   <TableBody>
                     {filteredNumbers.length === 0 ? (
                       <TableRow>
-                        <TableCell colSpan={7} className="text-center py-8 text-muted-foreground">
+                        <TableCell colSpan={8} className="text-center py-8 text-muted-foreground">
                           No phone numbers found
                         </TableCell>
                       </TableRow>
@@ -467,6 +526,9 @@ export default function PhoneNumbers() {
                               <CheckCircle className="w-3 h-3 mr-1" />
                               Active
                             </Badge>
+                          </TableCell>
+                          <TableCell>
+                            {getA2PStatusBadge(number.a2pStatus)}
                           </TableCell>
                           <TableCell className="text-sm text-muted-foreground">
                             {new Date(number.dateCreated).toLocaleDateString()}
