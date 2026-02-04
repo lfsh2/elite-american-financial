@@ -2759,16 +2759,25 @@ export async function registerRoutes(app: Express): Promise<Server> {
       // Check for manually imported phone numbers first (for Commio accounts where API doesn't support listing)
       const settings = (account.settings || {}) as Record<string, any>;
       if (settings.importedPhoneNumbers && settings.importedPhoneNumbers.length > 0) {
+        // Determine default A2P status based on provider
+        // Commio/ThinQ numbers are typically A2P registered through their platform
+        const isCommio = account.provider === 'commio';
+        const defaultA2pStatus = isCommio ? 'registered' : 'not_registered';
+        
         return res.json({
-          phoneNumbers: settings.importedPhoneNumbers.map((pn: any) => ({
-            id: pn.phoneNumber,
-            phoneNumber: pn.phoneNumber,
-            friendlyName: pn.friendlyName || pn.phoneNumber,
-            capabilities: pn.capabilities || { sms: true, voice: true, mms: false },
-            status: pn.status || 'active',
-            dateCreated: pn.dateCreated || new Date().toISOString(),
-            a2pStatus: pn.a2pStatus || 'unknown',
-          })),
+          phoneNumbers: settings.importedPhoneNumbers.map((pn: any) => {
+            const hasSms = pn.capabilities?.sms !== false;
+            return {
+              id: pn.phoneNumber,
+              phoneNumber: pn.phoneNumber,
+              friendlyName: pn.friendlyName || pn.phoneNumber,
+              capabilities: pn.capabilities || { sms: true, voice: true, mms: false },
+              status: pn.status || 'active',
+              dateCreated: pn.dateCreated || new Date().toISOString(),
+              // Use stored a2pStatus, or default based on provider and SMS capability
+              a2pStatus: pn.a2pStatus || (hasSms ? defaultA2pStatus : 'unknown'),
+            };
+          }),
           total: settings.importedPhoneNumbers.length,
           source: 'imported',
         });
