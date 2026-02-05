@@ -4242,6 +4242,160 @@ export async function registerRoutes(app: Express): Promise<Server> {
   });
 
   /**
+   * Sync messages from provider (Twilio/Commio) into database
+   * This pulls historical messages that may have been lost
+   */
+  app.post("/api/messages/sync", async (req, res) => {
+    try {
+      const userId = (req as any).user?.id || 1;
+      const { accountId, days = 30, limit = 1000 } = req.body;
+
+      if (!accountId) {
+        return res.status(400).json({ error: "accountId is required" });
+      }
+
+      const numericAccountId = parseInt(accountId.toString().replace('acc_', ''));
+      if (isNaN(numericAccountId)) {
+        return res.status(400).json({ error: "Invalid account ID" });
+      }
+
+      // Get account credentials
+      const account = await accountService.getAccountById(numericAccountId);
+      if (!account) {
+        return res.status(404).json({ error: "Account not found" });
+      }
+
+      const credentials = await accountService.getAccountCredentials(numericAccountId);
+      if (!credentials?.accountSid || !credentials?.authToken) {
+        return res.status(400).json({ error: "Account credentials not configured" });
+      }
+
+      // Determine provider
+      const { providers } = await import('@shared/schema');
+      const [provider] = await db.select().from(providers).where(eq(providers.id, account.providerId));
+      const providerCode = provider?.code || 'twilio';
+
+      console.log(`[Sync] Starting message sync for account ${numericAccountId} (${providerCode})`);
+
+      let result: { inserted: number; skipped: number; errors: number };
+
+      if (providerCode === 'commio') {
+        const apiKey = credentials.apiKey || credentials.accountSid;
+        const apiSecret = credentials.apiSecret || credentials.authToken;
+        const thinqAccount = credentials.accountSid || apiKey;
+        
+        result = await messageService.syncMessagesFromCommio(
+          userId,
+          numericAccountId,
+          apiKey,
+          apiSecret,
+          thinqAccount,
+          { days, limit }
+        );
+      } else {
+        result = await messageService.syncMessagesFromTwilio(
+          userId,
+          numericAccountId,
+          credentials.accountSid,
+          credentials.authToken,
+          { days, limit }
+        );
+      }
+
+      res.json({
+        success: true,
+        provider: providerCode,
+        ...result,
+        message: `Synced ${result.inserted} new messages, ${result.skipped} already existed`,
+      });
+    } catch (error) {
+      console.error("Error syncing messages:", error);
+      res.status(500).json({ error: "Failed to sync messages", details: String(error) });
+    }
+  });
+
+  /**
+   * Sync all accounts for a user
+   */
+  app.post("/api/messages/sync-all", async (req, res) => {
+    try {
+      const userId = (req as any).user?.id || 1;
+      const { days = 30, limit = 500 } = req.body;
+
+      // Get all accounts for user
+      const allAccounts = await accountService.getAccountsForUser(userId);
+      
+      const results: any[] = [];
+      let totalInserted = 0;
+      let totalSkipped = 0;
+      let totalErrors = 0;
+
+      for (const account of allAccounts) {
+        try {
+          const numericId = parseInt(account.id.replace('acc_', ''));
+          const credentials = await accountService.getAccountCredentials(numericId);
+          
+          if (!credentials?.accountSid || !credentials?.authToken) {
+            results.push({ accountId: account.id, status: 'skipped', reason: 'No credentials' });
+            continue;
+          }
+
+          const { providers } = await import('@shared/schema');
+          const accountData = await accountService.getAccountById(numericId);
+          const [provider] = await db.select().from(providers).where(eq(providers.id, accountData?.providerId || 0));
+          const providerCode = provider?.code || 'twilio';
+
+          let result: { inserted: number; skipped: number; errors: number };
+
+          if (providerCode === 'commio') {
+            const apiKey = credentials.apiKey || credentials.accountSid;
+            const apiSecret = credentials.apiSecret || credentials.authToken;
+            const thinqAccount = credentials.accountSid || apiKey;
+            
+            result = await messageService.syncMessagesFromCommio(
+              userId, numericId, apiKey, apiSecret, thinqAccount, { days, limit }
+            );
+          } else {
+            result = await messageService.syncMessagesFromTwilio(
+              userId, numericId, credentials.accountSid, credentials.authToken, { days, limit }
+            );
+          }
+
+          totalInserted += result.inserted;
+          totalSkipped += result.skipped;
+          totalErrors += result.errors;
+
+          results.push({
+            accountId: account.id,
+            accountName: account.name,
+            provider: providerCode,
+            status: 'success',
+            ...result,
+          });
+        } catch (err) {
+          results.push({
+            accountId: account.id,
+            status: 'error',
+            error: String(err),
+          });
+        }
+      }
+
+      res.json({
+        success: true,
+        accounts: results.length,
+        totalInserted,
+        totalSkipped,
+        totalErrors,
+        results,
+      });
+    } catch (error) {
+      console.error("Error syncing all messages:", error);
+      res.status(500).json({ error: "Failed to sync messages" });
+    }
+  });
+
+  /**
    * Get messages for a specific conversation (contact)
    */
   app.get("/api/conversations/:contactPhone/messages", async (req, res) => {

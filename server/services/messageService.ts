@@ -567,6 +567,151 @@ class MessageService {
       return contactMap;
     }
   }
+  /**
+   * Sync messages from Twilio API into database
+   * Pulls historical messages and stores them for persistence
+   */
+  async syncMessagesFromTwilio(
+    userId: number,
+    accountId: number,
+    accountSid: string,
+    authToken: string,
+    options: { days?: number; limit?: number } = {}
+  ): Promise<{ inserted: number; skipped: number; errors: number }> {
+    const { days = 30, limit = 1000 } = options;
+    const Twilio = (await import('twilio')).default;
+    const client = Twilio(accountSid, authToken);
+    
+    let inserted = 0;
+    let skipped = 0;
+    let errors = 0;
+
+    try {
+      const dateSentAfter = new Date();
+      dateSentAfter.setDate(dateSentAfter.getDate() - days);
+
+      console.log(`[MessageService] Syncing Twilio messages for account ${accountId} (last ${days} days)`);
+
+      // Fetch messages from Twilio
+      const messages = await client.messages.list({
+        dateSentAfter,
+        limit,
+      });
+
+      console.log(`[MessageService] Found ${messages.length} messages from Twilio`);
+
+      for (const msg of messages) {
+        try {
+          const result = await this.storeMessage({
+            userId,
+            accountId,
+            to: msg.to,
+            from: msg.from,
+            body: msg.body || '',
+            status: msg.status,
+            direction: msg.direction?.includes('inbound') ? 'inbound' : 'outbound',
+            sentAt: msg.dateSent || msg.dateCreated,
+            messageSid: msg.sid,
+            providerCode: 'twilio',
+          });
+
+          if (result) {
+            inserted++;
+          } else {
+            skipped++;
+          }
+        } catch (err) {
+          errors++;
+        }
+      }
+
+      console.log(`[MessageService] Twilio sync complete: ${inserted} inserted, ${skipped} skipped, ${errors} errors`);
+      return { inserted, skipped, errors };
+    } catch (error) {
+      console.error('[MessageService] Error syncing from Twilio:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Sync messages from Commio/ThinQ API into database
+   */
+  async syncMessagesFromCommio(
+    userId: number,
+    accountId: number,
+    apiKey: string,
+    apiSecret: string,
+    thinqAccount: string,
+    options: { days?: number; limit?: number } = {}
+  ): Promise<{ inserted: number; skipped: number; errors: number }> {
+    const { days = 30, limit = 1000 } = options;
+    
+    let inserted = 0;
+    let skipped = 0;
+    let errors = 0;
+
+    try {
+      const startDate = new Date();
+      startDate.setDate(startDate.getDate() - days);
+      const startDateStr = startDate.toISOString().split('T')[0];
+      const endDateStr = new Date().toISOString().split('T')[0];
+
+      console.log(`[MessageService] Syncing Commio messages for account ${accountId} (last ${days} days)`);
+
+      // Fetch messages from Commio/ThinQ API
+      const response = await fetch(
+        `https://api.thinq.com/account/${thinqAccount}/product/origination/sms/history?start_date=${startDateStr}&end_date=${endDateStr}&limit=${limit}`,
+        {
+          headers: {
+            'Authorization': `Basic ${Buffer.from(`${apiKey}:${apiSecret}`).toString('base64')}`,
+            'Content-Type': 'application/json',
+          },
+        }
+      );
+
+      if (!response.ok) {
+        const errorText = await response.text();
+        console.error(`[MessageService] Commio API error: ${response.status} - ${errorText}`);
+        throw new Error(`Commio API error: ${response.status}`);
+      }
+
+      const data = await response.json();
+      const messages = data.messages || data.data || data.results || [];
+
+      console.log(`[MessageService] Found ${messages.length} messages from Commio`);
+
+      for (const msg of messages) {
+        try {
+          const result = await this.storeMessage({
+            userId,
+            accountId,
+            to: msg.to_did || msg.to || msg.destination,
+            from: msg.from_did || msg.from || msg.source,
+            body: msg.message || msg.body || msg.text || '',
+            status: msg.status || 'sent',
+            direction: (msg.direction === 'inbound' || msg.type === 'inbound') ? 'inbound' : 'outbound',
+            sentAt: new Date(msg.created_at || msg.timestamp || msg.date),
+            messageSid: msg.guid || msg.id || msg.message_id,
+            providerCode: 'commio',
+          });
+
+          if (result) {
+            inserted++;
+          } else {
+            skipped++;
+          }
+        } catch (err) {
+          errors++;
+        }
+      }
+
+      console.log(`[MessageService] Commio sync complete: ${inserted} inserted, ${skipped} skipped, ${errors} errors`);
+      return { inserted, skipped, errors };
+    } catch (error) {
+      console.error('[MessageService] Error syncing from Commio:', error);
+      throw error;
+    }
+  }
 }
 
 export const messageService = new MessageService();
