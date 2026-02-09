@@ -503,6 +503,12 @@ export function useAccountPhoneNumbers() {
     try {
       // In overview mode, aggregate phone numbers from all accounts
       if (isOverviewMode) {
+        // Wait for accounts to load before fetching
+        if (accounts.length === 0) {
+          setLoading(false);
+          return;
+        }
+        
         const allNumbers: AccountPhoneNumber[] = [];
         
         for (const account of accounts) {

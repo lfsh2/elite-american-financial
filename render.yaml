@@ -1,5 +1,11 @@
 # Render Blueprint for TextFlow / Elite Financial
 # https://render.com/docs/blueprint-spec
+#
+# SCALING NOTES FOR 100K+ CONTACTS:
+# - Use "starter" or "standard" plan for production (not free)
+# - Database: Use Neon Pro or Supabase Pro for connection pooling
+# - Redis: Use Upstash Pro for higher throughput
+# - Consider background worker for batch processing
 
 services:
   # Main Web Service
@@ -7,13 +13,18 @@ services:
     name: textflow
     runtime: node
     region: oregon # or ohio, frankfurt, singapore
-    plan: free # or starter, standard for production
+    plan: starter # IMPORTANT: Use starter/standard for 100k+ contacts (free has memory limits)
     buildCommand: npm install && npm run build
     startCommand: npm start
     healthCheckPath: /api/health
+    autoDeploy: true
+    # Scaling settings for large workloads
+    numInstances: 1 # Increase to 2-3 for high traffic
     envVars:
       - key: NODE_ENV
         value: production
+      - key: NODE_OPTIONS
+        value: "--max-old-space-size=512" # Increase memory for large imports
       - key: DATABASE_URL
         sync: false # Set manually in Render dashboard
       - key: REDIS_URL

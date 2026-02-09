@@ -98,6 +98,7 @@ interface AvailablePhoneNumber {
   friendlyName: string | null;
   accountId: number;
   accountName?: string;
+  provider?: string;
   isAssigned?: boolean;
 }
 
@@ -131,7 +132,10 @@ export default function Users() {
   const [showPhoneAssignModal, setShowPhoneAssignModal] = useState(false);
   const [availablePhoneNumbers, setAvailablePhoneNumbers] = useState<AvailablePhoneNumber[]>([]);
   const [selectedPhoneNumberId, setSelectedPhoneNumberId] = useState<number | null>(null);
+  const [selectedPhoneNumberIds, setSelectedPhoneNumberIds] = useState<number[]>([]);
   const [isLoadingPhones, setIsLoadingPhones] = useState(false);
+  const [phoneProviderFilter, setPhoneProviderFilter] = useState<string>('all');
+  const [phoneSearchQuery, setPhoneSearchQuery] = useState('');
   
   // Pricing configuration state
   const [showPricingModal, setShowPricingModal] = useState(false);
@@ -216,7 +220,117 @@ export default function Users() {
     }
   };
 
-  // Assign phone number to user
+  // Get unique providers from available phone numbers
+  const availableProviders = useMemo(() => {
+    const providers = new Set(availablePhoneNumbers.map(p => p.provider || 'unknown'));
+    return Array.from(providers).sort();
+  }, [availablePhoneNumbers]);
+
+  // Filter phone numbers by provider and search query
+  const filteredPhoneNumbers = useMemo(() => {
+    return availablePhoneNumbers.filter(phone => {
+      const matchesProvider = phoneProviderFilter === 'all' || phone.provider === phoneProviderFilter;
+      const matchesSearch = phoneSearchQuery === '' || 
+        phone.phoneNumber.includes(phoneSearchQuery) ||
+        phone.friendlyName?.toLowerCase().includes(phoneSearchQuery.toLowerCase()) ||
+        phone.accountName?.toLowerCase().includes(phoneSearchQuery.toLowerCase());
+      return matchesProvider && matchesSearch;
+    });
+  }, [availablePhoneNumbers, phoneProviderFilter, phoneSearchQuery]);
+
+  // Toggle phone number selection for multi-select
+  const togglePhoneSelection = (phoneId: number) => {
+    setSelectedPhoneNumberIds(prev => {
+      if (prev.includes(phoneId)) {
+        return prev.filter(id => id !== phoneId);
+      } else {
+        // Check if adding would exceed limit
+        const currentAssignments = selectedUser?.phoneAssignments?.length || 0;
+        if (currentAssignments + prev.length >= 10) {
+          toast({
+            title: 'Limit Reached',
+            description: 'Maximum 10 phone numbers per user',
+            variant: 'destructive'
+          });
+          return prev;
+        }
+        return [...prev, phoneId];
+      }
+    });
+  };
+
+  // Select all filtered unassigned phones (up to limit)
+  const selectAllFiltered = () => {
+    const currentAssignments = selectedUser?.phoneAssignments?.length || 0;
+    const remainingSlots = 10 - currentAssignments;
+    const unassignedFiltered = filteredPhoneNumbers.filter(p => !p.isAssigned);
+    const toSelect = unassignedFiltered.slice(0, remainingSlots).map(p => p.id);
+    setSelectedPhoneNumberIds(toSelect);
+  };
+
+  // Clear all selections
+  const clearAllSelections = () => {
+    setSelectedPhoneNumberIds([]);
+  };
+
+  // Assign multiple phone numbers to user
+  const handleAssignPhones = async () => {
+    if (!selectedUser || selectedPhoneNumberIds.length === 0) return;
+    
+    setIsLoading(true);
+    let successCount = 0;
+    let failCount = 0;
+    
+    try {
+      for (const phoneNumberId of selectedPhoneNumberIds) {
+        try {
+          const response = await fetch(`/api/users/${selectedUser.id}/phone-assignments`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              phoneNumberId,
+              isPrimary: successCount === 0, // First one is primary
+              canSend: true,
+              canReceive: true,
+              assignedBy: currentUser?.id
+            })
+          });
+          if (response.ok) {
+            successCount++;
+          } else {
+            failCount++;
+          }
+        } catch {
+          failCount++;
+        }
+      }
+
+      if (successCount > 0) {
+        toast({
+          title: 'Phones Assigned',
+          description: `${successCount} phone number(s) assigned successfully${failCount > 0 ? `, ${failCount} failed` : ''}.`,
+        });
+        setShowPhoneAssignModal(false);
+        setSelectedPhoneNumberIds([]);
+        setSelectedPhoneNumberId(null);
+        setPhoneProviderFilter('all');
+        setPhoneSearchQuery('');
+        fetchUsers();
+      } else {
+        throw new Error('All assignments failed');
+      }
+    } catch (error) {
+      toast({
+        title: 'Error',
+        description: 'Failed to assign phone numbers',
+        variant: 'destructive'
+      });
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  // Assign single phone number to user (legacy)
   const handleAssignPhone = async () => {
     if (!selectedUser || !selectedPhoneNumberId) return;
     
@@ -243,12 +357,13 @@ export default function Users() {
         setSelectedPhoneNumberId(null);
         fetchUsers();
       } else {
-        throw new Error('Failed to assign phone');
+        const error = await response.json();
+        throw new Error(error.message || 'Failed to assign phone');
       }
-    } catch (error) {
+    } catch (error: any) {
       toast({
         title: 'Error',
-        description: 'Failed to assign phone number',
+        description: error.message || 'Failed to assign phone number',
         variant: 'destructive'
       });
     } finally {
@@ -536,7 +651,7 @@ export default function Users() {
     setIsLoading(true);
     try {
       const response = await fetch(`/api/users/${selectedUser.id}`, {
-        method: 'PATCH',
+        method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(formData)
       });
@@ -548,6 +663,13 @@ export default function Users() {
         });
         setShowEditModal(false);
         fetchUsers();
+      } else {
+        const error = await response.json();
+        toast({
+          title: 'Error',
+          description: error.message || 'Failed to update user',
+          variant: 'destructive'
+        });
       }
     } catch (error) {
       toast({
@@ -561,6 +683,10 @@ export default function Users() {
   };
 
   const handleDeleteUser = async (userId: number) => {
+    // Confirm before deleting
+    const confirmed = window.confirm('Are you sure you want to delete this user? This action cannot be undone.');
+    if (!confirmed) return;
+    
     try {
       const response = await fetch(`/api/users/${userId}`, {
         method: 'DELETE'
@@ -572,6 +698,13 @@ export default function Users() {
           description: 'User has been deleted successfully.',
         });
         fetchUsers();
+      } else {
+        const error = await response.json();
+        toast({
+          title: 'Error',
+          description: error.message || 'Failed to delete user',
+          variant: 'destructive'
+        });
       }
     } catch (error) {
       toast({
@@ -1028,23 +1161,38 @@ export default function Users() {
 
       {/* Phone Assignment Modal */}
       <Dialog open={showPhoneAssignModal} onOpenChange={setShowPhoneAssignModal}>
-        <DialogContent className="sm:max-w-[500px]">
+        <DialogContent className="sm:max-w-[650px] max-h-[85vh] overflow-hidden flex flex-col">
           <DialogHeader>
             <DialogTitle className="flex items-center gap-2">
               <Phone className="h-5 w-5" />
-              Assign Phone Number
+              Assign Phone Numbers
             </DialogTitle>
             <DialogDescription>
-              Assign a dedicated phone number to {selectedUser?.firstName} {selectedUser?.lastName}
+              Assign phone numbers to {selectedUser?.firstName} {selectedUser?.lastName}
             </DialogDescription>
           </DialogHeader>
-          <div className="grid gap-4 py-4">
+          <div className="grid gap-4 py-4 overflow-hidden flex-1">
+            {/* Phone number limit indicator */}
+            <div className="flex items-center justify-between p-2 bg-muted/50 rounded-lg">
+              <span className="text-sm text-muted-foreground">Phone Numbers Assigned</span>
+              <div className="flex items-center gap-2">
+                {selectedPhoneNumberIds.length > 0 && (
+                  <Badge variant="outline" className="bg-blue-50 text-blue-700">
+                    +{selectedPhoneNumberIds.length} selected
+                  </Badge>
+                )}
+                <Badge variant={selectedUser?.phoneAssignments && selectedUser.phoneAssignments.length >= 10 ? "destructive" : "secondary"}>
+                  {selectedUser?.phoneAssignments?.length || 0} / 10
+                </Badge>
+              </div>
+            </div>
+            
             {selectedUser?.phoneAssignments && selectedUser.phoneAssignments.length > 0 && (
               <div className="space-y-2">
-                <Label className="text-sm font-medium">Current Assignments</Label>
-                <div className="space-y-2">
+                <Label className="text-sm font-medium">Current Assignments ({selectedUser.phoneAssignments.length})</Label>
+                <div className="space-y-1 max-h-24 overflow-y-auto">
                   {selectedUser.phoneAssignments.map((assignment) => (
-                    <div key={assignment.id} className="flex items-center justify-between p-3 bg-green-50 rounded-lg border border-green-200">
+                    <div key={assignment.id} className="flex items-center justify-between p-2 bg-green-50 rounded-lg border border-green-200">
                       <div className="flex items-center gap-2">
                         <PhoneCall className="h-4 w-4 text-green-600" />
                         <div>
@@ -1063,61 +1211,107 @@ export default function Users() {
               </div>
             )}
             
+            {/* Filter Controls */}
             <div className="space-y-2">
-              <Label>Select Phone Number</Label>
+              <Label className="text-sm font-medium">Filter & Select Numbers</Label>
+              <div className="flex gap-2">
+                <Select value={phoneProviderFilter} onValueChange={setPhoneProviderFilter}>
+                  <SelectTrigger className="w-[150px]">
+                    <SelectValue placeholder="Provider" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="all">All Providers</SelectItem>
+                    {availableProviders.map(provider => (
+                      <SelectItem key={provider} value={provider}>
+                        {provider.charAt(0).toUpperCase() + provider.slice(1)}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+                <Input
+                  placeholder="Search numbers..."
+                  value={phoneSearchQuery}
+                  onChange={(e) => setPhoneSearchQuery(e.target.value)}
+                  className="flex-1"
+                />
+              </div>
+              <div className="flex items-center justify-between">
+                <span className="text-xs text-muted-foreground">
+                  {filteredPhoneNumbers.filter(p => !p.isAssigned).length} available of {filteredPhoneNumbers.length} shown
+                </span>
+                <div className="flex gap-2">
+                  <Button variant="outline" size="sm" onClick={selectAllFiltered}>
+                    Select All ({Math.min(filteredPhoneNumbers.filter(p => !p.isAssigned).length, 10 - (selectedUser?.phoneAssignments?.length || 0))})
+                  </Button>
+                  <Button variant="ghost" size="sm" onClick={clearAllSelections}>
+                    Clear
+                  </Button>
+                </div>
+              </div>
+            </div>
+            
+            {/* Phone Numbers List */}
+            <div className="space-y-2 flex-1 overflow-hidden">
               {isLoadingPhones ? (
-                <div className="flex items-center justify-center py-4">
+                <div className="flex items-center justify-center py-8">
                   <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
                 </div>
               ) : (
-                <Select 
-                  value={selectedPhoneNumberId?.toString() || ''} 
-                  onValueChange={(v) => setSelectedPhoneNumberId(parseInt(v))}
-                >
-                  <SelectTrigger>
-                    <SelectValue placeholder="Choose a phone number..." />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {availablePhoneNumbers.map((phone) => (
-                      <SelectItem 
-                        key={phone.id} 
-                        value={phone.id.toString()}
-                        disabled={phone.isAssigned}
+                <div className="border rounded-lg max-h-[200px] overflow-y-auto">
+                  {filteredPhoneNumbers.length === 0 ? (
+                    <div className="px-4 py-8 text-center text-sm text-muted-foreground">
+                      No phone numbers match your filter
+                    </div>
+                  ) : (
+                    filteredPhoneNumbers.map((phone) => (
+                      <div 
+                        key={phone.id}
+                        className={`flex items-center gap-3 p-3 border-b last:border-b-0 cursor-pointer hover:bg-muted/50 transition-colors ${
+                          selectedPhoneNumberIds.includes(phone.id) ? 'bg-blue-50' : ''
+                        } ${phone.isAssigned ? 'opacity-50 cursor-not-allowed' : ''}`}
+                        onClick={() => !phone.isAssigned && togglePhoneSelection(phone.id)}
                       >
+                        <input
+                          type="checkbox"
+                          checked={selectedPhoneNumberIds.includes(phone.id)}
+                          onChange={() => !phone.isAssigned && togglePhoneSelection(phone.id)}
+                          disabled={phone.isAssigned}
+                          className="h-4 w-4 rounded border-gray-300"
+                        />
+                        <div className="flex-1 min-w-0">
+                          <div className="font-medium text-sm">{phone.phoneNumber}</div>
+                          <div className="text-xs text-muted-foreground truncate">
+                            {phone.friendlyName} • {phone.accountName}
+                          </div>
+                        </div>
                         <div className="flex items-center gap-2">
-                          <span>{phone.phoneNumber}</span>
-                          {phone.friendlyName && (
-                            <span className="text-muted-foreground">({phone.friendlyName})</span>
-                          )}
+                          <Badge variant="outline" className="text-xs capitalize">
+                            {phone.provider || 'unknown'}
+                          </Badge>
                           {phone.isAssigned && (
-                            <Badge variant="outline" className="ml-2 text-xs">Assigned</Badge>
+                            <Badge variant="secondary" className="text-xs">Assigned</Badge>
                           )}
                         </div>
-                      </SelectItem>
-                    ))}
-                    {availablePhoneNumbers.length === 0 && (
-                      <div className="px-2 py-4 text-center text-sm text-muted-foreground">
-                        No phone numbers available
                       </div>
-                    )}
-                  </SelectContent>
-                </Select>
+                    ))
+                  )}
+                </div>
               )}
-              <p className="text-xs text-muted-foreground">
-                This phone number will be used when the user sends SMS messages.
-              </p>
             </div>
           </div>
           <DialogFooter>
             <Button variant="outline" onClick={() => {
               setShowPhoneAssignModal(false);
               setSelectedPhoneNumberId(null);
+              setSelectedPhoneNumberIds([]);
+              setPhoneProviderFilter('all');
+              setPhoneSearchQuery('');
             }}>
               Cancel
             </Button>
             <Button 
-              onClick={handleAssignPhone} 
-              disabled={isLoading || !selectedPhoneNumberId}
+              onClick={handleAssignPhones} 
+              disabled={isLoading || selectedPhoneNumberIds.length === 0 || (selectedUser?.phoneAssignments?.length || 0) >= 10}
             >
               {isLoading ? (
                 <>
@@ -1127,7 +1321,7 @@ export default function Users() {
               ) : (
                 <>
                   <Phone className="mr-2 h-4 w-4" />
-                  Assign Phone
+                  Assign {selectedPhoneNumberIds.length} Phone{selectedPhoneNumberIds.length !== 1 ? 's' : ''}
                 </>
               )}
             </Button>

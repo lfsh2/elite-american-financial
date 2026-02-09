@@ -246,6 +246,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
   // ============================================
 
   // Get user's assigned phone numbers
+  // Fetches real phone assignments from the database with phone number details
   app.get("/api/users/:id/phone-assignments", async (req, res) => {
     try {
       const userId = parseInt(req.params.id);
@@ -253,8 +254,41 @@ export async function registerRoutes(app: Express): Promise<Server> {
         return res.status(400).json({ message: "Invalid user ID" });
       }
       
-      const assignments = await storage.getUserPhoneAssignments(userId);
-      return res.status(200).json(assignments);
+      // Use real database for phone assignments
+      const { db } = await import('./db.js');
+      const { userPhoneAssignments, accountPhoneNumbers, accounts } = await import('../shared/schema');
+      const { eq } = await import('drizzle-orm');
+      
+      // Fetch assignments with phone number and account details
+      const { providers } = await import('../shared/schema');
+      
+      const assignments = await db
+        .select({
+          id: userPhoneAssignments.id,
+          userId: userPhoneAssignments.userId,
+          phoneNumberId: userPhoneAssignments.phoneNumberId,
+          isPrimary: userPhoneAssignments.isPrimary,
+          canSend: userPhoneAssignments.canSend,
+          canReceive: userPhoneAssignments.canReceive,
+          assignedAt: userPhoneAssignments.assignedAt,
+          phoneNumber: accountPhoneNumbers.phoneNumber,
+          friendlyName: accountPhoneNumbers.friendlyName,
+          accountName: accounts.name,
+          providerCode: providers.code,
+        })
+        .from(userPhoneAssignments)
+        .leftJoin(accountPhoneNumbers, eq(userPhoneAssignments.phoneNumberId, accountPhoneNumbers.id))
+        .leftJoin(accounts, eq(accountPhoneNumbers.accountId, accounts.id))
+        .leftJoin(providers, eq(accounts.providerId, providers.id))
+        .where(eq(userPhoneAssignments.userId, userId));
+      
+      // Map providerCode to provider for frontend compatibility
+      const formattedAssignments = assignments.map(a => ({
+        ...a,
+        provider: a.providerCode || 'twilio',
+      }));
+      
+      return res.status(200).json(formattedAssignments);
     } catch (error) {
       console.error("Error fetching user phone assignments:", error);
       return res.status(500).json({ message: "Internal server error" });
@@ -275,16 +309,74 @@ export async function registerRoutes(app: Express): Promise<Server> {
         return res.status(400).json({ message: "phoneNumberId is required" });
       }
       
-      const assignment = await storage.assignPhoneToUser({
-        userId,
-        phoneNumberId: parseInt(phoneNumberId),
-        isPrimary: isPrimary ?? false,
-        canSend: canSend ?? true,
-        canReceive: canReceive ?? true,
-        assignedBy: assignedBy ? parseInt(assignedBy) : undefined,
-      });
+      // Use real database for phone assignments
+      const { db } = await import('./db.js');
+      const { userPhoneAssignments, accountPhoneNumbers, accounts } = await import('../shared/schema');
+      const { eq, and } = await import('drizzle-orm');
       
-      return res.status(201).json(assignment);
+      const phoneNumId = parseInt(phoneNumberId);
+      
+      // Check if phone number exists
+      const [phoneNumber] = await db
+        .select()
+        .from(accountPhoneNumbers)
+        .where(eq(accountPhoneNumbers.id, phoneNumId));
+      
+      if (!phoneNumber) {
+        return res.status(404).json({ message: "Phone number not found" });
+      }
+      
+      // Check if already assigned to this user
+      const existingAssignment = await db
+        .select()
+        .from(userPhoneAssignments)
+        .where(and(
+          eq(userPhoneAssignments.userId, userId),
+          eq(userPhoneAssignments.phoneNumberId, phoneNumId)
+        ));
+      
+      if (existingAssignment.length > 0) {
+        return res.status(400).json({ message: "Phone number already assigned to this user" });
+      }
+      
+      // Check phone number limit (max 10 per user/sub-account)
+      const MAX_PHONE_NUMBERS_PER_USER = 10;
+      const currentAssignments = await db
+        .select()
+        .from(userPhoneAssignments)
+        .where(eq(userPhoneAssignments.userId, userId));
+      
+      if (currentAssignments.length >= MAX_PHONE_NUMBERS_PER_USER) {
+        return res.status(400).json({ 
+          message: `Maximum of ${MAX_PHONE_NUMBERS_PER_USER} phone numbers allowed per user`,
+          currentCount: currentAssignments.length,
+          limit: MAX_PHONE_NUMBERS_PER_USER
+        });
+      }
+      
+      // If marking as primary, unset other primaries for this user
+      if (isPrimary) {
+        await db
+          .update(userPhoneAssignments)
+          .set({ isPrimary: false })
+          .where(eq(userPhoneAssignments.userId, userId));
+      }
+      
+      // Create the assignment
+      const [newAssignment] = await db
+        .insert(userPhoneAssignments)
+        .values({
+          userId,
+          phoneNumberId: phoneNumId,
+          isPrimary: isPrimary ?? false,
+          canSend: canSend ?? true,
+          canReceive: canReceive ?? true,
+          assignedBy: assignedBy ? parseInt(assignedBy) : null,
+          assignedAt: new Date(),
+        })
+        .returning();
+      
+      return res.status(201).json(newAssignment);
     } catch (error) {
       console.error("Error assigning phone to user:", error);
       return res.status(500).json({ message: "Internal server error" });
@@ -301,10 +393,28 @@ export async function registerRoutes(app: Express): Promise<Server> {
         return res.status(400).json({ message: "Invalid user ID or assignment ID" });
       }
       
-      const deleted = await storage.removePhoneAssignment(assignmentId, userId);
-      if (!deleted) {
+      // Use real database for phone assignments
+      const { db } = await import('./db.js');
+      const { userPhoneAssignments } = await import('../shared/schema');
+      const { eq, and } = await import('drizzle-orm');
+      
+      // Check if assignment exists and belongs to user
+      const [existing] = await db
+        .select()
+        .from(userPhoneAssignments)
+        .where(and(
+          eq(userPhoneAssignments.id, assignmentId),
+          eq(userPhoneAssignments.userId, userId)
+        ));
+      
+      if (!existing) {
         return res.status(404).json({ message: "Assignment not found" });
       }
+      
+      // Delete the assignment
+      await db
+        .delete(userPhoneAssignments)
+        .where(eq(userPhoneAssignments.id, assignmentId));
       
       return res.status(200).json({ message: "Phone assignment removed successfully" });
     } catch (error) {
@@ -314,13 +424,107 @@ export async function registerRoutes(app: Express): Promise<Server> {
   });
 
   // Get available phone numbers (not assigned or can be shared)
+  // Fetches real phone numbers from Twilio/Commio accounts in the database
   app.get("/api/phone-numbers/available", async (req, res) => {
     try {
+      // Import database and schema
+      const { db } = await import('./db.js');
+      const { accountPhoneNumbers, accounts, providers } = await import('../shared/schema');
+      const { eq } = await import('drizzle-orm');
+      
+      // Fetch all phone numbers from database (Twilio numbers stored here)
+      const phoneNumbersWithAccounts = await db
+        .select({
+          id: accountPhoneNumbers.id,
+          phoneNumber: accountPhoneNumbers.phoneNumber,
+          friendlyName: accountPhoneNumbers.friendlyName,
+          accountId: accountPhoneNumbers.accountId,
+          capabilities: accountPhoneNumbers.capabilities,
+          status: accountPhoneNumbers.status,
+          accountName: accounts.name,
+          providerCode: providers.code,
+        })
+        .from(accountPhoneNumbers)
+        .leftJoin(accounts, eq(accountPhoneNumbers.accountId, accounts.id))
+        .leftJoin(providers, eq(accounts.providerId, providers.id));
+      
+      console.log(`[PhoneNumbers] Found ${phoneNumbersWithAccounts.length} phone numbers in database`);
+      
+      // Also fetch Commio numbers from account settings (imported phone numbers)
+      let commioNumbers: any[] = [];
+      try {
+        // Get all accounts from accountService
+        const { accounts: allAccounts } = await accountService.getAccountsForUser(1);
+        const commioAccounts = allAccounts.filter(acc => acc.provider === 'commio');
+        console.log(`[PhoneNumbers] Found ${commioAccounts.length} Commio accounts`);
+        
+        for (const account of commioAccounts) {
+          try {
+            // Get account details with settings
+            const accountIdNum = parseInt(account.id.replace('acc_', ''));
+            const accountDetails = await accountService.getAccountById(accountIdNum);
+            if (accountDetails) {
+              const settings = (accountDetails.settings || {}) as Record<string, any>;
+              if (settings.importedPhoneNumbers && Array.isArray(settings.importedPhoneNumbers)) {
+                // Add account info to each number
+                const numbersWithAccount = settings.importedPhoneNumbers.map((pn: any, index: number) => ({
+                  id: `commio_${account.id}_${index}`,
+                  phoneNumber: pn.phoneNumber,
+                  friendlyName: pn.friendlyName || pn.phoneNumber,
+                  accountId: account.id,
+                  accountName: account.name,
+                  provider: 'commio',
+                  capabilities: pn.capabilities || { sms: true, mms: false, voice: true },
+                  isAssigned: false, // Commio numbers tracked separately
+                }));
+                commioNumbers.push(...numbersWithAccount);
+                console.log(`[PhoneNumbers] Found ${numbersWithAccount.length} Commio numbers for ${account.name}`);
+              }
+            }
+          } catch (e) {
+            console.log(`[PhoneNumbers] Could not fetch Commio numbers for ${account.id}:`, e);
+          }
+        }
+        console.log(`[PhoneNumbers] Total ${commioNumbers.length} Commio numbers from all accounts`);
+      } catch (commioError) {
+        console.log('[PhoneNumbers] Could not fetch Commio accounts:', commioError);
+      }
+      
+      // Get all current assignments to mark which phones are assigned
+      const { userPhoneAssignments } = await import('../shared/schema');
+      let assignedPhoneIds = new Set<number>();
+      try {
+        const assignments = await db
+          .select({
+            phoneNumberId: userPhoneAssignments.phoneNumberId,
+          })
+          .from(userPhoneAssignments);
+        assignedPhoneIds = new Set(assignments.map(a => a.phoneNumberId));
+      } catch (assignmentError) {
+        console.log('[PhoneNumbers] Could not fetch assignments, assuming none assigned');
+      }
+      
+      // Format database phone numbers with assignment status
+      const formattedPhones = phoneNumbersWithAccounts.map(phone => ({
+        id: phone.id,
+        phoneNumber: phone.phoneNumber,
+        friendlyName: phone.friendlyName || phone.phoneNumber,
+        accountId: phone.accountId,
+        accountName: phone.accountName || 'Unknown Account',
+        provider: phone.providerCode || 'twilio',
+        capabilities: phone.capabilities,
+        isAssigned: assignedPhoneIds.has(phone.id),
+      }));
+      
+      // Combine database phones with Commio numbers
+      const allPhones = [...formattedPhones, ...commioNumbers];
+      
+      return res.status(200).json(allPhones);
+    } catch (error) {
+      console.error("Error fetching available phone numbers from database:", error);
+      // Fallback to mock data if database query fails
       const phoneNumbers = await storage.getAvailablePhoneNumbers();
       return res.status(200).json(phoneNumbers);
-    } catch (error) {
-      console.error("Error fetching available phone numbers:", error);
-      return res.status(500).json({ message: "Internal server error" });
     }
   });
 

@@ -9,6 +9,8 @@ import {
   apiKeys, type ApiKey, type InsertApiKey, generateApiKey,
   webhooks, type Webhook, type InsertWebhook
 } from "@shared/schema";
+import { db } from "./db.js";
+import { eq } from "drizzle-orm";
 
 // A2P Registration types
 interface A2PCompanyRegistration {
@@ -212,83 +214,186 @@ export class MemStorage implements IStorage {
     this.apiKeyIdCounter = 1;
     this.webhookIdCounter = 1;
     
-    // Create default admin user
-    this.createUser({
-      username: "admin",
-      password: "admin123", // In real app, would be hashed
-      firstName: "Admin",
-      lastName: "User",
-      email: "admin@textflow.ai",
-      role: "super_admin"
-    });
+    // Initialize default admin user in database (async, runs in background)
+    this.initializeDefaultAdmin();
+  }
+  
+  private async initializeDefaultAdmin(): Promise<void> {
+    try {
+      // Check if admin user exists in database
+      const existingAdmin = await this.getUserByUsername("admin");
+      if (!existingAdmin) {
+        console.log('[Storage] Creating default admin user in database...');
+        await this.createUser({
+          username: "admin",
+          password: "admin123", // In real app, would be hashed
+          firstName: "Admin",
+          lastName: "User",
+          email: "admin@textflow.ai",
+          role: "super_admin"
+        });
+        console.log('[Storage] Default admin user created');
+      } else {
+        console.log('[Storage] Admin user already exists in database');
+      }
+    } catch (error) {
+      console.error('[Storage] Error initializing admin user:', error);
+    }
   }
 
-  // User Management
+  // User Management - Using Database for Persistence
   async getUser(id: number): Promise<User | undefined> {
-    return this.users.get(id);
+    try {
+      const [user] = await db.select().from(users).where(eq(users.id, id));
+      return user;
+    } catch (error) {
+      console.error('[Storage] Error getting user from database:', error);
+      return this.users.get(id);
+    }
   }
 
   async getUserByUsername(username: string): Promise<User | undefined> {
-    return Array.from(this.users.values()).find(
-      (user) => user.username.toLowerCase() === username.toLowerCase()
-    );
+    try {
+      const { ilike } = await import('drizzle-orm');
+      const [user] = await db.select().from(users).where(ilike(users.username, username));
+      return user;
+    } catch (error) {
+      console.error('[Storage] Error getting user by username:', error);
+      return Array.from(this.users.values()).find(
+        (user) => user.username.toLowerCase() === username.toLowerCase()
+      );
+    }
   }
 
   async getUserByEmail(email: string): Promise<User | undefined> {
-    return Array.from(this.users.values()).find(
-      (user) => user.email.toLowerCase() === email.toLowerCase()
-    );
+    try {
+      const { ilike } = await import('drizzle-orm');
+      const [user] = await db.select().from(users).where(ilike(users.email, email));
+      return user;
+    } catch (error) {
+      console.error('[Storage] Error getting user by email:', error);
+      return Array.from(this.users.values()).find(
+        (user) => user.email.toLowerCase() === email.toLowerCase()
+      );
+    }
   }
 
   async createUser(userData: InsertUser): Promise<User> {
-    const id = this.userIdCounter++;
-    const now = new Date();
-    
-    const user: User = {
-      id,
-      username: userData.username,
-      password: userData.password,
-      firstName: userData.firstName,
-      lastName: userData.lastName,
-      email: userData.email,
-      role: userData.role || 'user',
-      status: (userData as any).status || 'active',
-      credits: 100, // Give new users some initial credits
-      parentId: userData.parentId || null,
-      isSubAccount: !!userData.parentId,
-      assignedPhoneNumberId: null,
-      autoRefillEnabled: false,
-      autoRefillThreshold: 100,
-      autoRefillAmount: 1000,
-      createdAt: now,
-      lastLoginAt: null,
-    };
-    
-    this.users.set(id, user);
-    return user;
+    try {
+      console.log('[Storage] Creating user in database:', userData.username);
+      const [newUser] = await db.insert(users).values({
+        username: userData.username,
+        password: userData.password,
+        firstName: userData.firstName,
+        lastName: userData.lastName,
+        email: userData.email,
+        role: userData.role || 'user',
+        status: (userData as any).status || 'active',
+        credits: 100,
+        parentId: userData.parentId || null,
+        isSubAccount: !!userData.parentId,
+      }).returning();
+      
+      console.log('[Storage] User created successfully in database with ID:', newUser.id);
+      return newUser;
+    } catch (error) {
+      console.error('[Storage] ERROR creating user in database:', error);
+      console.error('[Storage] FALLING BACK TO IN-MEMORY - USER WILL NOT PERSIST!');
+      // Fallback to in-memory
+      const id = this.userIdCounter++;
+      const now = new Date();
+      
+      const user: User = {
+        id,
+        username: userData.username,
+        password: userData.password,
+        firstName: userData.firstName,
+        lastName: userData.lastName,
+        email: userData.email,
+        role: userData.role || 'user',
+        status: (userData as any).status || 'active',
+        credits: 100,
+        parentId: userData.parentId || null,
+        isSubAccount: !!userData.parentId,
+        assignedPhoneNumberId: null,
+        autoRefillEnabled: false,
+        autoRefillThreshold: 100,
+        autoRefillAmount: 1000,
+        createdAt: now,
+        lastLoginAt: null,
+      };
+      
+      this.users.set(id, user);
+      return user;
+    }
   }
 
   async updateUser(id: number, updates: Partial<User>): Promise<User | undefined> {
-    const user = await this.getUser(id);
-    if (!user) return undefined;
-    
-    const updatedUser = { ...user, ...updates };
-    this.users.set(id, updatedUser);
-    return updatedUser;
+    try {
+      const [updatedUser] = await db.update(users)
+        .set(updates)
+        .where(eq(users.id, id))
+        .returning();
+      return updatedUser;
+    } catch (error) {
+      console.error('[Storage] Error updating user in database:', error);
+      const user = await this.getUser(id);
+      if (!user) return undefined;
+      
+      const updatedUser = { ...user, ...updates };
+      this.users.set(id, updatedUser);
+      return updatedUser;
+    }
   }
 
   async getAllUsers(): Promise<User[]> {
-    return Array.from(this.users.values());
+    try {
+      const allUsers = await db.select().from(users);
+      return allUsers;
+    } catch (error) {
+      console.error('[Storage] Error getting all users from database:', error);
+      return Array.from(this.users.values());
+    }
   }
 
   async deleteUser(id: number): Promise<boolean> {
-    return this.users.delete(id);
+    try {
+      console.log(`[Storage] Attempting to delete user ${id}`);
+      
+      // First check if user exists
+      const [existingUser] = await db.select().from(users).where(eq(users.id, id));
+      console.log(`[Storage] User ${id} exists:`, !!existingUser);
+      
+      if (!existingUser) {
+        console.log(`[Storage] User ${id} not found in database`);
+        return false;
+      }
+      
+      // Delete user's phone assignments first
+      const { userPhoneAssignments } = await import('../shared/schema.js');
+      await db.delete(userPhoneAssignments).where(eq(userPhoneAssignments.userId, id));
+      console.log(`[Storage] Deleted phone assignments for user ${id}`);
+      
+      // Delete the user
+      await db.delete(users).where(eq(users.id, id));
+      console.log(`[Storage] Successfully deleted user ${id}`);
+      return true;
+    } catch (error) {
+      console.error('[Storage] Error deleting user from database:', error);
+      return this.users.delete(id);
+    }
   }
 
   async getSubAccounts(userId: number): Promise<User[]> {
-    return Array.from(this.users.values()).filter(
-      (user) => user.parentId === userId
-    );
+    try {
+      const subAccounts = await db.select().from(users).where(eq(users.parentId, userId));
+      return subAccounts;
+    } catch (error) {
+      console.error('[Storage] Error getting sub-accounts from database:', error);
+      return Array.from(this.users.values()).filter(
+        (user) => user.parentId === userId
+      );
+    }
   }
   
   // Debug method - not for production use
