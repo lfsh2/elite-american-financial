@@ -9,7 +9,9 @@ import {
   ChevronRight,
   Settings,
   UserPlus,
-  RefreshCw
+  RefreshCw,
+  User,
+  Users
 } from 'lucide-react';
 import { useAccount, Account, getProviderInfo, ProviderType } from '../contexts/AccountContext';
 import { ProviderLogo, TwilioLogo, CommioLogo } from './ProviderLogos';
@@ -44,6 +46,18 @@ function ProviderLogoSized({
  * - Individual Master Accounts
  * - Sub-Accounts under each Master
  */
+// Client user type for the dropdown
+interface ClientUser {
+  id: number;
+  username: string;
+  firstName: string;
+  lastName: string;
+  email: string;
+  status: string;
+  displayName: string;
+  assignedPhoneNumber?: string;
+}
+
 export default function AccountSelector() {
   const {
     currentAccount,
@@ -65,6 +79,43 @@ export default function AccountSelector() {
   const [connectProvider, setConnectProvider] = useState<ProviderType | undefined>(undefined);
   const [isSyncing, setIsSyncing] = useState<string | null>(null);
   const dropdownRef = useRef<HTMLDivElement>(null);
+  
+  // Client users state
+  const [clientUsers, setClientUsers] = useState<ClientUser[]>([]);
+  const [selectedClientUser, setSelectedClientUser] = useState<ClientUser | null>(null);
+  const [isLoadingClients, setIsLoadingClients] = useState(false);
+
+  // Fetch client users
+  useEffect(() => {
+    const fetchClientUsers = async () => {
+      setIsLoadingClients(true);
+      try {
+        const response = await fetch('/api/users/clients');
+        if (response.ok) {
+          const data = await response.json();
+          setClientUsers(data);
+        }
+      } catch (error) {
+        console.error('Error fetching client users:', error);
+      } finally {
+        setIsLoadingClients(false);
+      }
+    };
+    
+    fetchClientUsers();
+  }, []);
+
+  // Handle client user selection
+  const handleSelectClientUser = (user: ClientUser | null) => {
+    setSelectedClientUser(user);
+    if (user) {
+      // Store selected client in localStorage for filtering data
+      localStorage.setItem('selectedClientUserId', user.id.toString());
+    } else {
+      localStorage.removeItem('selectedClientUserId');
+    }
+    setIsOpen(false);
+  };
 
   // Sync sub-accounts from Twilio
   const handleSyncSubAccounts = async (account: Account, e: React.MouseEvent) => {
@@ -352,6 +403,66 @@ export default function AccountSelector() {
               <Building2 className="w-8 h-8 mx-auto mb-2 text-gray-300" />
               <p className="text-sm">No accounts configured</p>
             </div>
+          )}
+
+          {/* Client Users Section */}
+          {clientUsers.length > 0 && (
+            <>
+              {/* Divider line between Accounts and Client Users */}
+              <div className="my-2 mx-3 border-t-2 border-gray-300" />
+              
+              <div className="border-t border-gray-100">
+                <div className="px-4 py-2 text-xs font-semibold text-gray-400 uppercase tracking-wider bg-green-50 flex items-center border-l-4 border-green-500">
+                  <Users className="w-3 h-3 mr-2 text-green-600" />
+                  Client Users
+                </div>
+              </div>
+              
+              {clientUsers.map(user => (
+                <div
+                  key={`client-${user.id}`}
+                  onClick={() => handleSelectClientUser(user)}
+                  className={`flex items-center px-4 py-3 cursor-pointer transition-colors ${
+                    selectedClientUser?.id === user.id
+                      ? 'bg-green-50 border-l-4 border-green-500'
+                      : 'hover:bg-gray-50 border-l-4 border-transparent'
+                  }`}
+                >
+                  <div className="w-8 h-8 rounded-full bg-gradient-to-br from-green-400 to-green-600 flex items-center justify-center mr-3 flex-shrink-0">
+                    <User className="w-4 h-4 text-white" />
+                  </div>
+                  <div className="flex-1 min-w-0">
+                    <div className="text-sm font-medium text-gray-900 truncate">
+                      {user.displayName || user.username}
+                    </div>
+                    <div className="text-xs text-gray-500 truncate">
+                      {user.email}
+                      {user.assignedPhoneNumber && ` • ${user.assignedPhoneNumber}`}
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    {user.status === 'active' ? (
+                      <span className="w-2 h-2 rounded-full bg-green-500" title="Active" />
+                    ) : (
+                      <span className="w-2 h-2 rounded-full bg-gray-300" title={user.status} />
+                    )}
+                    {selectedClientUser?.id === user.id && (
+                      <Check className="w-4 h-4 text-green-500 flex-shrink-0" />
+                    )}
+                  </div>
+                </div>
+              ))}
+              
+              {/* Clear client selection option */}
+              {selectedClientUser && (
+                <div
+                  onClick={() => handleSelectClientUser(null)}
+                  className="flex items-center px-4 py-2 cursor-pointer hover:bg-gray-50 border-l-4 border-transparent text-gray-500"
+                >
+                  <span className="text-xs">Clear client selection</span>
+                </div>
+              )}
+            </>
           )}
 
           {/* Footer Actions */}

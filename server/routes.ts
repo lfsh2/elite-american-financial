@@ -39,6 +39,7 @@ import {
   smsMessages,
   voiceCalls,
   accounts,
+  messageTemplates,
 } from "@shared/schema";
 import { db } from "./db";
 import { eq, and, sql } from "drizzle-orm";
@@ -236,6 +237,411 @@ export async function registerRoutes(app: Express): Promise<Server> {
       return res.status(200).json({ message: "User deleted successfully" });
     } catch (error) {
       console.error("Error deleting user:", error);
+      return res.status(500).json({ message: "Internal server error" });
+    }
+  });
+
+  // ============================================
+  // USER PHONE ASSIGNMENT ENDPOINTS
+  // ============================================
+
+  // Get user's assigned phone numbers
+  app.get("/api/users/:id/phone-assignments", async (req, res) => {
+    try {
+      const userId = parseInt(req.params.id);
+      if (isNaN(userId)) {
+        return res.status(400).json({ message: "Invalid user ID" });
+      }
+      
+      const assignments = await storage.getUserPhoneAssignments(userId);
+      return res.status(200).json(assignments);
+    } catch (error) {
+      console.error("Error fetching user phone assignments:", error);
+      return res.status(500).json({ message: "Internal server error" });
+    }
+  });
+
+  // Assign phone number to user (admin only)
+  app.post("/api/users/:id/phone-assignments", async (req, res) => {
+    try {
+      const userId = parseInt(req.params.id);
+      if (isNaN(userId)) {
+        return res.status(400).json({ message: "Invalid user ID" });
+      }
+      
+      const { phoneNumberId, isPrimary, canSend, canReceive, assignedBy } = req.body;
+      
+      if (!phoneNumberId) {
+        return res.status(400).json({ message: "phoneNumberId is required" });
+      }
+      
+      const assignment = await storage.assignPhoneToUser({
+        userId,
+        phoneNumberId: parseInt(phoneNumberId),
+        isPrimary: isPrimary ?? false,
+        canSend: canSend ?? true,
+        canReceive: canReceive ?? true,
+        assignedBy: assignedBy ? parseInt(assignedBy) : undefined,
+      });
+      
+      return res.status(201).json(assignment);
+    } catch (error) {
+      console.error("Error assigning phone to user:", error);
+      return res.status(500).json({ message: "Internal server error" });
+    }
+  });
+
+  // Remove phone assignment from user
+  app.delete("/api/users/:id/phone-assignments/:assignmentId", async (req, res) => {
+    try {
+      const userId = parseInt(req.params.id);
+      const assignmentId = parseInt(req.params.assignmentId);
+      
+      if (isNaN(userId) || isNaN(assignmentId)) {
+        return res.status(400).json({ message: "Invalid user ID or assignment ID" });
+      }
+      
+      const deleted = await storage.removePhoneAssignment(assignmentId, userId);
+      if (!deleted) {
+        return res.status(404).json({ message: "Assignment not found" });
+      }
+      
+      return res.status(200).json({ message: "Phone assignment removed successfully" });
+    } catch (error) {
+      console.error("Error removing phone assignment:", error);
+      return res.status(500).json({ message: "Internal server error" });
+    }
+  });
+
+  // Get available phone numbers (not assigned or can be shared)
+  app.get("/api/phone-numbers/available", async (req, res) => {
+    try {
+      const phoneNumbers = await storage.getAvailablePhoneNumbers();
+      return res.status(200).json(phoneNumbers);
+    } catch (error) {
+      console.error("Error fetching available phone numbers:", error);
+      return res.status(500).json({ message: "Internal server error" });
+    }
+  });
+
+  // Get all client users (for admin account selector dropdown)
+  app.get("/api/users/clients", async (req, res) => {
+    try {
+      const users = await storage.getAllUsers();
+      // Filter to only client users (role = 'user'), exclude super_admin
+      const clientUsers = users
+        .filter(u => u.role === 'user')
+        .map(({ password, ...user }) => ({
+          ...user,
+          // Add display info for account selector
+          displayName: `${user.firstName} ${user.lastName}`.trim() || user.username,
+        }));
+      return res.status(200).json(clientUsers);
+    } catch (error) {
+      console.error("Error fetching client users:", error);
+      return res.status(500).json({ message: "Internal server error" });
+    }
+  });
+
+  // ============================================
+  // USER PRICING & BILLING ENDPOINTS
+  // ============================================
+
+  // Get user's pricing configuration
+  app.get("/api/users/:id/pricing", async (req, res) => {
+    try {
+      const userId = parseInt(req.params.id);
+      if (isNaN(userId)) {
+        return res.status(400).json({ message: "Invalid user ID" });
+      }
+      
+      const pricing = await storage.getUserPricingConfig(userId);
+      if (!pricing) {
+        // Return default pricing if not configured
+        return res.status(200).json({
+          userId,
+          smsOutboundRate: "0.015",
+          smsInboundRate: "0.01",
+          mmsOutboundRate: "0.05",
+          mmsInboundRate: "0.03",
+          monthlyPhoneNumberFee: "0",
+          billingCycleDay: 1,
+          isDefault: true
+        });
+      }
+      return res.status(200).json(pricing);
+    } catch (error) {
+      console.error("Error fetching user pricing:", error);
+      return res.status(500).json({ message: "Internal server error" });
+    }
+  });
+
+  // Create or update user's pricing configuration
+  app.post("/api/users/:id/pricing", async (req, res) => {
+    try {
+      const userId = parseInt(req.params.id);
+      if (isNaN(userId)) {
+        return res.status(400).json({ message: "Invalid user ID" });
+      }
+      
+      const { smsOutboundRate, smsInboundRate, mmsOutboundRate, mmsInboundRate, monthlyPhoneNumberFee, billingCycleDay } = req.body;
+      
+      const pricing = await storage.upsertUserPricingConfig({
+        userId,
+        smsOutboundRate: smsOutboundRate || "0.015",
+        smsInboundRate: smsInboundRate || "0.01",
+        mmsOutboundRate: mmsOutboundRate || "0.05",
+        mmsInboundRate: mmsInboundRate || "0.03",
+        monthlyPhoneNumberFee: monthlyPhoneNumberFee || "0",
+        billingCycleDay: billingCycleDay || 1,
+      });
+      
+      return res.status(200).json(pricing);
+    } catch (error) {
+      console.error("Error updating user pricing:", error);
+      return res.status(500).json({ message: "Internal server error" });
+    }
+  });
+
+  // Get user's usage records (with optional date range)
+  app.get("/api/users/:id/usage", async (req, res) => {
+    try {
+      const userId = parseInt(req.params.id);
+      if (isNaN(userId)) {
+        return res.status(400).json({ message: "Invalid user ID" });
+      }
+      
+      const { startDate, endDate } = req.query;
+      const usage = await storage.getUserUsageRecords(
+        userId,
+        startDate ? new Date(startDate as string) : undefined,
+        endDate ? new Date(endDate as string) : undefined
+      );
+      
+      // Calculate totals
+      const totals = usage.reduce((acc, record) => {
+        const cost = parseFloat(record.cost);
+        acc.totalCost += cost;
+        acc.totalMessages += 1;
+        if (record.messageType === 'sms') {
+          acc.totalSms += 1;
+          acc.smsCost += cost;
+        } else {
+          acc.totalMms += 1;
+          acc.mmsCost += cost;
+        }
+        if (record.direction === 'outbound') {
+          acc.outbound += 1;
+        } else {
+          acc.inbound += 1;
+        }
+        return acc;
+      }, { totalCost: 0, totalMessages: 0, totalSms: 0, totalMms: 0, smsCost: 0, mmsCost: 0, outbound: 0, inbound: 0 });
+      
+      return res.status(200).json({ records: usage, totals });
+    } catch (error) {
+      console.error("Error fetching user usage:", error);
+      return res.status(500).json({ message: "Internal server error" });
+    }
+  });
+
+  // Get user's billing summaries
+  app.get("/api/users/:id/billing", async (req, res) => {
+    try {
+      const userId = parseInt(req.params.id);
+      if (isNaN(userId)) {
+        return res.status(400).json({ message: "Invalid user ID" });
+      }
+      
+      const billing = await storage.getUserBillingSummaries(userId);
+      return res.status(200).json(billing);
+    } catch (error) {
+      console.error("Error fetching user billing:", error);
+      return res.status(500).json({ message: "Internal server error" });
+    }
+  });
+
+  // Get current period usage summary for a user
+  app.get("/api/users/:id/usage/current", async (req, res) => {
+    try {
+      const userId = parseInt(req.params.id);
+      if (isNaN(userId)) {
+        return res.status(400).json({ message: "Invalid user ID" });
+      }
+      
+      // Get pricing config to determine billing cycle
+      const pricing = await storage.getUserPricingConfig(userId);
+      const billingCycleDay = pricing?.billingCycleDay || 1;
+      
+      // Calculate current billing period
+      const now = new Date();
+      let periodStart = new Date(now.getFullYear(), now.getMonth(), billingCycleDay);
+      if (periodStart > now) {
+        periodStart = new Date(now.getFullYear(), now.getMonth() - 1, billingCycleDay);
+      }
+      const periodEnd = new Date(periodStart.getFullYear(), periodStart.getMonth() + 1, billingCycleDay);
+      
+      const usage = await storage.getUserUsageRecords(userId, periodStart, periodEnd);
+      
+      // Calculate totals
+      const summary = usage.reduce((acc, record) => {
+        const cost = parseFloat(record.cost);
+        acc.totalCost += cost;
+        if (record.messageType === 'sms' && record.direction === 'outbound') acc.smsOutbound += 1;
+        if (record.messageType === 'sms' && record.direction === 'inbound') acc.smsInbound += 1;
+        if (record.messageType === 'mms' && record.direction === 'outbound') acc.mmsOutbound += 1;
+        if (record.messageType === 'mms' && record.direction === 'inbound') acc.mmsInbound += 1;
+        return acc;
+      }, { totalCost: 0, smsOutbound: 0, smsInbound: 0, mmsOutbound: 0, mmsInbound: 0 });
+      
+      return res.status(200).json({
+        periodStart,
+        periodEnd,
+        ...summary,
+        totalMessages: summary.smsOutbound + summary.smsInbound + summary.mmsOutbound + summary.mmsInbound
+      });
+    } catch (error) {
+      console.error("Error fetching current usage:", error);
+      return res.status(500).json({ message: "Internal server error" });
+    }
+  });
+
+  // ============================================
+  // CREDIT MANAGEMENT ENDPOINTS
+  // ============================================
+
+  // Get user's credit balance and rates
+  app.get("/api/users/:id/credits", async (req, res) => {
+    try {
+      const userId = parseInt(req.params.id);
+      if (isNaN(userId)) {
+        return res.status(400).json({ message: "Invalid user ID" });
+      }
+      
+      const user = await storage.getUser(userId);
+      if (!user) {
+        return res.status(404).json({ message: "User not found" });
+      }
+      
+      const rates = await storage.getUserCreditRates(userId);
+      
+      return res.status(200).json({
+        balance: user.credits || 0,
+        rates: rates || {
+          smsOutboundCredits: 1,
+          smsInboundCredits: 0,
+          mmsOutboundCredits: 3,
+          mmsInboundCredits: 0,
+          lowBalanceThreshold: 50,
+          isDefault: true
+        }
+      });
+    } catch (error) {
+      console.error("Error fetching user credits:", error);
+      return res.status(500).json({ message: "Internal server error" });
+    }
+  });
+
+  // Set user's credit rates
+  app.post("/api/users/:id/credits/rates", async (req, res) => {
+    try {
+      const userId = parseInt(req.params.id);
+      if (isNaN(userId)) {
+        return res.status(400).json({ message: "Invalid user ID" });
+      }
+      
+      const { smsOutboundCredits, smsInboundCredits, mmsOutboundCredits, mmsInboundCredits, lowBalanceThreshold } = req.body;
+      
+      const rates = await storage.upsertUserCreditRates({
+        userId,
+        smsOutboundCredits: smsOutboundCredits ?? 1,
+        smsInboundCredits: smsInboundCredits ?? 0,
+        mmsOutboundCredits: mmsOutboundCredits ?? 3,
+        mmsInboundCredits: mmsInboundCredits ?? 0,
+        lowBalanceThreshold: lowBalanceThreshold ?? 50,
+      });
+      
+      return res.status(200).json(rates);
+    } catch (error) {
+      console.error("Error updating credit rates:", error);
+      return res.status(500).json({ message: "Internal server error" });
+    }
+  });
+
+  // Add credits to user (admin action)
+  app.post("/api/users/:id/credits/add", async (req, res) => {
+    try {
+      const userId = parseInt(req.params.id);
+      if (isNaN(userId)) {
+        return res.status(400).json({ message: "Invalid user ID" });
+      }
+      
+      const { amount, description } = req.body;
+      if (!amount || amount <= 0) {
+        return res.status(400).json({ message: "Amount must be positive" });
+      }
+      
+      const result = await storage.addCredits(userId, amount, description || "Credits added by admin");
+      return res.status(200).json(result);
+    } catch (error) {
+      console.error("Error adding credits:", error);
+      return res.status(500).json({ message: "Internal server error" });
+    }
+  });
+
+  // Deduct credits from user (for consumption)
+  app.post("/api/users/:id/credits/deduct", async (req, res) => {
+    try {
+      const userId = parseInt(req.params.id);
+      if (isNaN(userId)) {
+        return res.status(400).json({ message: "Invalid user ID" });
+      }
+      
+      const { amount, description, referenceType, referenceId } = req.body;
+      if (!amount || amount <= 0) {
+        return res.status(400).json({ message: "Amount must be positive" });
+      }
+      
+      const result = await storage.deductCredits(userId, amount, description || "Credits consumed", referenceType, referenceId);
+      if (!result.success) {
+        return res.status(400).json({ message: result.message });
+      }
+      return res.status(200).json(result);
+    } catch (error) {
+      console.error("Error deducting credits:", error);
+      return res.status(500).json({ message: "Internal server error" });
+    }
+  });
+
+  // Get user's credit transaction history
+  app.get("/api/users/:id/credits/transactions", async (req, res) => {
+    try {
+      const userId = parseInt(req.params.id);
+      if (isNaN(userId)) {
+        return res.status(400).json({ message: "Invalid user ID" });
+      }
+      
+      const { limit, offset } = req.query;
+      const transactions = await storage.getCreditTransactions(
+        userId,
+        limit ? parseInt(limit as string) : 50,
+        offset ? parseInt(offset as string) : 0
+      );
+      
+      return res.status(200).json(transactions);
+    } catch (error) {
+      console.error("Error fetching credit transactions:", error);
+      return res.status(500).json({ message: "Internal server error" });
+    }
+  });
+
+  // Get available credit packages
+  app.get("/api/credit-packages", async (req, res) => {
+    try {
+      const packages = await storage.getCreditPackages();
+      return res.status(200).json(packages);
+    } catch (error) {
+      console.error("Error fetching credit packages:", error);
       return res.status(500).json({ message: "Internal server error" });
     }
   });
@@ -830,10 +1236,23 @@ export async function registerRoutes(app: Express): Promise<Server> {
         });
       }
 
+      // Log warning if not all selected numbers have valid configs
+      if (phoneNumberConfigs.length < phoneNumbers.length) {
+        console.log(`[BatchSMS] ⚠️ WARNING: Only ${phoneNumberConfigs.length} of ${phoneNumbers.length} selected numbers have valid credentials!`);
+        console.log(`[BatchSMS] Valid numbers: ${phoneNumberConfigs.map(p => p.phoneNumber).join(', ')}`);
+      }
+
       console.log(`[BatchSMS] Starting batch: ${recipients.length} recipients, ${phoneNumberConfigs.length} numbers, dripMode=${dripMode}`);
 
-      // Start batch send
-      const result = await batchSmsService.sendBatch({
+      // Update campaign status to 'sending' immediately
+      if (campaignId) {
+        await db.update(smsCampaigns)
+          .set({ status: 'sending' })
+          .where(eq(smsCampaigns.id, campaignId));
+      }
+
+      // Start batch send asynchronously - returns immediately with job ID
+      const { jobId, total } = await batchSmsService.startBatchAsync({
         recipients,
         message,
         phoneNumbers: phoneNumberConfigs,
@@ -846,12 +1265,15 @@ export async function registerRoutes(app: Express): Promise<Server> {
       });
 
       return res.status(200).json({
-        success: result.success,
-        total: result.total,
-        sent: result.sent,
-        failed: result.failed,
-        duration: result.duration,
-        errors: result.errors.slice(0, 100),
+        success: true,
+        jobId,
+        total,
+        numbersUsed: phoneNumberConfigs.length,
+        numbersRequested: phoneNumbers.length,
+        validNumbers: phoneNumberConfigs.map(p => p.phoneNumber),
+        message: phoneNumberConfigs.length < phoneNumbers.length 
+          ? `Warning: Only ${phoneNumberConfigs.length} of ${phoneNumbers.length} selected numbers have valid credentials. Messages distributed across: ${phoneNumberConfigs.map(p => p.phoneNumber).join(', ')}`
+          : 'Batch send started. Poll /api/sms/batch/progress/:jobId or /api/campaigns/sms-campaigns/:id/progress for updates.',
       });
     } catch (error) {
       console.error('[BatchSMS API] Error:', error);
@@ -865,14 +1287,93 @@ export async function registerRoutes(app: Express): Promise<Server> {
     res.setHeader('Cache-Control', 'no-cache');
     res.setHeader('Connection', 'keep-alive');
     
-    // This would connect to a job tracking system
-    // For now, just acknowledge the connection
-    res.write(`data: ${JSON.stringify({ status: 'connected', jobId: req.params.jobId })}\n\n`);
+    const jobId = req.params.jobId;
+    let closed = false;
     
-    // Keep connection open for progress updates
     req.on('close', () => {
+      closed = true;
       res.end();
     });
+    
+    // Poll for progress updates
+    const sendProgress = () => {
+      if (closed) return;
+      
+      const progress = batchSmsService.getJobProgress(jobId);
+      if (progress) {
+        res.write(`data: ${JSON.stringify({
+          status: progress.sent + progress.failed >= progress.total ? 'completed' : 'sending',
+          sent: progress.sent,
+          failed: progress.failed,
+          total: progress.total,
+          inProgress: progress.inProgress,
+          estimatedCompletionTime: progress.estimatedCompletionTime,
+          currentRate: progress.currentRate,
+        })}\n\n`);
+        
+        if (progress.sent + progress.failed >= progress.total) {
+          res.end();
+          return;
+        }
+      } else {
+        res.write(`data: ${JSON.stringify({ status: 'not_found', jobId })}\n\n`);
+        res.end();
+        return;
+      }
+      
+      setTimeout(sendProgress, 1000);
+    };
+    
+    sendProgress();
+  });
+
+  // Campaign progress endpoint (polling)
+  app.get("/api/campaigns/sms-campaigns/:id/progress", async (req, res) => {
+    try {
+      const campaignId = parseInt(req.params.id);
+      
+      if (!campaignId || isNaN(campaignId)) {
+        return res.status(400).json({ error: "Campaign ID is required" });
+      }
+      
+      // Get progress from active batch job
+      const progress = batchSmsService.getCampaignProgress(campaignId);
+      
+      if (progress) {
+        return res.json({
+          status: progress.sent + progress.failed >= progress.total ? 'completed' : 'sending',
+          sent: progress.sent,
+          failed: progress.failed,
+          total: progress.total,
+          inProgress: progress.inProgress,
+          estimatedCompletionTime: progress.estimatedCompletionTime,
+          currentRate: progress.currentRate,
+          jobId: progress.jobId,
+        });
+      }
+      
+      // No active job, get status from database
+      const [campaign] = await db
+        .select()
+        .from(smsCampaigns)
+        .where(eq(smsCampaigns.id, campaignId))
+        .limit(1);
+      
+      if (!campaign) {
+        return res.status(404).json({ error: "Campaign not found" });
+      }
+      
+      return res.json({
+        status: campaign.status,
+        sent: campaign.sentCount || 0,
+        failed: campaign.failedCount || 0,
+        total: campaign.recipientCount || 0,
+        delivered: campaign.deliveredCount || 0,
+      });
+    } catch (error: any) {
+      console.error("Error fetching campaign progress:", error);
+      res.status(500).json({ error: error.message || "Failed to fetch progress" });
+    }
   });
   
   // Billing endpoints
@@ -2826,6 +3327,164 @@ export async function registerRoutes(app: Express): Promise<Server> {
   });
 
   /**
+   * Get A2P messaging campaigns for Commio accounts
+   * Note: Commio doesn't expose A2P campaigns via API, so we use stored data
+   */
+  app.get("/api/accounts/:id/a2p-campaigns", async (req, res) => {
+    try {
+      const accountId = parseInt(req.params.id.replace('acc_', ''));
+      if (isNaN(accountId)) {
+        return res.status(400).json({ error: "Invalid account ID" });
+      }
+
+      const account = await accountService.getAccountById(accountId);
+      if (!account) {
+        return res.status(404).json({ error: "Account not found" });
+      }
+
+      // Get stored A2P campaigns from account settings
+      const settings = (account.settings || {}) as Record<string, any>;
+      const campaigns = settings.a2pCampaigns || [];
+      
+      // Also get phone numbers to show A2P status
+      const phoneNumbers = settings.importedPhoneNumbers || [];
+      
+      res.json({ 
+        accountId,
+        accountName: account.name,
+        campaigns,
+        totalCampaigns: campaigns.length,
+        phoneNumbers: phoneNumbers.map((pn: any) => ({
+          phoneNumber: pn.phoneNumber,
+          a2pStatus: pn.a2pStatus || 'unknown',
+          a2pCampaignId: pn.a2pCampaignId,
+        })),
+      });
+    } catch (error: any) {
+      console.error("[A2P Campaigns] Error:", error);
+      res.status(500).json({ error: error.message || "Failed to fetch A2P campaigns" });
+    }
+  });
+
+  /**
+   * Import A2P campaign data for Commio accounts
+   * Since Commio doesn't expose A2P campaigns via API, this allows manual import
+   */
+  app.post("/api/accounts/:id/a2p-campaigns/import", async (req, res) => {
+    try {
+      const accountId = parseInt(req.params.id.replace('acc_', ''));
+      if (isNaN(accountId)) {
+        return res.status(400).json({ error: "Invalid account ID" });
+      }
+
+      const { campaigns, phoneNumbers } = req.body;
+      
+      // campaigns: [{ id, useCase, brandId, status, numbers: ['+1...'] }]
+      // phoneNumbers: [{ phoneNumber, a2pCampaignId }] - to link numbers to campaigns
+
+      const account = await accountService.getAccountById(accountId);
+      if (!account) {
+        return res.status(404).json({ error: "Account not found" });
+      }
+
+      const settings = (account.settings || {}) as Record<string, any>;
+      
+      // Store campaigns
+      if (campaigns && Array.isArray(campaigns)) {
+        settings.a2pCampaigns = campaigns;
+      }
+      
+      // Update phone numbers with A2P status
+      if (phoneNumbers && Array.isArray(phoneNumbers)) {
+        const existingNumbers = settings.importedPhoneNumbers || [];
+        
+        for (const pn of phoneNumbers) {
+          const existing = existingNumbers.find((n: any) => 
+            n.phoneNumber === pn.phoneNumber || 
+            n.phoneNumber.replace(/\D/g, '') === pn.phoneNumber.replace(/\D/g, '')
+          );
+          
+          if (existing) {
+            existing.a2pStatus = 'registered';
+            existing.a2pCampaignId = pn.a2pCampaignId;
+          }
+        }
+        
+        settings.importedPhoneNumbers = existingNumbers;
+      }
+      
+      // Save updated settings
+      await accountService.updateAccount(accountId, { settings });
+      
+      res.json({ 
+        success: true,
+        message: 'A2P campaign data imported successfully',
+        campaignsImported: campaigns?.length || 0,
+        numbersUpdated: phoneNumbers?.length || 0,
+      });
+    } catch (error: any) {
+      console.error("[A2P Import] Error:", error);
+      res.status(500).json({ error: error.message || "Failed to import A2P data" });
+    }
+  });
+
+  /**
+   * Mark all Commio phone numbers as A2P registered
+   * Quick helper since all Commio numbers in the account are A2P registered
+   */
+  app.post("/api/accounts/:id/a2p-campaigns/mark-all-registered", async (req, res) => {
+    try {
+      const accountId = parseInt(req.params.id.replace('acc_', ''));
+      if (isNaN(accountId)) {
+        return res.status(400).json({ error: "Invalid account ID" });
+      }
+
+      const { campaignId, useCase } = req.body;
+
+      const account = await accountService.getAccountById(accountId);
+      if (!account) {
+        return res.status(404).json({ error: "Account not found" });
+      }
+
+      const settings = (account.settings || {}) as Record<string, any>;
+      const phoneNumbers = settings.importedPhoneNumbers || [];
+      
+      let updatedCount = 0;
+      for (const pn of phoneNumbers) {
+        pn.a2pStatus = 'registered';
+        if (campaignId) pn.a2pCampaignId = campaignId;
+        updatedCount++;
+      }
+      
+      // Also store the campaign info
+      if (campaignId) {
+        settings.a2pCampaigns = settings.a2pCampaigns || [];
+        const existingCampaign = settings.a2pCampaigns.find((c: any) => c.id === campaignId);
+        if (!existingCampaign) {
+          settings.a2pCampaigns.push({
+            id: campaignId,
+            useCase: useCase || 'LOW_VOLUME',
+            status: 'Accepted',
+            numbers: phoneNumbers.map((pn: any) => pn.phoneNumber),
+          });
+        }
+      }
+      
+      settings.importedPhoneNumbers = phoneNumbers;
+      await accountService.updateAccount(accountId, { settings });
+      
+      res.json({ 
+        success: true,
+        message: `Marked ${updatedCount} phone numbers as A2P registered`,
+        updatedCount,
+      });
+    } catch (error: any) {
+      console.error("[A2P Mark All] Error:", error);
+      res.status(500).json({ error: error.message || "Failed to mark numbers as registered" });
+    }
+  });
+
+  /**
    * Get usage statistics for phone numbers
    */
   app.get("/api/accounts/:id/phone-numbers/usage", async (req, res) => {
@@ -4652,6 +5311,91 @@ export async function registerRoutes(app: Express): Promise<Server> {
   });
 
   /**
+   * Update a contact list
+   */
+  app.put("/api/campaigns/contact-lists/:id", async (req, res) => {
+    try {
+      const userId = (req as any).user?.id || 1;
+      const listId = parseInt(req.params.id);
+      const { name, description } = req.body;
+
+      if (!listId || isNaN(listId)) {
+        return res.status(400).json({ error: "List ID is required" });
+      }
+
+      if (!name) {
+        return res.status(400).json({ error: "List name is required" });
+      }
+
+      const [updatedList] = await db
+        .update(contactLists)
+        .set({ 
+          name, 
+          description: description || null,
+          updatedAt: new Date()
+        })
+        .where(and(eq(contactLists.id, listId), eq(contactLists.userId, userId)))
+        .returning();
+
+      if (!updatedList) {
+        return res.status(404).json({ error: "Contact list not found" });
+      }
+
+      res.json({ success: true, list: updatedList });
+    } catch (error: any) {
+      console.error("Error updating contact list:", error);
+      res.status(500).json({ error: error.message || "Failed to update contact list" });
+    }
+  });
+
+  /**
+   * Get contacts from a contact list
+   */
+  app.get("/api/campaigns/contact-lists/:id/contacts", async (req, res) => {
+    try {
+      const userId = (req as any).user?.id || 1;
+      const listId = parseInt(req.params.id);
+      const limit = req.query.limit ? parseInt(req.query.limit as string) : 1000;
+
+      if (!listId || isNaN(listId)) {
+        return res.status(400).json({ error: "List ID is required" });
+      }
+
+      // Verify the list belongs to the user
+      const [list] = await db
+        .select()
+        .from(contactLists)
+        .where(and(eq(contactLists.id, listId), eq(contactLists.userId, userId)))
+        .limit(1);
+
+      if (!list) {
+        return res.status(404).json({ error: "Contact list not found" });
+      }
+
+      // Get contacts from the list via join table
+      const contactsData = await db
+        .select({
+          id: contacts.id,
+          phoneNumber: contacts.phoneNumber,
+          firstName: contacts.firstName,
+          lastName: contacts.lastName,
+          email: contacts.email,
+          customFields: contacts.customFields,
+          createdAt: contacts.createdAt
+        })
+        .from(contactListMembers)
+        .innerJoin(contacts, eq(contactListMembers.contactId, contacts.id))
+        .where(eq(contactListMembers.contactListId, listId))
+        .limit(limit);
+
+      res.json({ contacts: contactsData, total: list.contactCount });
+    } catch (error: any) {
+      console.error("Error fetching contacts:", error);
+      res.status(500).json({ error: error.message || "Failed to fetch contacts" });
+    }
+  });
+
+  /**
    * Delete a contact list
    */
   app.delete("/api/campaigns/contact-lists/:id", async (req, res) => {
@@ -5312,6 +6056,136 @@ export async function registerRoutes(app: Express): Promise<Server> {
     } catch (error: any) {
       console.error("Error checking opt-out status:", error);
       res.status(500).json({ error: error.message || "Failed to check opt-out status" });
+    }
+  });
+
+  // ============================================
+  // MESSAGE TEMPLATES
+  // ============================================
+
+  /**
+   * Get all message templates for user
+   */
+  app.get("/api/message-templates", async (req, res) => {
+    try {
+      const userId = (req as any).user?.id || 1;
+      const accountId = req.query.accountId ? parseInt(req.query.accountId as string) : undefined;
+
+      const templates = await db
+        .select()
+        .from(messageTemplates)
+        .where(eq(messageTemplates.userId, userId))
+        .orderBy(messageTemplates.createdAt);
+
+      res.json({ templates });
+    } catch (error: any) {
+      console.error("Error fetching message templates:", error);
+      res.status(500).json({ error: error.message || "Failed to fetch message templates" });
+    }
+  });
+
+  /**
+   * Create a new message template
+   */
+  app.post("/api/message-templates", async (req, res) => {
+    try {
+      const userId = (req as any).user?.id || 1;
+      const { name, content, description, category, accountId } = req.body;
+
+      if (!name || !content) {
+        return res.status(400).json({ error: "name and content are required" });
+      }
+
+      const [template] = await db
+        .insert(messageTemplates)
+        .values({
+          userId,
+          accountId,
+          name,
+          content,
+          description,
+          category,
+        })
+        .returning();
+
+      res.json({ success: true, template });
+    } catch (error: any) {
+      console.error("Error creating message template:", error);
+      res.status(500).json({ error: error.message || "Failed to create message template" });
+    }
+  });
+
+  /**
+   * Update a message template
+   */
+  app.put("/api/message-templates/:id", async (req, res) => {
+    try {
+      const userId = (req as any).user?.id || 1;
+      const templateId = parseInt(req.params.id);
+      const { name, content, description, category } = req.body;
+
+      const [template] = await db
+        .update(messageTemplates)
+        .set({
+          name,
+          content,
+          description,
+          category,
+          updatedAt: new Date(),
+        })
+        .where(and(eq(messageTemplates.id, templateId), eq(messageTemplates.userId, userId)))
+        .returning();
+
+      if (!template) {
+        return res.status(404).json({ error: "Template not found" });
+      }
+
+      res.json({ success: true, template });
+    } catch (error: any) {
+      console.error("Error updating message template:", error);
+      res.status(500).json({ error: error.message || "Failed to update message template" });
+    }
+  });
+
+  /**
+   * Delete a message template
+   */
+  app.delete("/api/message-templates/:id", async (req, res) => {
+    try {
+      const userId = (req as any).user?.id || 1;
+      const templateId = parseInt(req.params.id);
+
+      await db
+        .delete(messageTemplates)
+        .where(and(eq(messageTemplates.id, templateId), eq(messageTemplates.userId, userId)));
+
+      res.json({ success: true, message: "Template deleted successfully" });
+    } catch (error: any) {
+      console.error("Error deleting message template:", error);
+      res.status(500).json({ error: error.message || "Failed to delete message template" });
+    }
+  });
+
+  /**
+   * Increment template usage count
+   */
+  app.post("/api/message-templates/:id/use", async (req, res) => {
+    try {
+      const templateId = parseInt(req.params.id);
+
+      const [template] = await db
+        .update(messageTemplates)
+        .set({
+          usageCount: sql`${messageTemplates.usageCount} + 1`,
+          updatedAt: new Date(),
+        })
+        .where(eq(messageTemplates.id, templateId))
+        .returning();
+
+      res.json({ success: true, template });
+    } catch (error: any) {
+      console.error("Error updating template usage:", error);
+      res.status(500).json({ error: error.message || "Failed to update template usage" });
     }
   });
 

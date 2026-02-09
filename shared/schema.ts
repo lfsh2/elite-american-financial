@@ -11,14 +11,20 @@ export const users = pgTable("users", {
   firstName: text("first_name").notNull(),
   lastName: text("last_name").notNull(),
   email: text("email").notNull().unique(),
-  role: text("role").notNull().default("user"), // admin, user
+  role: text("role").notNull().default("user"), // super_admin, user (client)
+  status: text("status").notNull().default("active"), // active, inactive, suspended
   credits: integer("credits").notNull().default(0),
   parentId: integer("parent_id").references(() => users.id),
   isSubAccount: boolean("is_sub_account").notNull().default(false),
+  // Assigned phone number for this user (set by admin)
+  assignedPhoneNumberId: integer("assigned_phone_number_id"),
   // Auto-refill settings
   autoRefillEnabled: boolean("auto_refill_enabled").default(false),
   autoRefillThreshold: integer("auto_refill_threshold").default(100),
   autoRefillAmount: integer("auto_refill_amount").default(1000),
+  // Timestamps
+  createdAt: timestamp("created_at").defaultNow(),
+  lastLoginAt: timestamp("last_login_at"),
 });
 
 export const insertUserSchema = createInsertSchema(users).omit({
@@ -149,6 +155,7 @@ export const contacts = pgTable("contacts", {
   country: text("country"),
   tags: text("tags").array(),
   source: text("source"), // e.g., 'sms', 'manual', 'import'
+  customFields: jsonb("custom_fields"), // Custom fields from CSV import (e.g., debt_loads, dollar_amount)
   createdAt: timestamp("created_at").notNull(),
 });
 
@@ -684,3 +691,217 @@ export type InsertCampaignRecipient = z.infer<typeof insertCampaignRecipientSche
 
 export type OptOut = typeof optOutList.$inferSelect;
 export type InsertOptOut = z.infer<typeof insertOptOutSchema>;
+
+// Message Templates (reusable campaign message templates)
+export const messageTemplates = pgTable("message_templates", {
+  id: serial("id").primaryKey(),
+  userId: integer("user_id").notNull().references(() => users.id),
+  accountId: integer("account_id").references(() => accounts.id),
+  name: text("name").notNull(),
+  content: text("content").notNull(), // The message template with merge tags
+  description: text("description"),
+  category: text("category"), // e.g., 'debt_collection', 'marketing', 'notifications'
+  isDefault: boolean("is_default").default(false),
+  usageCount: integer("usage_count").default(0),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+  updatedAt: timestamp("updated_at").notNull().defaultNow(),
+});
+
+export const insertMessageTemplateSchema = createInsertSchema(messageTemplates).omit({
+  id: true,
+  usageCount: true,
+  createdAt: true,
+  updatedAt: true,
+});
+
+export type MessageTemplate = typeof messageTemplates.$inferSelect;
+export type InsertMessageTemplate = z.infer<typeof insertMessageTemplateSchema>;
+
+// User Phone Assignments (many-to-many: users can have multiple assigned numbers)
+export const userPhoneAssignments = pgTable("user_phone_assignments", {
+  id: serial("id").primaryKey(),
+  userId: integer("user_id").notNull().references(() => users.id),
+  phoneNumberId: integer("phone_number_id").notNull().references(() => accountPhoneNumbers.id),
+  isPrimary: boolean("is_primary").default(false),
+  canSend: boolean("can_send").default(true),
+  canReceive: boolean("can_receive").default(true),
+  assignedAt: timestamp("assigned_at").notNull().defaultNow(),
+  assignedBy: integer("assigned_by").references(() => users.id), // Admin who assigned
+});
+
+export const insertUserPhoneAssignmentSchema = createInsertSchema(userPhoneAssignments).omit({
+  id: true,
+  assignedAt: true,
+});
+
+export type UserPhoneAssignment = typeof userPhoneAssignments.$inferSelect;
+export type InsertUserPhoneAssignment = z.infer<typeof insertUserPhoneAssignmentSchema>;
+
+// ============================================
+// USAGE-BASED PRICING TABLES
+// ============================================
+
+// User Pricing Configuration - rates set by admin per client
+export const userPricingConfig = pgTable("user_pricing_config", {
+  id: serial("id").primaryKey(),
+  userId: integer("user_id").notNull().references(() => users.id).unique(),
+  // SMS rates (in dollars, e.g., 0.015 = $0.015 per message)
+  smsOutboundRate: text("sms_outbound_rate").notNull().default("0.015"),
+  smsInboundRate: text("sms_inbound_rate").notNull().default("0.01"),
+  // MMS rates
+  mmsOutboundRate: text("mms_outbound_rate").notNull().default("0.05"),
+  mmsInboundRate: text("mms_inbound_rate").notNull().default("0.03"),
+  // Monthly phone number fee (optional recurring charge)
+  monthlyPhoneNumberFee: text("monthly_phone_number_fee").notNull().default("0"),
+  // Billing cycle (1-28, day of month billing starts)
+  billingCycleDay: integer("billing_cycle_day").notNull().default(1),
+  // Timestamps
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+  updatedAt: timestamp("updated_at").notNull().defaultNow(),
+});
+
+export const insertUserPricingConfigSchema = createInsertSchema(userPricingConfig).omit({
+  id: true,
+  createdAt: true,
+  updatedAt: true,
+});
+
+export type UserPricingConfig = typeof userPricingConfig.$inferSelect;
+export type InsertUserPricingConfig = z.infer<typeof insertUserPricingConfigSchema>;
+
+// User Usage Records - tracks each message for billing
+export const userUsageRecords = pgTable("user_usage_records", {
+  id: serial("id").primaryKey(),
+  userId: integer("user_id").notNull().references(() => users.id),
+  phoneNumberId: integer("phone_number_id").references(() => accountPhoneNumbers.id),
+  // Message details
+  messageType: text("message_type").notNull(), // 'sms' | 'mms'
+  direction: text("direction").notNull(), // 'inbound' | 'outbound'
+  segmentCount: integer("segment_count").notNull().default(1), // For long SMS
+  // Cost calculation
+  rateApplied: text("rate_applied").notNull(), // Rate at time of message
+  cost: text("cost").notNull(), // Calculated cost
+  // Reference to actual message
+  messageSid: text("message_sid"),
+  smsMessageId: integer("sms_message_id").references(() => smsMessages.id),
+  // Timestamps
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+});
+
+export const insertUserUsageRecordSchema = createInsertSchema(userUsageRecords).omit({
+  id: true,
+  createdAt: true,
+});
+
+export type UserUsageRecord = typeof userUsageRecords.$inferSelect;
+export type InsertUserUsageRecord = z.infer<typeof insertUserUsageRecordSchema>;
+
+// User Billing Summary - monthly billing periods
+export const userBillingSummary = pgTable("user_billing_summary", {
+  id: serial("id").primaryKey(),
+  userId: integer("user_id").notNull().references(() => users.id),
+  // Billing period
+  periodStart: timestamp("period_start").notNull(),
+  periodEnd: timestamp("period_end").notNull(),
+  // Usage totals
+  totalSmsOutbound: integer("total_sms_outbound").notNull().default(0),
+  totalSmsInbound: integer("total_sms_inbound").notNull().default(0),
+  totalMmsOutbound: integer("total_mms_outbound").notNull().default(0),
+  totalMmsInbound: integer("total_mms_inbound").notNull().default(0),
+  // Cost breakdown
+  smsCost: text("sms_cost").notNull().default("0"),
+  mmsCost: text("mms_cost").notNull().default("0"),
+  phoneNumberFees: text("phone_number_fees").notNull().default("0"),
+  totalCost: text("total_cost").notNull().default("0"),
+  // Payment status
+  status: text("status").notNull().default("pending"), // 'pending' | 'paid' | 'overdue'
+  paidAt: timestamp("paid_at"),
+  // Timestamps
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+});
+
+export const insertUserBillingSummarySchema = createInsertSchema(userBillingSummary).omit({
+  id: true,
+  createdAt: true,
+});
+
+export type UserBillingSummary = typeof userBillingSummary.$inferSelect;
+export type InsertUserBillingSummary = z.infer<typeof insertUserBillingSummarySchema>;
+
+// ============================================
+// CREDIT-BASED SYSTEM
+// ============================================
+
+// Credit Transactions - tracks all credit movements
+export const creditTransactions = pgTable("credit_transactions", {
+  id: serial("id").primaryKey(),
+  userId: integer("user_id").notNull().references(() => users.id),
+  // Transaction type
+  type: text("type").notNull(), // 'purchase' | 'consumption' | 'refund' | 'bonus' | 'adjustment'
+  // Amount (positive = add, negative = deduct)
+  amount: integer("amount").notNull(),
+  // Balance after this transaction
+  balanceAfter: integer("balance_after").notNull(),
+  // Description
+  description: text("description").notNull(),
+  // Reference to related entity (message ID, invoice ID, etc.)
+  referenceType: text("reference_type"), // 'sms' | 'mms' | 'invoice' | null
+  referenceId: integer("reference_id"),
+  // Timestamps
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+});
+
+export const insertCreditTransactionSchema = createInsertSchema(creditTransactions).omit({
+  id: true,
+  createdAt: true,
+});
+
+export type CreditTransaction = typeof creditTransactions.$inferSelect;
+export type InsertCreditTransaction = z.infer<typeof insertCreditTransactionSchema>;
+
+// User Credit Rates - how many credits per message type
+export const userCreditRates = pgTable("user_credit_rates", {
+  id: serial("id").primaryKey(),
+  userId: integer("user_id").notNull().references(() => users.id).unique(),
+  // Credits per message type
+  smsOutboundCredits: integer("sms_outbound_credits").notNull().default(1),
+  smsInboundCredits: integer("sms_inbound_credits").notNull().default(0),
+  mmsOutboundCredits: integer("mms_outbound_credits").notNull().default(3),
+  mmsInboundCredits: integer("mms_inbound_credits").notNull().default(0),
+  // Credit purchase rate (dollars per credit, for reference)
+  creditPurchaseRate: text("credit_purchase_rate").notNull().default("0.01"),
+  // Low balance threshold for alerts
+  lowBalanceThreshold: integer("low_balance_threshold").notNull().default(50),
+  // Timestamps
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+  updatedAt: timestamp("updated_at").notNull().defaultNow(),
+});
+
+export const insertUserCreditRatesSchema = createInsertSchema(userCreditRates).omit({
+  id: true,
+  createdAt: true,
+  updatedAt: true,
+});
+
+export type UserCreditRates = typeof userCreditRates.$inferSelect;
+export type InsertUserCreditRates = z.infer<typeof insertUserCreditRatesSchema>;
+
+// Credit Packages - predefined credit bundles for purchase
+export const creditPackages = pgTable("credit_packages", {
+  id: serial("id").primaryKey(),
+  name: text("name").notNull(), // "Starter", "Pro", "Enterprise"
+  credits: integer("credits").notNull(), // 100, 500, 2000
+  price: text("price").notNull(), // "$10", "$45", "$150"
+  description: text("description"),
+  isActive: boolean("is_active").notNull().default(true),
+  sortOrder: integer("sort_order").notNull().default(0),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+});
+
+export const insertCreditPackageSchema = createInsertSchema(creditPackages).omit({
+  id: true,
+  createdAt: true,
+});
+
+export type CreditPackage = typeof creditPackages.$inferSelect;
+export type InsertCreditPackage = z.infer<typeof insertCreditPackageSchema>;

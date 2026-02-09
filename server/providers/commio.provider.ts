@@ -719,4 +719,103 @@ export class CommioProvider implements ICommunicationProvider {
     console.error('[Commio] All SMS usage endpoints failed');
     return { outbound: 0, inbound: 0, total: 0, cost: 0 };
   }
+
+  // ============================================
+  // A2P MESSAGING CAMPAIGNS
+  // ============================================
+
+  /**
+   * Get A2P messaging campaigns from Commio
+   * Returns campaign info including which phone numbers are registered
+   */
+  async getMessagingCampaigns(): Promise<{
+    campaigns: Array<{
+      id: string;
+      useCase: string;
+      description: string;
+      brandId: string;
+      status: string;
+      tcrStatus: string;
+      registeredDate: string;
+      renewalDate: string;
+      numbers: string[];
+    }>;
+  }> {
+    // Try different endpoints for messaging campaigns
+    const endpoints = [
+      '/product/messaging/campaign',
+      '/product/messaging/campaigns',
+      '/messaging/campaign',
+      '/messaging/campaigns',
+      '/product/origination/messaging/campaign',
+    ];
+
+    for (const endpoint of endpoints) {
+      try {
+        console.log(`[Commio] Trying A2P campaigns endpoint: ${endpoint}`);
+        const response = await this.apiRequest<any>('GET', endpoint);
+        
+        const campaigns = response.rows || response.data || response.campaigns || response || [];
+        const campaignList = Array.isArray(campaigns) ? campaigns : [];
+        
+        if (campaignList.length > 0) {
+          console.log(`[Commio] Found ${campaignList.length} A2P campaigns`);
+          
+          return {
+            campaigns: campaignList.map((c: any) => ({
+              id: c.id || c.campaign_id || c.campaignId,
+              useCase: c.use_case || c.useCase || c.type || 'UNKNOWN',
+              description: c.description || c.name || '',
+              brandId: c.brand_id || c.brandId || '',
+              status: c.status || 'unknown',
+              tcrStatus: c.tcr_status || c.tcrStatus || 'unknown',
+              registeredDate: c.registered_date || c.registeredDate || c.created_at || '',
+              renewalDate: c.renewal_date || c.renewalDate || '',
+              numbers: c.numbers || c.phone_numbers || c.dids || [],
+            })),
+          };
+        }
+      } catch (error: any) {
+        console.log(`[Commio] A2P endpoint ${endpoint} failed: ${error.message}`);
+        continue;
+      }
+    }
+
+    console.log('[Commio] No A2P campaigns found or all endpoints failed');
+    return { campaigns: [] };
+  }
+
+  /**
+   * Check if a specific phone number is A2P registered
+   */
+  async checkA2PStatus(phoneNumber: string): Promise<{
+    isRegistered: boolean;
+    campaignId?: string;
+    useCase?: string;
+    status?: string;
+  }> {
+    try {
+      const { campaigns } = await this.getMessagingCampaigns();
+      
+      // Normalize phone number for comparison
+      const normalizedNumber = phoneNumber.replace(/\D/g, '');
+      
+      for (const campaign of campaigns) {
+        const numbers = campaign.numbers.map((n: string) => n.replace(/\D/g, ''));
+        if (numbers.includes(normalizedNumber)) {
+          return {
+            isRegistered: true,
+            campaignId: campaign.id,
+            useCase: campaign.useCase,
+            status: campaign.status,
+          };
+        }
+      }
+      
+      return { isRegistered: false };
+    } catch (error) {
+      console.error('[Commio] Error checking A2P status:', error);
+      return { isRegistered: false };
+    }
+  }
 }

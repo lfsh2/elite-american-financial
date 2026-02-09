@@ -23,7 +23,9 @@ import {
   AlertCircle,
   Eye,
   EyeOff,
-  Loader2
+  Loader2,
+  Phone,
+  PhoneCall
 } from 'lucide-react';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
@@ -70,11 +72,33 @@ interface User {
   lastName: string;
   email: string;
   phone?: string;
-  role: 'admin' | 'user';
+  role: 'super_admin' | 'user';
   status: 'active' | 'inactive' | 'suspended';
   credits: number;
   createdAt: string;
   lastLogin?: string;
+  assignedPhoneNumber?: string;
+  phoneAssignments?: PhoneAssignment[];
+}
+
+interface PhoneAssignment {
+  id: number;
+  phoneNumberId: number;
+  phoneNumber: string;
+  friendlyName?: string;
+  accountName?: string;
+  isPrimary: boolean;
+  canSend: boolean;
+  canReceive: boolean;
+}
+
+interface AvailablePhoneNumber {
+  id: number;
+  phoneNumber: string;
+  friendlyName: string | null;
+  accountId: number;
+  accountName?: string;
+  isAssigned?: boolean;
 }
 
 export default function Users() {
@@ -98,10 +122,36 @@ export default function Users() {
     email: '',
     phone: '',
     password: '',
-    role: 'user' as 'admin' | 'user',
+    role: 'user' as 'super_admin' | 'user',
     status: 'active' as 'active' | 'inactive' | 'suspended',
     credits: 100
   });
+  
+  // Phone assignment state
+  const [showPhoneAssignModal, setShowPhoneAssignModal] = useState(false);
+  const [availablePhoneNumbers, setAvailablePhoneNumbers] = useState<AvailablePhoneNumber[]>([]);
+  const [selectedPhoneNumberId, setSelectedPhoneNumberId] = useState<number | null>(null);
+  const [isLoadingPhones, setIsLoadingPhones] = useState(false);
+  
+  // Pricing configuration state
+  const [showPricingModal, setShowPricingModal] = useState(false);
+  const [pricingData, setPricingData] = useState({
+    smsOutboundRate: '0.015',
+    smsInboundRate: '0.01',
+    mmsOutboundRate: '0.05',
+    mmsInboundRate: '0.03',
+    monthlyPhoneNumberFee: '0',
+    billingCycleDay: 1
+  });
+  const [isLoadingPricing, setIsLoadingPricing] = useState(false);
+  
+  // Credit management state
+  const [showCreditsModal, setShowCreditsModal] = useState(false);
+  const [creditAmount, setCreditAmount] = useState('');
+  const [creditDescription, setCreditDescription] = useState('');
+  const [userCredits, setUserCredits] = useState<{ balance: number; rates: any } | null>(null);
+  const [creditTransactions, setCreditTransactions] = useState<any[]>([]);
+  const [isLoadingCredits, setIsLoadingCredits] = useState(false);
 
   const [users, setUsers] = useState<User[]>([]);
   const [isLoadingUsers, setIsLoadingUsers] = useState(true);
@@ -146,8 +196,216 @@ export default function Users() {
   const stats = {
     totalUsers: users.length,
     activeUsers: users.filter(u => u.status === 'active').length,
-    adminUsers: users.filter(u => u.role === 'admin').length,
+    adminUsers: users.filter(u => u.role === 'super_admin').length,
     suspendedUsers: users.filter(u => u.status === 'suspended').length,
+  };
+
+  // Fetch available phone numbers for assignment
+  const fetchAvailablePhones = async () => {
+    setIsLoadingPhones(true);
+    try {
+      const response = await fetch('/api/phone-numbers/available');
+      if (response.ok) {
+        const data = await response.json();
+        setAvailablePhoneNumbers(data);
+      }
+    } catch (error) {
+      console.error('Error fetching available phones:', error);
+    } finally {
+      setIsLoadingPhones(false);
+    }
+  };
+
+  // Assign phone number to user
+  const handleAssignPhone = async () => {
+    if (!selectedUser || !selectedPhoneNumberId) return;
+    
+    setIsLoading(true);
+    try {
+      const response = await fetch(`/api/users/${selectedUser.id}/phone-assignments`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          phoneNumberId: selectedPhoneNumberId,
+          isPrimary: true,
+          canSend: true,
+          canReceive: true,
+          assignedBy: currentUser?.id
+        })
+      });
+
+      if (response.ok) {
+        toast({
+          title: 'Phone Assigned',
+          description: 'Phone number has been assigned to the user.',
+        });
+        setShowPhoneAssignModal(false);
+        setSelectedPhoneNumberId(null);
+        fetchUsers();
+      } else {
+        throw new Error('Failed to assign phone');
+      }
+    } catch (error) {
+      toast({
+        title: 'Error',
+        description: 'Failed to assign phone number',
+        variant: 'destructive'
+      });
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  // Open phone assignment modal
+  const openPhoneAssignModal = (user: User) => {
+    setSelectedUser(user);
+    fetchAvailablePhones();
+    setShowPhoneAssignModal(true);
+  };
+
+  // Fetch user pricing config
+  const fetchUserPricing = async (userId: number) => {
+    setIsLoadingPricing(true);
+    try {
+      const response = await fetch(`/api/users/${userId}/pricing`);
+      if (response.ok) {
+        const data = await response.json();
+        setPricingData({
+          smsOutboundRate: data.smsOutboundRate || '0.015',
+          smsInboundRate: data.smsInboundRate || '0.01',
+          mmsOutboundRate: data.mmsOutboundRate || '0.05',
+          mmsInboundRate: data.mmsInboundRate || '0.03',
+          monthlyPhoneNumberFee: data.monthlyPhoneNumberFee || '0',
+          billingCycleDay: data.billingCycleDay || 1
+        });
+      }
+    } catch (error) {
+      console.error('Error fetching user pricing:', error);
+    } finally {
+      setIsLoadingPricing(false);
+    }
+  };
+
+  // Open pricing modal
+  const openPricingModal = (user: User) => {
+    setSelectedUser(user);
+    fetchUserPricing(user.id);
+    setShowPricingModal(true);
+  };
+
+  // Save pricing configuration
+  const handleSavePricing = async () => {
+    if (!selectedUser) return;
+    
+    setIsLoading(true);
+    try {
+      const response = await fetch(`/api/users/${selectedUser.id}/pricing`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(pricingData)
+      });
+
+      if (response.ok) {
+        toast({
+          title: 'Pricing Updated',
+          description: 'User pricing configuration has been saved.',
+        });
+        setShowPricingModal(false);
+      } else {
+        throw new Error('Failed to save pricing');
+      }
+    } catch (error) {
+      toast({
+        title: 'Error',
+        description: 'Failed to save pricing configuration',
+        variant: 'destructive'
+      });
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  // Fetch user credits and transactions
+  const fetchUserCredits = async (userId: number) => {
+    setIsLoadingCredits(true);
+    try {
+      const [creditsRes, transactionsRes] = await Promise.all([
+        fetch(`/api/users/${userId}/credits`),
+        fetch(`/api/users/${userId}/credits/transactions?limit=10`)
+      ]);
+      
+      if (creditsRes.ok) {
+        const data = await creditsRes.json();
+        setUserCredits(data);
+      }
+      if (transactionsRes.ok) {
+        const data = await transactionsRes.json();
+        setCreditTransactions(data);
+      }
+    } catch (error) {
+      console.error('Error fetching user credits:', error);
+    } finally {
+      setIsLoadingCredits(false);
+    }
+  };
+
+  // Open credits modal
+  const openCreditsModal = (user: User) => {
+    setSelectedUser(user);
+    setCreditAmount('');
+    setCreditDescription('');
+    fetchUserCredits(user.id);
+    setShowCreditsModal(true);
+  };
+
+  // Add credits to user
+  const handleAddCredits = async () => {
+    if (!selectedUser || !creditAmount) return;
+    
+    const amount = parseInt(creditAmount);
+    if (isNaN(amount) || amount <= 0) {
+      toast({
+        title: 'Invalid Amount',
+        description: 'Please enter a valid positive number',
+        variant: 'destructive'
+      });
+      return;
+    }
+    
+    setIsLoading(true);
+    try {
+      const response = await fetch(`/api/users/${selectedUser.id}/credits/add`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          amount,
+          description: creditDescription || `Added ${amount} credits`
+        })
+      });
+
+      if (response.ok) {
+        const result = await response.json();
+        toast({
+          title: 'Credits Added',
+          description: `Successfully added ${amount} credits. New balance: ${result.balance}`,
+        });
+        // Refresh credits and user list
+        fetchUserCredits(selectedUser.id);
+        fetchUsers();
+        setCreditAmount('');
+        setCreditDescription('');
+      } else {
+        throw new Error('Failed to add credits');
+      }
+    } catch (error) {
+      toast({
+        title: 'Error',
+        description: 'Failed to add credits',
+        variant: 'destructive'
+      });
+    } finally {
+      setIsLoading(false);
+    }
   };
 
   const filteredUsers = useMemo(() => {
@@ -216,18 +474,18 @@ export default function Users() {
   };
 
   const getRoleBadge = (role: string) => {
-    if (role === 'admin') {
+    if (role === 'super_admin') {
       return (
         <Badge className="bg-purple-100 text-purple-800 hover:bg-purple-100">
           <Shield className="w-3 h-3 mr-1" />
-          Admin
+          Super Admin
         </Badge>
       );
     } else {
       return (
         <Badge variant="outline">
           <UserCheck className="w-3 h-3 mr-1" />
-          User
+          Client
         </Badge>
       );
     }
@@ -542,6 +800,22 @@ export default function Users() {
                               <Edit className="mr-2 h-4 w-4" />
                               Edit User
                             </DropdownMenuItem>
+                            <DropdownMenuItem onClick={() => openPhoneAssignModal(user)}>
+                              <Phone className="mr-2 h-4 w-4" />
+                              Assign Phone Number
+                            </DropdownMenuItem>
+                            <DropdownMenuItem onClick={() => openPricingModal(user)}>
+                              <svg className="mr-2 h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8c-1.657 0-3 .895-3 2s1.343 2 3 2 3 .895 3 2-1.343 2-3 2m0-8c1.11 0 2.08.402 2.599 1M12 8V7m0 1v8m0 0v1m0-1c-1.11 0-2.08-.402-2.599-1M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                              </svg>
+                              Set Pricing
+                            </DropdownMenuItem>
+                            <DropdownMenuItem onClick={() => openCreditsModal(user)}>
+                              <svg className="mr-2 h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17 9V7a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2m2 4h10a2 2 0 002-2v-6a2 2 0 00-2-2H9a2 2 0 00-2 2v6a2 2 0 002 2zm7-5a2 2 0 11-4 0 2 2 0 014 0z" />
+                              </svg>
+                              Manage Credits
+                            </DropdownMenuItem>
                             <DropdownMenuItem>
                               <Mail className="mr-2 h-4 w-4" />
                               Send Email
@@ -634,8 +908,8 @@ export default function Users() {
                     <SelectValue />
                   </SelectTrigger>
                   <SelectContent>
-                    <SelectItem value="user">User</SelectItem>
-                    <SelectItem value="admin">Admin</SelectItem>
+                    <SelectItem value="user">Client</SelectItem>
+                    <SelectItem value="super_admin">Super Admin</SelectItem>
                   </SelectContent>
                 </Select>
               </div>
@@ -714,8 +988,8 @@ export default function Users() {
                     <SelectValue />
                   </SelectTrigger>
                   <SelectContent>
-                    <SelectItem value="user">User</SelectItem>
-                    <SelectItem value="admin">Admin</SelectItem>
+                    <SelectItem value="user">Client</SelectItem>
+                    <SelectItem value="super_admin">Super Admin</SelectItem>
                   </SelectContent>
                 </Select>
               </div>
@@ -747,6 +1021,400 @@ export default function Users() {
               ) : (
                 'Update User'
               )}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Phone Assignment Modal */}
+      <Dialog open={showPhoneAssignModal} onOpenChange={setShowPhoneAssignModal}>
+        <DialogContent className="sm:max-w-[500px]">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <Phone className="h-5 w-5" />
+              Assign Phone Number
+            </DialogTitle>
+            <DialogDescription>
+              Assign a dedicated phone number to {selectedUser?.firstName} {selectedUser?.lastName}
+            </DialogDescription>
+          </DialogHeader>
+          <div className="grid gap-4 py-4">
+            {selectedUser?.phoneAssignments && selectedUser.phoneAssignments.length > 0 && (
+              <div className="space-y-2">
+                <Label className="text-sm font-medium">Current Assignments</Label>
+                <div className="space-y-2">
+                  {selectedUser.phoneAssignments.map((assignment) => (
+                    <div key={assignment.id} className="flex items-center justify-between p-3 bg-green-50 rounded-lg border border-green-200">
+                      <div className="flex items-center gap-2">
+                        <PhoneCall className="h-4 w-4 text-green-600" />
+                        <div>
+                          <div className="font-medium text-sm">{assignment.phoneNumber}</div>
+                          <div className="text-xs text-muted-foreground">
+                            {assignment.friendlyName} • {assignment.accountName}
+                          </div>
+                        </div>
+                      </div>
+                      {assignment.isPrimary && (
+                        <Badge className="bg-green-100 text-green-800">Primary</Badge>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+            
+            <div className="space-y-2">
+              <Label>Select Phone Number</Label>
+              {isLoadingPhones ? (
+                <div className="flex items-center justify-center py-4">
+                  <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
+                </div>
+              ) : (
+                <Select 
+                  value={selectedPhoneNumberId?.toString() || ''} 
+                  onValueChange={(v) => setSelectedPhoneNumberId(parseInt(v))}
+                >
+                  <SelectTrigger>
+                    <SelectValue placeholder="Choose a phone number..." />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {availablePhoneNumbers.map((phone) => (
+                      <SelectItem 
+                        key={phone.id} 
+                        value={phone.id.toString()}
+                        disabled={phone.isAssigned}
+                      >
+                        <div className="flex items-center gap-2">
+                          <span>{phone.phoneNumber}</span>
+                          {phone.friendlyName && (
+                            <span className="text-muted-foreground">({phone.friendlyName})</span>
+                          )}
+                          {phone.isAssigned && (
+                            <Badge variant="outline" className="ml-2 text-xs">Assigned</Badge>
+                          )}
+                        </div>
+                      </SelectItem>
+                    ))}
+                    {availablePhoneNumbers.length === 0 && (
+                      <div className="px-2 py-4 text-center text-sm text-muted-foreground">
+                        No phone numbers available
+                      </div>
+                    )}
+                  </SelectContent>
+                </Select>
+              )}
+              <p className="text-xs text-muted-foreground">
+                This phone number will be used when the user sends SMS messages.
+              </p>
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => {
+              setShowPhoneAssignModal(false);
+              setSelectedPhoneNumberId(null);
+            }}>
+              Cancel
+            </Button>
+            <Button 
+              onClick={handleAssignPhone} 
+              disabled={isLoading || !selectedPhoneNumberId}
+            >
+              {isLoading ? (
+                <>
+                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                  Assigning...
+                </>
+              ) : (
+                <>
+                  <Phone className="mr-2 h-4 w-4" />
+                  Assign Phone
+                </>
+              )}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Pricing Configuration Modal */}
+      <Dialog open={showPricingModal} onOpenChange={setShowPricingModal}>
+        <DialogContent className="sm:max-w-[550px]">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <svg className="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8c-1.657 0-3 .895-3 2s1.343 2 3 2 3 .895 3 2-1.343 2-3 2m0-8c1.11 0 2.08.402 2.599 1M12 8V7m0 1v8m0 0v1m0-1c-1.11 0-2.08-.402-2.599-1M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+              </svg>
+              Usage-Based Pricing
+            </DialogTitle>
+            <DialogDescription>
+              Set messaging rates for {selectedUser?.firstName} {selectedUser?.lastName}. Charges are calculated per message.
+            </DialogDescription>
+          </DialogHeader>
+          
+          {isLoadingPricing ? (
+            <div className="flex items-center justify-center py-8">
+              <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />
+            </div>
+          ) : (
+            <div className="grid gap-4 py-4">
+              {/* SMS Rates */}
+              <div className="space-y-3">
+                <h4 className="text-sm font-semibold text-gray-700 flex items-center gap-2">
+                  <span className="w-2 h-2 rounded-full bg-blue-500"></span>
+                  SMS Rates
+                </h4>
+                <div className="grid grid-cols-2 gap-4">
+                  <div>
+                    <Label className="text-xs text-muted-foreground">Outbound (per SMS)</Label>
+                    <div className="relative">
+                      <span className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground">$</span>
+                      <Input
+                        type="number"
+                        step="0.001"
+                        min="0"
+                        className="pl-7"
+                        value={pricingData.smsOutboundRate}
+                        onChange={(e) => setPricingData({...pricingData, smsOutboundRate: e.target.value})}
+                      />
+                    </div>
+                  </div>
+                  <div>
+                    <Label className="text-xs text-muted-foreground">Inbound (per SMS)</Label>
+                    <div className="relative">
+                      <span className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground">$</span>
+                      <Input
+                        type="number"
+                        step="0.001"
+                        min="0"
+                        className="pl-7"
+                        value={pricingData.smsInboundRate}
+                        onChange={(e) => setPricingData({...pricingData, smsInboundRate: e.target.value})}
+                      />
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              {/* MMS Rates */}
+              <div className="space-y-3">
+                <h4 className="text-sm font-semibold text-gray-700 flex items-center gap-2">
+                  <span className="w-2 h-2 rounded-full bg-purple-500"></span>
+                  MMS Rates
+                </h4>
+                <div className="grid grid-cols-2 gap-4">
+                  <div>
+                    <Label className="text-xs text-muted-foreground">Outbound (per MMS)</Label>
+                    <div className="relative">
+                      <span className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground">$</span>
+                      <Input
+                        type="number"
+                        step="0.001"
+                        min="0"
+                        className="pl-7"
+                        value={pricingData.mmsOutboundRate}
+                        onChange={(e) => setPricingData({...pricingData, mmsOutboundRate: e.target.value})}
+                      />
+                    </div>
+                  </div>
+                  <div>
+                    <Label className="text-xs text-muted-foreground">Inbound (per MMS)</Label>
+                    <div className="relative">
+                      <span className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground">$</span>
+                      <Input
+                        type="number"
+                        step="0.001"
+                        min="0"
+                        className="pl-7"
+                        value={pricingData.mmsInboundRate}
+                        onChange={(e) => setPricingData({...pricingData, mmsInboundRate: e.target.value})}
+                      />
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              {/* Monthly Fee & Billing Cycle */}
+              <div className="space-y-3 pt-2 border-t">
+                <h4 className="text-sm font-semibold text-gray-700 flex items-center gap-2">
+                  <span className="w-2 h-2 rounded-full bg-green-500"></span>
+                  Additional Settings
+                </h4>
+                <div className="grid grid-cols-2 gap-4">
+                  <div>
+                    <Label className="text-xs text-muted-foreground">Monthly Phone Fee</Label>
+                    <div className="relative">
+                      <span className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground">$</span>
+                      <Input
+                        type="number"
+                        step="0.01"
+                        min="0"
+                        className="pl-7"
+                        value={pricingData.monthlyPhoneNumberFee}
+                        onChange={(e) => setPricingData({...pricingData, monthlyPhoneNumberFee: e.target.value})}
+                      />
+                    </div>
+                  </div>
+                  <div>
+                    <Label className="text-xs text-muted-foreground">Billing Cycle Day</Label>
+                    <Select 
+                      value={pricingData.billingCycleDay.toString()} 
+                      onValueChange={(v) => setPricingData({...pricingData, billingCycleDay: parseInt(v)})}
+                    >
+                      <SelectTrigger>
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {[1, 5, 10, 15, 20, 25].map(day => (
+                          <SelectItem key={day} value={day.toString()}>
+                            {day === 1 ? '1st' : day === 2 ? '2nd' : day === 3 ? '3rd' : `${day}th`} of month
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  </div>
+                </div>
+              </div>
+
+              {/* Pricing Summary */}
+              <div className="mt-2 p-3 bg-gray-50 rounded-lg text-xs text-muted-foreground">
+                <p className="font-medium text-gray-700 mb-1">Pricing Summary</p>
+                <p>• SMS: ${pricingData.smsOutboundRate}/out, ${pricingData.smsInboundRate}/in</p>
+                <p>• MMS: ${pricingData.mmsOutboundRate}/out, ${pricingData.mmsInboundRate}/in</p>
+                {parseFloat(pricingData.monthlyPhoneNumberFee) > 0 && (
+                  <p>• Monthly fee: ${pricingData.monthlyPhoneNumberFee}/phone</p>
+                )}
+              </div>
+            </div>
+          )}
+          
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setShowPricingModal(false)}>
+              Cancel
+            </Button>
+            <Button onClick={handleSavePricing} disabled={isLoading || isLoadingPricing}>
+              {isLoading ? (
+                <>
+                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                  Saving...
+                </>
+              ) : (
+                'Save Pricing'
+              )}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Credits Management Modal */}
+      <Dialog open={showCreditsModal} onOpenChange={setShowCreditsModal}>
+        <DialogContent className="sm:max-w-[550px]">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <svg className="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17 9V7a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2m2 4h10a2 2 0 002-2v-6a2 2 0 00-2-2H9a2 2 0 00-2 2v6a2 2 0 002 2zm7-5a2 2 0 11-4 0 2 2 0 014 0z" />
+              </svg>
+              Manage Credits
+            </DialogTitle>
+            <DialogDescription>
+              Add or manage credits for {selectedUser?.firstName} {selectedUser?.lastName}
+            </DialogDescription>
+          </DialogHeader>
+          
+          {isLoadingCredits ? (
+            <div className="flex items-center justify-center py-8">
+              <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />
+            </div>
+          ) : (
+            <div className="grid gap-4 py-4">
+              {/* Current Balance */}
+              <div className="p-4 bg-gradient-to-r from-green-50 to-emerald-50 rounded-lg border border-green-200">
+                <div className="flex items-center justify-between">
+                  <div>
+                    <p className="text-sm text-green-600 font-medium">Current Balance</p>
+                    <p className="text-3xl font-bold text-green-700">{userCredits?.balance || 0}</p>
+                    <p className="text-xs text-green-600">credits available</p>
+                  </div>
+                  <div className="text-right">
+                    <p className="text-xs text-muted-foreground">Credit Rates</p>
+                    <p className="text-xs">SMS: {userCredits?.rates?.smsOutboundCredits || 1} credit</p>
+                    <p className="text-xs">MMS: {userCredits?.rates?.mmsOutboundCredits || 3} credits</p>
+                  </div>
+                </div>
+              </div>
+
+              {/* Add Credits Form */}
+              <div className="space-y-3 pt-2 border-t">
+                <h4 className="text-sm font-semibold text-gray-700">Add Credits</h4>
+                <div className="grid grid-cols-2 gap-4">
+                  <div>
+                    <Label className="text-xs text-muted-foreground">Amount</Label>
+                    <Input
+                      type="number"
+                      min="1"
+                      placeholder="100"
+                      value={creditAmount}
+                      onChange={(e) => setCreditAmount(e.target.value)}
+                    />
+                  </div>
+                  <div>
+                    <Label className="text-xs text-muted-foreground">Description (optional)</Label>
+                    <Input
+                      placeholder="Reason for adding credits"
+                      value={creditDescription}
+                      onChange={(e) => setCreditDescription(e.target.value)}
+                    />
+                  </div>
+                </div>
+                <Button 
+                  onClick={handleAddCredits} 
+                  disabled={isLoading || !creditAmount}
+                  className="w-full"
+                >
+                  {isLoading ? (
+                    <>
+                      <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                      Adding...
+                    </>
+                  ) : (
+                    <>
+                      <svg className="mr-2 h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 6v6m0 0v6m0-6h6m-6 0H6" />
+                      </svg>
+                      Add {creditAmount || '0'} Credits
+                    </>
+                  )}
+                </Button>
+              </div>
+
+              {/* Recent Transactions */}
+              {creditTransactions.length > 0 && (
+                <div className="space-y-2 pt-2 border-t">
+                  <h4 className="text-sm font-semibold text-gray-700">Recent Transactions</h4>
+                  <div className="max-h-40 overflow-y-auto space-y-1">
+                    {creditTransactions.map((tx) => (
+                      <div key={tx.id} className="flex items-center justify-between p-2 bg-gray-50 rounded text-sm">
+                        <div className="flex items-center gap-2">
+                          <span className={`w-2 h-2 rounded-full ${tx.amount > 0 ? 'bg-green-500' : 'bg-red-500'}`}></span>
+                          <span className="text-xs text-muted-foreground truncate max-w-[200px]">{tx.description}</span>
+                        </div>
+                        <div className="flex items-center gap-2">
+                          <span className={`font-mono text-sm ${tx.amount > 0 ? 'text-green-600' : 'text-red-600'}`}>
+                            {tx.amount > 0 ? '+' : ''}{tx.amount}
+                          </span>
+                          <span className="text-xs text-muted-foreground">
+                            {new Date(tx.createdAt).toLocaleDateString()}
+                          </span>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+          
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setShowCreditsModal(false)}>
+              Close
             </Button>
           </DialogFooter>
         </DialogContent>

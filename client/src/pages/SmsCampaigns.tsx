@@ -29,7 +29,13 @@ import {
   TrendingUp,
   RefreshCw,
   Hash,
-  CheckSquare
+  CheckSquare,
+  Save,
+  FileText,
+  Edit,
+  Copy,
+  Download,
+  Eye
 } from 'lucide-react';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle, CardFooter } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
@@ -125,6 +131,16 @@ interface PhoneNumber {
   provider?: string;
 }
 
+interface MessageTemplate {
+  id: number;
+  name: string;
+  content: string;
+  description?: string;
+  category?: string;
+  usageCount: number;
+  createdAt: string;
+}
+
 export default function SmsCampaigns() {
   const { user } = useAuth();
   const { toast } = useToast();
@@ -177,6 +193,18 @@ export default function SmsCampaigns() {
   // Campaign sending
   const [isSending, setIsSending] = useState(false);
   const [selectedCampaign, setSelectedCampaign] = useState<SmsCampaign | null>(null);
+  
+  // Message templates
+  const [messageTemplates, setMessageTemplates] = useState<MessageTemplate[]>([]);
+  const [showTemplateDialog, setShowTemplateDialog] = useState(false);
+  const [newTemplate, setNewTemplate] = useState({ name: '', content: '', description: '', category: '' });
+  const [editingTemplateId, setEditingTemplateId] = useState<number | null>(null);
+  
+  // Contact list management
+  const [viewingList, setViewingList] = useState<{ id: number; name: string; contacts: any[] } | null>(null);
+  const [editingList, setEditingList] = useState<{ id: number; name: string; description: string } | null>(null);
+  const [isExporting, setIsExporting] = useState(false);
+  const [selectedListCustomFields, setSelectedListCustomFields] = useState<string[]>([]);
 
   // Filter phone numbers by provider (memoized to prevent infinite loops)
   const filteredNumbers = useMemo(() => {
@@ -188,6 +216,73 @@ export default function SmsCampaigns() {
   useEffect(() => {
     fetchData();
   }, [currentAccount]);
+
+  // Fetch custom fields when campaign dialog opens or contact list changes
+  useEffect(() => {
+    const fetchCustomFields = async () => {
+      // If a specific contact list is selected, fetch from that list
+      if (newCampaign.contactListId) {
+        try {
+          const res = await fetch(`/api/campaigns/contact-lists/${newCampaign.contactListId}/contacts?limit=100`, {
+            credentials: 'include'
+          });
+          if (res.ok) {
+            const data = await res.json();
+            const customFieldKeys = new Set<string>();
+            
+            (data.contacts || []).forEach((contact: any) => {
+              if (contact.customFields) {
+                Object.keys(contact.customFields).forEach(key => {
+                  if (!key.includes('middle') && !key.includes('midl') && key !== 'stdaddr_midlnm') {
+                    customFieldKeys.add(key);
+                  }
+                });
+              }
+            });
+            
+            setSelectedListCustomFields(Array.from(customFieldKeys));
+            return;
+          }
+        } catch (error) {
+          console.error('Failed to fetch custom fields:', error);
+        }
+      }
+      
+      // If no contact list selected but dialog is open, fetch from all lists to show available fields
+      if (showNewCampaign && contactLists.length > 0) {
+        try {
+          const customFieldKeys = new Set<string>();
+          
+          // Fetch from first few contact lists to detect available custom fields
+          for (const list of contactLists.slice(0, 3)) {
+            const res = await fetch(`/api/campaigns/contact-lists/${list.id}/contacts?limit=50`, {
+              credentials: 'include'
+            });
+            if (res.ok) {
+              const data = await res.json();
+              (data.contacts || []).forEach((contact: any) => {
+                if (contact.customFields) {
+                  Object.keys(contact.customFields).forEach(key => {
+                    if (!key.includes('middle') && !key.includes('midl') && key !== 'stdaddr_midlnm') {
+                      customFieldKeys.add(key);
+                    }
+                  });
+                }
+              });
+            }
+          }
+          
+          setSelectedListCustomFields(Array.from(customFieldKeys));
+        } catch (error) {
+          console.error('Failed to fetch custom fields:', error);
+        }
+      } else if (!showNewCampaign) {
+        setSelectedListCustomFields([]);
+      }
+    };
+    
+    fetchCustomFields();
+  }, [newCampaign.contactListId, showNewCampaign, contactLists]);
 
   const fetchData = async () => {
     setIsLoading(true);
@@ -204,17 +299,35 @@ export default function SmsCampaigns() {
         }),
         fetch('/api/accounts', { credentials: 'include' })
       ]);
+      
+      // Fetch message templates separately (non-blocking, may not exist yet)
+      fetch('/api/message-templates', { credentials: 'include' })
+        .then(res => res.ok ? res.json() : null)
+        .then(data => {
+          if (data?.templates) {
+            setMessageTemplates(data.templates);
+          }
+        })
+        .catch(() => {
+          // Templates table may not exist yet - ignore silently
+        });
 
       // Process campaigns
       if (campaignsRes.ok) {
         const data = await campaignsRes.json();
+        console.log('[SmsCampaigns] Campaigns fetched:', data);
         setCampaigns(data.campaigns || []);
+      } else {
+        console.error('[SmsCampaigns] Failed to fetch campaigns:', campaignsRes.status);
       }
 
       // Process contact lists
       if (listsRes.ok) {
         const data = await listsRes.json();
+        console.log('[SmsCampaigns] Contact lists fetched:', data);
         setContactLists(data.lists || []);
+      } else {
+        console.error('[SmsCampaigns] Failed to fetch contact lists:', listsRes.status);
       }
 
       // Process phone numbers
@@ -336,6 +449,22 @@ export default function SmsCampaigns() {
     for (let i = 1; i < lines.length; i++) {
       const values = parseCSVLine(lines[i]);
       if (values[phoneIndex]) {
+        // Build custom fields object for non-standard columns
+        // Exclude middle name fields (stdAddr_midlNm, middle_name, middlename, etc.)
+        const customFields: Record<string, string> = {};
+        headers.forEach((header, index) => {
+          if (index !== phoneIndex && index !== firstNameIndex && 
+              index !== lastNameIndex && index !== emailIndex && values[index]) {
+            // Convert header to snake_case for consistency
+            const fieldName = header.replace(/\s+/g, '_').toLowerCase();
+            // Skip middle name fields
+            if (fieldName.includes('middle') || fieldName.includes('midl') || fieldName === 'stdaddr_midlnm') {
+              return;
+            }
+            customFields[fieldName] = values[index];
+          }
+        });
+
         // Build contact object with all fields
         const contact: any = {
           phoneNumber: values[phoneIndex],
@@ -343,17 +472,10 @@ export default function SmsCampaigns() {
           lastName: lastNameIndex >= 0 ? values[lastNameIndex] : undefined,
           email: emailIndex >= 0 ? values[emailIndex] : undefined,
           selected: true,
+          customFields: Object.keys(customFields).length > 0 ? customFields : undefined,
+          // Also spread custom fields for UI display and merge tag detection
+          ...customFields,
         };
-
-        // Add custom fields (e.g., dollar_amount, company, etc.)
-        headers.forEach((header, index) => {
-          if (index !== phoneIndex && index !== firstNameIndex && 
-              index !== lastNameIndex && index !== emailIndex && values[index]) {
-            // Convert header to snake_case for consistency
-            const fieldName = header.replace(/\s+/g, '_').toLowerCase();
-            contact[fieldName] = values[index];
-          }
-        });
 
         contacts.push(contact);
       }
@@ -453,21 +575,29 @@ export default function SmsCampaigns() {
               const lastNameIndex = headers.findIndex(h => h.includes('last'));
               const emailIndex = headers.findIndex(h => h.includes('email'));
               
+              // Build custom fields object (exclude middle name fields)
+              const customFields: Record<string, string> = {};
+              headers.forEach((header, index) => {
+                if (index !== phoneIndex && index !== firstNameIndex && 
+                    index !== lastNameIndex && index !== emailIndex && values[index]) {
+                  const fieldName = header.replace(/\s+/g, '_').toLowerCase();
+                  // Skip middle name fields
+                  if (fieldName.includes('middle') || fieldName.includes('midl') || fieldName === 'stdaddr_midlnm') {
+                    return;
+                  }
+                  customFields[fieldName] = values[index];
+                }
+              });
+              
               const contact: any = {
                 phoneNumber: values[phoneIndex],
                 firstName: firstNameIndex >= 0 ? values[firstNameIndex] : undefined,
                 lastName: lastNameIndex >= 0 ? values[lastNameIndex] : undefined,
                 email: emailIndex >= 0 ? values[emailIndex] : undefined,
                 selected: true,
+                customFields: Object.keys(customFields).length > 0 ? customFields : undefined,
+                ...customFields,
               };
-              
-              headers.forEach((header, index) => {
-                if (index !== phoneIndex && index !== firstNameIndex && 
-                    index !== lastNameIndex && index !== emailIndex && values[index]) {
-                  const fieldName = header.replace(/\s+/g, '_').toLowerCase();
-                  contact[fieldName] = values[index];
-                }
-              });
               
               contacts.push(contact);
               
@@ -556,22 +686,29 @@ export default function SmsCampaigns() {
               const lastNameIndex = headers.findIndex(h => h.includes('last'));
               const emailIndex = headers.findIndex(h => h.includes('email'));
               
+              // Build custom fields object (exclude middle name fields)
+              const customFields: Record<string, string> = {};
+              headers.forEach((header, index) => {
+                if (index !== phoneIndex && index !== firstNameIndex && 
+                    index !== lastNameIndex && index !== emailIndex && values[index]) {
+                  const fieldName = header.replace(/\s+/g, '_').toLowerCase();
+                  // Skip middle name fields
+                  if (fieldName.includes('middle') || fieldName.includes('midl') || fieldName === 'stdaddr_midlnm') {
+                    return;
+                  }
+                  customFields[fieldName] = values[index];
+                }
+              });
+              
               const contact: any = {
                 phoneNumber: values[phoneIndex],
                 firstName: firstNameIndex >= 0 ? values[firstNameIndex] : undefined,
                 lastName: lastNameIndex >= 0 ? values[lastNameIndex] : undefined,
                 email: emailIndex >= 0 ? values[emailIndex] : undefined,
                 selected: true,
+                customFields: Object.keys(customFields).length > 0 ? customFields : undefined,
+                ...customFields,
               };
-              
-              // Add custom fields
-              headers.forEach((header, index) => {
-                if (index !== phoneIndex && index !== firstNameIndex && 
-                    index !== lastNameIndex && index !== emailIndex && values[index]) {
-                  const fieldName = header.replace(/\s+/g, '_').toLowerCase();
-                  contact[fieldName] = values[index];
-                }
-              });
               
               contactBatch.push(contact);
               
@@ -601,21 +738,29 @@ export default function SmsCampaigns() {
               const lastNameIndex = headers.findIndex(h => h.includes('last'));
               const emailIndex = headers.findIndex(h => h.includes('email'));
               
+              // Build custom fields object (exclude middle name fields)
+              const customFields: Record<string, string> = {};
+              headers.forEach((header, index) => {
+                if (index !== phoneIndex && index !== firstNameIndex && 
+                    index !== lastNameIndex && index !== emailIndex && values[index]) {
+                  const fieldName = header.replace(/\s+/g, '_').toLowerCase();
+                  // Skip middle name fields
+                  if (fieldName.includes('middle') || fieldName.includes('midl') || fieldName === 'stdaddr_midlnm') {
+                    return;
+                  }
+                  customFields[fieldName] = values[index];
+                }
+              });
+              
               const contact: any = {
                 phoneNumber: values[phoneIndex],
                 firstName: firstNameIndex >= 0 ? values[firstNameIndex] : undefined,
                 lastName: lastNameIndex >= 0 ? values[lastNameIndex] : undefined,
                 email: emailIndex >= 0 ? values[emailIndex] : undefined,
                 selected: true,
+                customFields: Object.keys(customFields).length > 0 ? customFields : undefined,
+                ...customFields,
               };
-              
-              headers.forEach((header, index) => {
-                if (index !== phoneIndex && index !== firstNameIndex && 
-                    index !== lastNameIndex && index !== emailIndex && values[index]) {
-                  const fieldName = header.replace(/\s+/g, '_').toLowerCase();
-                  contact[fieldName] = values[index];
-                }
-              });
               
               contactBatch.push(contact);
             }
@@ -771,6 +916,128 @@ export default function SmsCampaigns() {
         description: error.message || 'Failed to delete contact list',
         variant: 'destructive'
       });
+    }
+  };
+
+  // View contacts in a list
+  const handleViewContacts = async (listId: number, listName: string) => {
+    try {
+      const res = await fetch(`/api/campaigns/contact-lists/${listId}/contacts`, {
+        credentials: 'include'
+      });
+      if (res.ok) {
+        const data = await res.json();
+        setViewingList({ id: listId, name: listName, contacts: data.contacts || [] });
+      } else {
+        throw new Error('Failed to fetch contacts');
+      }
+    } catch (error) {
+      toast({
+        title: 'Error',
+        description: 'Failed to load contacts',
+        variant: 'destructive'
+      });
+    }
+  };
+
+  // Edit contact list
+  const handleEditList = async () => {
+    if (!editingList) return;
+    
+    try {
+      const res = await fetch(`/api/campaigns/contact-lists/${editingList.id}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        body: JSON.stringify({
+          name: editingList.name,
+          description: editingList.description
+        })
+      });
+      
+      if (res.ok) {
+        setContactLists(prev => prev.map(list => 
+          list.id === editingList.id 
+            ? { ...list, name: editingList.name, description: editingList.description }
+            : list
+        ));
+        setEditingList(null);
+        toast({
+          title: 'Success',
+          description: 'Contact list updated successfully',
+        });
+      } else {
+        throw new Error('Failed to update list');
+      }
+    } catch (error) {
+      toast({
+        title: 'Error',
+        description: 'Failed to update contact list',
+        variant: 'destructive'
+      });
+    }
+  };
+
+  // Export contact list to CSV
+  const handleExportCSV = async (listId: number, listName: string) => {
+    setIsExporting(true);
+    try {
+      const res = await fetch(`/api/campaigns/contact-lists/${listId}/contacts`, {
+        credentials: 'include'
+      });
+      
+      if (!res.ok) throw new Error('Failed to fetch contacts');
+      
+      const data = await res.json();
+      const contacts = data.contacts || [];
+      
+      if (contacts.length === 0) {
+        toast({
+          title: 'No Contacts',
+          description: 'This list has no contacts to export',
+          variant: 'destructive'
+        });
+        return;
+      }
+      
+      // Build CSV content
+      const headers = ['Phone Number', 'First Name', 'Last Name', 'Email', 'Debt Loads'];
+      const csvRows = [headers.join(',')];
+      
+      contacts.forEach((contact: any) => {
+        const row = [
+          contact.phoneNumber || '',
+          contact.firstName || '',
+          contact.lastName || '',
+          contact.email || '',
+          contact.customFields?.debt_loads || contact.debt_loads || ''
+        ].map(field => `"${String(field).replace(/"/g, '""')}"`);
+        csvRows.push(row.join(','));
+      });
+      
+      const csvContent = csvRows.join('\n');
+      const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = `${listName.replace(/[^a-z0-9]/gi, '_')}_contacts.csv`;
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      URL.revokeObjectURL(url);
+      
+      toast({
+        title: 'Export Complete',
+        description: `Exported ${contacts.length} contacts to CSV`,
+      });
+    } catch (error) {
+      toast({
+        title: 'Error',
+        description: 'Failed to export contacts',
+        variant: 'destructive'
+      });
+    } finally {
+      setIsExporting(false);
     }
   };
 
@@ -1016,15 +1283,7 @@ export default function SmsCampaigns() {
         };
       });
 
-      // Update campaign status to 'sending' before starting
-      await fetch(`/api/campaigns/sms-campaigns/${campaignId}`, {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        credentials: 'include',
-        body: JSON.stringify({ status: 'sending' }),
-      });
-
-      // Use batch API for parallel sending with drip mode
+      // Use batch API for parallel sending with drip mode (status is updated to 'sending' by the API)
       const batchRes = await fetch('/api/sms/batch', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -1058,29 +1317,65 @@ export default function SmsCampaigns() {
 
       if (batchRes.ok) {
         const result = await batchRes.json();
-        setSendingProgress({ sent: result.sent, failed: result.failed, total: recipients.length });
         
-        // Update campaign status
-        await fetch(`/api/campaigns/sms-campaigns/${campaignId}`, {
-          method: 'PUT',
-          headers: { 'Content-Type': 'application/json' },
-          credentials: 'include',
-          body: JSON.stringify({
-            status: 'completed',
-            sentCount: result.sent,
-            failedCount: result.failed,
-          }),
-        });
-
-        toast({
-          title: 'Campaign Completed',
-          description: `Sent ${result.sent} messages, ${result.failed} failed (${result.duration}ms)`,
-        });
+        // Show warning if not all numbers have valid credentials
+        if (result.numbersUsed < result.numbersRequested) {
+          toast({
+            title: '⚠️ Warning: Limited Phone Numbers',
+            description: `Only ${result.numbersUsed} of ${result.numbersRequested} selected numbers have valid credentials. All ${result.total} messages will be sent through: ${result.validNumbers?.join(', ')}`,
+            variant: 'destructive',
+            duration: 10000,
+          });
+        } else {
+          toast({
+            title: 'Campaign Started',
+            description: `Sending ${result.total} messages across ${result.numbersUsed} phone numbers...`,
+          });
+        }
+        
+        // Poll for progress updates
+        const pollProgress = async () => {
+          try {
+            const progressRes = await fetch(`/api/campaigns/sms-campaigns/${campaignId}/progress`, {
+              credentials: 'include',
+            });
+            
+            if (progressRes.ok) {
+              const progress = await progressRes.json();
+              setSendingProgress({ 
+                sent: progress.sent, 
+                failed: progress.failed, 
+                total: progress.total 
+              });
+              
+              if (progress.status === 'completed') {
+                setIsSending(false);
+                toast({
+                  title: 'Campaign Completed',
+                  description: `Sent ${progress.sent} messages, ${progress.failed} failed`,
+                });
+                fetchData();
+                setTimeout(() => setShowProgress(false), 3000);
+                return;
+              }
+              
+              // Continue polling
+              setTimeout(pollProgress, 1000);
+            }
+          } catch (err) {
+            console.error('Error polling progress:', err);
+            setTimeout(pollProgress, 2000);
+          }
+        };
+        
+        // Start polling
+        pollProgress();
+        
+        // Refresh data to show updated status
+        fetchData();
       } else {
         throw new Error('Batch send failed');
       }
-
-      fetchData();
     } catch (error: any) {
       console.error('Error starting campaign:', error);
       toast({
@@ -1088,9 +1383,8 @@ export default function SmsCampaigns() {
         description: error.message || 'Failed to start campaign',
         variant: 'destructive'
       });
-    } finally {
       setIsSending(false);
-      setTimeout(() => setShowProgress(false), 3000);
+      setShowProgress(false);
     }
   };
 
@@ -1331,6 +1625,7 @@ export default function SmsCampaigns() {
                             <TableHead>First Name</TableHead>
                             <TableHead>Last Name</TableHead>
                             <TableHead>Email</TableHead>
+                            <TableHead>Debt Loads</TableHead>
                           </TableRow>
                         </TableHeader>
                         <TableBody>
@@ -1346,11 +1641,12 @@ export default function SmsCampaigns() {
                               <TableCell>{contact.firstName || '-'}</TableCell>
                               <TableCell>{contact.lastName || '-'}</TableCell>
                               <TableCell>{contact.email || '-'}</TableCell>
+                              <TableCell>{contact.customFields?.debt_loads || contact.debt_loads || '-'}</TableCell>
                             </TableRow>
                           ))}
                           {uploadedContacts.length > 100 && (
                             <TableRow>
-                              <TableCell colSpan={5} className="text-center text-sm text-muted-foreground py-4">
+                              <TableCell colSpan={6} className="text-center text-sm text-muted-foreground py-4">
                                 Showing first 100 of {uploadedContacts.length} contacts. All contacts will be imported.
                               </TableCell>
                             </TableRow>
@@ -1734,8 +2030,62 @@ export default function SmsCampaigns() {
                 {/* Step 2: Message Content */}
                 {campaignStep === 2 && (
                   <>
+                    {/* Template Selector */}
+                    {messageTemplates.length > 0 && (
+                      <div className="space-y-2 mb-4">
+                        <Label>Load from Saved Template</Label>
+                        <Select
+                          onValueChange={(value) => {
+                            const template = messageTemplates.find(t => t.id === parseInt(value));
+                            if (template) {
+                              setNewCampaign(prev => ({ ...prev, messageTemplate: template.content }));
+                              // Track template usage
+                              fetch(`/api/message-templates/${template.id}/use`, {
+                                method: 'POST',
+                                credentials: 'include'
+                              });
+                              toast({
+                                title: 'Template Loaded',
+                                description: `"${template.name}" template applied`,
+                              });
+                            }
+                          }}
+                        >
+                          <SelectTrigger className="w-full">
+                            <SelectValue placeholder="Select a saved template..." />
+                          </SelectTrigger>
+                          <SelectContent>
+                            {messageTemplates.map(template => (
+                              <SelectItem key={template.id} value={template.id.toString()}>
+                                <div className="flex items-center justify-between w-full">
+                                  <span>{template.name}</span>
+                                  {template.category && (
+                                    <Badge variant="outline" className="ml-2 text-xs">{template.category}</Badge>
+                                  )}
+                                </div>
+                              </SelectItem>
+                            ))}
+                          </SelectContent>
+                        </Select>
+                      </div>
+                    )}
+                    
                     <div className="space-y-2">
-                      <Label htmlFor="messageTemplate">Message Template *</Label>
+                      <div className="flex items-center justify-between">
+                        <Label htmlFor="messageTemplate">Message Template *</Label>
+                        {newCampaign.messageTemplate && (
+                          <Button
+                            type="button"
+                            variant="ghost"
+                            size="sm"
+                            className="h-7 text-xs"
+                            onClick={() => setShowTemplateDialog(true)}
+                          >
+                            <Save className="h-3 w-3 mr-1" />
+                            Save as Template
+                          </Button>
+                        )}
+                      </div>
                       <Textarea
                         id="messageTemplate"
                         placeholder="Hi {first_name}, quick update - we finalized details on an option around ${dollar_amount}. Please call me back here as soon as you can. (857) 800-8971"
@@ -1744,31 +2094,68 @@ export default function SmsCampaigns() {
                         onChange={(e) => setNewCampaign(prev => ({ ...prev, messageTemplate: e.target.value }))}
                       />
                       <div className="bg-blue-50 border border-blue-200 rounded-lg p-3 mt-2">
-                        <p className="text-xs font-medium text-blue-900 mb-2">Available Merge Tags:</p>
-                        <div className="grid grid-cols-2 gap-2 text-xs">
-                          <div className="flex items-center gap-1">
-                            <code className="bg-white px-1.5 py-0.5 rounded text-blue-700">{'{first_name}'}</code>
-                            <span className="text-blue-600">or</span>
-                            <code className="bg-white px-1.5 py-0.5 rounded text-blue-700">{'{{firstName}}'}</code>
-                          </div>
-                          <div className="flex items-center gap-1">
-                            <code className="bg-white px-1.5 py-0.5 rounded text-blue-700">{'{last_name}'}</code>
-                            <span className="text-blue-600">or</span>
-                            <code className="bg-white px-1.5 py-0.5 rounded text-blue-700">{'{{lastName}}'}</code>
-                          </div>
-                          <div className="flex items-center gap-1">
-                            <code className="bg-white px-1.5 py-0.5 rounded text-blue-700">{'{phone}'}</code>
-                            <span className="text-blue-600">or</span>
-                            <code className="bg-white px-1.5 py-0.5 rounded text-blue-700">{'{{phone}}'}</code>
-                          </div>
-                          <div className="flex items-center gap-1">
-                            <code className="bg-white px-1.5 py-0.5 rounded text-blue-700">{'{name}'}</code>
-                            <span className="text-blue-600">or</span>
-                            <code className="bg-white px-1.5 py-0.5 rounded text-blue-700">{'{{name}}'}</code>
-                          </div>
+                        <p className="text-xs font-medium text-blue-900 mb-2">Available Merge Tags (click to insert):</p>
+                        <div className="flex flex-wrap gap-1.5 mb-2">
+                          {/* Standard fields - clickable */}
+                          {['{first_name}', '{last_name}', '{phone}', '{name}'].map(tag => (
+                            <button
+                              key={tag}
+                              type="button"
+                              className="bg-white px-2 py-1 rounded text-blue-700 text-xs border border-blue-200 hover:bg-blue-100 transition-colors"
+                              onClick={() => setNewCampaign(prev => ({ ...prev, messageTemplate: prev.messageTemplate + tag }))}
+                            >
+                              {tag}
+                            </button>
+                          ))}
                         </div>
+                        
+                        {/* Custom fields from uploaded contacts OR selected contact list */}
+                        {(() => {
+                          const customFieldKeys = new Set<string>();
+                          
+                          // Add fields from uploaded contacts (fresh CSV upload)
+                          uploadedContacts.forEach(contact => {
+                            if (contact.customFields) {
+                              Object.keys(contact.customFields).forEach(key => customFieldKeys.add(key));
+                            }
+                            Object.keys(contact).forEach(key => {
+                              if (!['phoneNumber', 'firstName', 'lastName', 'email', 'selected', 'customFields', 'id'].includes(key)) {
+                                customFieldKeys.add(key);
+                              }
+                            });
+                          });
+                          
+                          // Add fields from selected contact list (existing list)
+                          selectedListCustomFields.forEach(key => customFieldKeys.add(key));
+                          
+                          // Filter out middle name fields
+                          const filteredKeys = Array.from(customFieldKeys).filter(key => 
+                            !key.includes('middle') && !key.includes('midl') && key !== 'stdaddr_midlnm'
+                          );
+                          
+                          if (filteredKeys.length === 0) return null;
+                          
+                          return (
+                            <>
+                              <p className="text-xs font-medium text-green-800 mt-2 mb-1">📊 Custom Fields from Your Contact List:</p>
+                              <div className="flex flex-wrap gap-1.5">
+                                {filteredKeys.map(field => (
+                                  <button
+                                    key={field}
+                                    type="button"
+                                    className="bg-green-100 px-2 py-1 rounded text-green-700 text-xs border border-green-300 hover:bg-green-200 transition-colors"
+                                    onClick={() => setNewCampaign(prev => ({ ...prev, messageTemplate: prev.messageTemplate + `{${field}}` }))}
+                                  >
+                                    {`{${field}}`}
+                                  </button>
+                                ))}
+                              </div>
+                            </>
+                          );
+                        })()}
+                        
                         <p className="text-xs text-blue-700 mt-2">
-                          💡 Custom fields from your CSV (like <code className="bg-white px-1.5 py-0.5 rounded">{'{dollar_amount}'}</code>) will be replaced automatically. Set default values below for any variables not in your data.
+                          💡 These tags will be replaced with actual values from your contact data when sending.
                         </p>
                       </div>
                     </div>
@@ -1784,30 +2171,82 @@ export default function SmsCampaigns() {
                         .filter(v => !standardVars.includes(v))
                       )];
                       
+                      // Get all available custom fields from uploaded contacts and selected list
+                      const availableFields = new Set<string>();
+                      uploadedContacts.forEach(contact => {
+                        if (contact.customFields) {
+                          Object.keys(contact.customFields).forEach(key => availableFields.add(key));
+                        }
+                      });
+                      selectedListCustomFields.forEach(key => availableFields.add(key));
+                      
+                      // Check which custom vars are NOT in available fields (need defaults)
+                      const varsNeedingDefaults = customVars.filter(v => !availableFields.has(v));
+                      const varsWithData = customVars.filter(v => availableFields.has(v));
+                      
                       if (customVars.length === 0) return null;
+                      
+                      // Check for dollar_amount -> debt_loads suggestion
+                      const hasDollarAmount = customVars.includes('dollar_amount');
+                      const hasDebtLoads = availableFields.has('debt_loads');
                       
                       return (
                         <div className="bg-amber-50 border border-amber-200 rounded-lg p-3">
                           <p className="text-xs font-medium text-amber-900 mb-2">📝 Custom Variables Detected:</p>
-                          <p className="text-xs text-amber-700 mb-3">
-                            These variables will be replaced with values from your contact list. If a contact doesn't have a value, the default below will be used.
-                          </p>
-                          <div className="space-y-2">
-                            {customVars.map(varName => (
-                              <div key={varName} className="flex items-center gap-2">
-                                <code className="bg-white px-2 py-1 rounded text-amber-700 text-xs min-w-[120px]">{`{${varName}}`}</code>
-                                <Input
-                                  placeholder={`Default value for ${varName}`}
-                                  className="h-8 text-sm flex-1"
-                                  value={newCampaign.customVariables[varName] || ''}
-                                  onChange={(e) => setNewCampaign(prev => ({
-                                    ...prev,
-                                    customVariables: { ...prev.customVariables, [varName]: e.target.value }
-                                  }))}
-                                />
+                          
+                          {/* Show suggestion to use debt_loads instead of dollar_amount */}
+                          {hasDollarAmount && hasDebtLoads && (
+                            <div className="bg-green-100 border border-green-300 rounded p-2 mb-3">
+                              <p className="text-xs text-green-800 font-medium">💡 Tip: Your contact list has <code className="bg-white px-1 rounded">{'{debt_loads}'}</code> data!</p>
+                              <p className="text-xs text-green-700 mt-1">
+                                Replace <code className="bg-white px-1 rounded">${'{dollar_amount}'}</code> with <code className="bg-white px-1 rounded">{'{debt_loads}'}</code> in your message to use the actual values from your CSV.
+                              </p>
+                              <Button
+                                type="button"
+                                size="sm"
+                                variant="outline"
+                                className="mt-2 h-7 text-xs bg-white border-green-400 text-green-700 hover:bg-green-50"
+                                onClick={() => {
+                                  const updatedTemplate = newCampaign.messageTemplate
+                                    .replace(/\$\{dollar_amount\}/g, '{debt_loads}')
+                                    .replace(/\{dollar_amount\}/g, '{debt_loads}');
+                                  setNewCampaign(prev => ({ ...prev, messageTemplate: updatedTemplate }));
+                                }}
+                              >
+                                Replace with {'{debt_loads}'}
+                              </Button>
+                            </div>
+                          )}
+                          
+                          {varsWithData.length > 0 && (
+                            <p className="text-xs text-green-700 mb-2">
+                              ✅ <strong>{varsWithData.map(v => `{${v}}`).join(', ')}</strong> will be replaced with values from your contact list.
+                            </p>
+                          )}
+                          
+                          {varsNeedingDefaults.length > 0 && (
+                            <>
+                              <p className="text-xs text-amber-700 mb-3">
+                                These variables are not in your contact list. Provide default values below:
+                              </p>
+                              <div className="space-y-2">
+                                {varsNeedingDefaults.map(varName => (
+                                  <div key={varName} className="flex items-center gap-2">
+                                    <code className="bg-white px-2 py-1 rounded text-amber-700 text-xs min-w-[120px]">{`{${varName}}`}</code>
+                                    <Input
+                                      placeholder={`Default value for ${varName}`}
+                                      className="h-8 text-sm flex-1"
+                                      value={newCampaign.customVariables[varName] || ''}
+                                      onChange={(e) => setNewCampaign(prev => ({
+                                        ...prev,
+                                        customVariables: { ...prev.customVariables, [varName]: e.target.value }
+                                      }))}
+                                    />
+                                  </div>
+                                ))}
                               </div>
-                            ))}
-                          </div>
+                            </>
+                          )}
                         </div>
                       );
                     })()}
@@ -2087,6 +2526,10 @@ export default function SmsCampaigns() {
             <Users className="mr-2 h-4 w-4" />
             Contact Lists ({contactLists.length})
           </TabsTrigger>
+          <TabsTrigger value="templates">
+            <FileText className="mr-2 h-4 w-4" />
+            Templates ({messageTemplates.length})
+          </TabsTrigger>
         </TabsList>
 
         {/* Campaigns Tab */}
@@ -2339,9 +2782,18 @@ export default function SmsCampaigns() {
                               </Button>
                             </DropdownMenuTrigger>
                             <DropdownMenuContent align="end">
-                              <DropdownMenuItem>View Contacts</DropdownMenuItem>
-                              <DropdownMenuItem>Edit List</DropdownMenuItem>
-                              <DropdownMenuItem>Export CSV</DropdownMenuItem>
+                              <DropdownMenuItem onClick={() => handleViewContacts(list.id, list.name)}>
+                                <Users className="mr-2 h-4 w-4" />
+                                View Contacts
+                              </DropdownMenuItem>
+                              <DropdownMenuItem onClick={() => setEditingList({ id: list.id, name: list.name, description: list.description || '' })}>
+                                <Edit className="mr-2 h-4 w-4" />
+                                Edit List
+                              </DropdownMenuItem>
+                              <DropdownMenuItem onClick={() => handleExportCSV(list.id, list.name)} disabled={isExporting}>
+                                <Download className="mr-2 h-4 w-4" />
+                                Export CSV
+                              </DropdownMenuItem>
                               <DropdownMenuSeparator />
                               <DropdownMenuItem 
                                 className="text-red-600"
@@ -2388,7 +2840,444 @@ export default function SmsCampaigns() {
             </CardContent>
           </Card>
         </TabsContent>
+
+        {/* Templates Tab */}
+        <TabsContent value="templates" className="mt-4">
+          <Card>
+            <CardHeader className="flex flex-row items-center justify-between">
+              <div>
+                <CardTitle>Message Templates</CardTitle>
+                <CardDescription>Create and manage reusable message templates for your campaigns</CardDescription>
+              </div>
+              <Button onClick={() => {
+                setNewTemplate({ name: '', content: '', description: '', category: '' });
+                setShowTemplateDialog(true);
+              }}>
+                <Plus className="mr-2 h-4 w-4" />
+                New Template
+              </Button>
+            </CardHeader>
+            <CardContent>
+              {messageTemplates.length === 0 ? (
+                <div className="text-center py-12">
+                  <FileText className="mx-auto h-12 w-12 text-muted-foreground mb-4" />
+                  <h3 className="text-lg font-semibold mb-2">No templates yet</h3>
+                  <p className="text-muted-foreground mb-4">Create reusable message templates to speed up campaign creation</p>
+                  <Button onClick={() => {
+                    setNewTemplate({ name: '', content: '', description: '', category: '' });
+                    setShowTemplateDialog(true);
+                  }}>
+                    <Plus className="mr-2 h-4 w-4" />
+                    Create Template
+                  </Button>
+                </div>
+              ) : (
+                <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
+                  {messageTemplates.map((template) => (
+                    <Card key={template.id} className="relative">
+                      <CardHeader className="pb-2">
+                        <div className="flex items-start justify-between">
+                          <div>
+                            <CardTitle className="text-base">{template.name}</CardTitle>
+                            {template.category && (
+                              <Badge variant="outline" className="mt-1 text-xs">
+                                {template.category.replace('_', ' ')}
+                              </Badge>
+                            )}
+                          </div>
+                          <DropdownMenu>
+                            <DropdownMenuTrigger asChild>
+                              <Button variant="ghost" size="sm" className="h-8 w-8 p-0">
+                                <MoreHorizontal className="h-4 w-4" />
+                              </Button>
+                            </DropdownMenuTrigger>
+                            <DropdownMenuContent align="end">
+                              <DropdownMenuItem onClick={() => {
+                                setNewCampaign(prev => ({ ...prev, messageTemplate: template.content }));
+                                setActiveTab('campaigns');
+                                setShowNewCampaign(true);
+                                setCampaignStep(2);
+                                toast({
+                                  title: 'Template Applied',
+                                  description: `"${template.name}" loaded into new campaign`,
+                                });
+                              }}>
+                                <Send className="mr-2 h-4 w-4" />
+                                Use in Campaign
+                              </DropdownMenuItem>
+                              <DropdownMenuItem onClick={() => {
+                                navigator.clipboard.writeText(template.content);
+                                toast({
+                                  title: 'Copied',
+                                  description: 'Template content copied to clipboard',
+                                });
+                              }}>
+                                <Copy className="mr-2 h-4 w-4" />
+                                Copy Content
+                              </DropdownMenuItem>
+                              <DropdownMenuItem onClick={() => {
+                                setNewTemplate({
+                                  name: template.name,
+                                  content: template.content,
+                                  description: template.description || '',
+                                  category: template.category || ''
+                                });
+                                setEditingTemplateId(template.id);
+                                setShowTemplateDialog(true);
+                              }}>
+                                <Edit className="mr-2 h-4 w-4" />
+                                Edit
+                              </DropdownMenuItem>
+                              <DropdownMenuSeparator />
+                              <DropdownMenuItem 
+                                className="text-red-600"
+                                onClick={async () => {
+                                  if (confirm(`Delete template "${template.name}"?`)) {
+                                    try {
+                                      const res = await fetch(`/api/message-templates/${template.id}`, {
+                                        method: 'DELETE',
+                                        credentials: 'include'
+                                      });
+                                      if (res.ok) {
+                                        setMessageTemplates(prev => prev.filter(t => t.id !== template.id));
+                                        toast({
+                                          title: 'Deleted',
+                                          description: 'Template deleted successfully',
+                                        });
+                                      }
+                                    } catch (error) {
+                                      toast({
+                                        title: 'Error',
+                                        description: 'Failed to delete template',
+                                        variant: 'destructive'
+                                      });
+                                    }
+                                  }
+                                }}
+                              >
+                                <Trash2 className="mr-2 h-4 w-4" />
+                                Delete
+                              </DropdownMenuItem>
+                            </DropdownMenuContent>
+                          </DropdownMenu>
+                        </div>
+                      </CardHeader>
+                      <CardContent className="pt-0">
+                        <p className="text-sm text-muted-foreground line-clamp-3 mb-2">
+                          {template.content}
+                        </p>
+                        {template.description && (
+                          <p className="text-xs text-muted-foreground italic">
+                            {template.description}
+                          </p>
+                        )}
+                      </CardContent>
+                      <CardFooter className="text-xs text-muted-foreground pt-0 flex justify-between">
+                        <span>Used {template.usageCount || 0} times</span>
+                        <span>{new Date(template.createdAt).toLocaleDateString()}</span>
+                      </CardFooter>
+                    </Card>
+                  ))}
+                </div>
+              )}
+            </CardContent>
+          </Card>
+        </TabsContent>
       </Tabs>
+      
+      {/* Save/Edit Template Dialog */}
+      <Dialog open={showTemplateDialog} onOpenChange={(open) => {
+        setShowTemplateDialog(open);
+        if (!open) {
+          setEditingTemplateId(null);
+          setNewTemplate({ name: '', content: '', description: '', category: '' });
+        }
+      }}>
+        <DialogContent className="sm:max-w-[500px]">
+          <DialogHeader>
+            <DialogTitle>{editingTemplateId ? 'Edit Template' : 'Create Template'}</DialogTitle>
+            <DialogDescription>
+              {editingTemplateId ? 'Update your message template.' : 'Create a reusable message template for your campaigns.'}
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-4 py-4">
+            <div className="space-y-2">
+              <Label htmlFor="templateName">Template Name *</Label>
+              <Input
+                id="templateName"
+                placeholder="e.g., Debt Collection Follow-up"
+                value={newTemplate.name}
+                onChange={(e) => setNewTemplate(prev => ({ ...prev, name: e.target.value }))}
+              />
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="templateContent">Message Content *</Label>
+              <Textarea
+                id="templateContent"
+                placeholder="Hi {first_name}, quick update - we finalized details on an option around ${dollar_amount}. Please call me back here as soon as you can."
+                className="min-h-[120px]"
+                value={newTemplate.content || newCampaign.messageTemplate}
+                onChange={(e) => setNewTemplate(prev => ({ ...prev, content: e.target.value }))}
+              />
+              
+              {/* Available Merge Tags */}
+              <div className="bg-blue-50 border border-blue-200 rounded-lg p-3">
+                <p className="text-xs font-medium text-blue-900 mb-2">Available Merge Tags (click to insert):</p>
+                <div className="flex flex-wrap gap-1.5 mb-2">
+                  {/* Standard fields */}
+                  {['{first_name}', '{last_name}', '{phone}', '{name}'].map(tag => (
+                    <button
+                      key={tag}
+                      type="button"
+                      className="bg-white px-2 py-1 rounded text-blue-700 text-xs border border-blue-200 hover:bg-blue-100 transition-colors"
+                      onClick={() => {
+                        const content = newTemplate.content || newCampaign.messageTemplate || '';
+                        setNewTemplate(prev => ({ ...prev, content: content + tag }));
+                      }}
+                    >
+                      {tag}
+                    </button>
+                  ))}
+                </div>
+                
+                {/* Custom fields from uploaded contacts */}
+                {(() => {
+                  // Get unique custom field keys from uploaded contacts
+                  const customFieldKeys = new Set<string>();
+                  uploadedContacts.forEach(contact => {
+                    if (contact.customFields) {
+                      Object.keys(contact.customFields).forEach(key => customFieldKeys.add(key));
+                    }
+                    // Also check for fields directly on contact (legacy format)
+                    Object.keys(contact).forEach(key => {
+                      if (!['phoneNumber', 'firstName', 'lastName', 'email', 'selected', 'customFields', 'id'].includes(key)) {
+                        customFieldKeys.add(key);
+                      }
+                    });
+                  });
+                  
+                  // Filter out middle name fields
+                  const filteredKeys = Array.from(customFieldKeys).filter(key => 
+                    !key.includes('middle') && !key.includes('midl') && key !== 'stdaddr_midlnm'
+                  );
+                  
+                  if (filteredKeys.length === 0) return null;
+                  
+                  return (
+                    <>
+                      <p className="text-xs font-medium text-green-800 mt-2 mb-1">📊 Custom Fields from Your CSV:</p>
+                      <div className="flex flex-wrap gap-1.5">
+                        {filteredKeys.map(field => (
+                          <button
+                            key={field}
+                            type="button"
+                            className="bg-green-100 px-2 py-1 rounded text-green-700 text-xs border border-green-300 hover:bg-green-200 transition-colors"
+                            onClick={() => {
+                              const content = newTemplate.content || newCampaign.messageTemplate || '';
+                              setNewTemplate(prev => ({ ...prev, content: content + `{${field}}` }));
+                            }}
+                          >
+                            {`{${field}}`}
+                          </button>
+                        ))}
+                      </div>
+                    </>
+                  );
+                })()}
+                
+                <p className="text-xs text-blue-600 mt-2">
+                  💡 These tags will be replaced with actual values from your contact data when sending.
+                </p>
+              </div>
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="templateCategory">Category</Label>
+              <Select
+                value={newTemplate.category}
+                onValueChange={(value) => setNewTemplate(prev => ({ ...prev, category: value }))}
+              >
+                <SelectTrigger>
+                  <SelectValue placeholder="Select a category..." />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="debt_collection">Debt Collection</SelectItem>
+                  <SelectItem value="marketing">Marketing</SelectItem>
+                  <SelectItem value="notifications">Notifications</SelectItem>
+                  <SelectItem value="reminders">Reminders</SelectItem>
+                  <SelectItem value="other">Other</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="templateDescription">Description (optional)</Label>
+              <Input
+                id="templateDescription"
+                placeholder="Brief description of when to use this template"
+                value={newTemplate.description}
+                onChange={(e) => setNewTemplate(prev => ({ ...prev, description: e.target.value }))}
+              />
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => {
+              setShowTemplateDialog(false);
+              setEditingTemplateId(null);
+              setNewTemplate({ name: '', content: '', description: '', category: '' });
+            }}>
+              Cancel
+            </Button>
+            <Button
+              onClick={async () => {
+                const content = newTemplate.content || newCampaign.messageTemplate;
+                if (!newTemplate.name || !content) {
+                  toast({
+                    title: 'Error',
+                    description: 'Template name and content are required',
+                    variant: 'destructive'
+                  });
+                  return;
+                }
+                try {
+                  const url = editingTemplateId 
+                    ? `/api/message-templates/${editingTemplateId}`
+                    : '/api/message-templates';
+                  const method = editingTemplateId ? 'PUT' : 'POST';
+                  
+                  const res = await fetch(url, {
+                    method,
+                    headers: { 'Content-Type': 'application/json' },
+                    credentials: 'include',
+                    body: JSON.stringify({
+                      name: newTemplate.name,
+                      content: content,
+                      description: newTemplate.description,
+                      category: newTemplate.category,
+                    }),
+                  });
+                  if (res.ok) {
+                    const data = await res.json();
+                    if (editingTemplateId) {
+                      setMessageTemplates(prev => prev.map(t => t.id === editingTemplateId ? data.template : t));
+                    } else {
+                      setMessageTemplates(prev => [...prev, data.template]);
+                    }
+                    setShowTemplateDialog(false);
+                    setEditingTemplateId(null);
+                    setNewTemplate({ name: '', content: '', description: '', category: '' });
+                    toast({
+                      title: editingTemplateId ? 'Template Updated' : 'Template Saved',
+                      description: `"${newTemplate.name}" has been ${editingTemplateId ? 'updated' : 'saved'}`,
+                    });
+                  } else {
+                    throw new Error('Failed to save template');
+                  }
+                } catch (error) {
+                  toast({
+                    title: 'Error',
+                    description: 'Failed to save template',
+                    variant: 'destructive'
+                  });
+                }
+              }}
+            >
+              <Save className="h-4 w-4 mr-2" />
+              Save Template
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* View Contacts Dialog */}
+      <Dialog open={!!viewingList} onOpenChange={(open) => !open && setViewingList(null)}>
+        <DialogContent className="sm:max-w-[800px] max-h-[80vh]">
+          <DialogHeader>
+            <DialogTitle>Contacts in "{viewingList?.name}"</DialogTitle>
+            <DialogDescription>
+              {viewingList?.contacts.length || 0} contacts in this list
+            </DialogDescription>
+          </DialogHeader>
+          <ScrollArea className="h-[400px] rounded-md border">
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead>Phone Number</TableHead>
+                  <TableHead>First Name</TableHead>
+                  <TableHead>Last Name</TableHead>
+                  <TableHead>Email</TableHead>
+                  <TableHead>Debt Loads</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {viewingList?.contacts.slice(0, 100).map((contact, index) => (
+                  <TableRow key={index}>
+                    <TableCell className="font-mono">{contact.phoneNumber}</TableCell>
+                    <TableCell>{contact.firstName || '-'}</TableCell>
+                    <TableCell>{contact.lastName || '-'}</TableCell>
+                    <TableCell>{contact.email || '-'}</TableCell>
+                    <TableCell>{contact.customFields?.debt_loads || '-'}</TableCell>
+                  </TableRow>
+                ))}
+                {(viewingList?.contacts.length || 0) > 100 && (
+                  <TableRow>
+                    <TableCell colSpan={5} className="text-center text-sm text-muted-foreground py-4">
+                      Showing first 100 of {viewingList?.contacts.length} contacts
+                    </TableCell>
+                  </TableRow>
+                )}
+              </TableBody>
+            </Table>
+          </ScrollArea>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setViewingList(null)}>
+              Close
+            </Button>
+            <Button onClick={() => viewingList && handleExportCSV(viewingList.id, viewingList.name)}>
+              <Download className="h-4 w-4 mr-2" />
+              Export CSV
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Edit List Dialog */}
+      <Dialog open={!!editingList} onOpenChange={(open) => !open && setEditingList(null)}>
+        <DialogContent className="sm:max-w-[425px]">
+          <DialogHeader>
+            <DialogTitle>Edit Contact List</DialogTitle>
+            <DialogDescription>
+              Update the name and description of this contact list.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-4 py-4">
+            <div className="space-y-2">
+              <Label htmlFor="editListName">List Name *</Label>
+              <Input
+                id="editListName"
+                value={editingList?.name || ''}
+                onChange={(e) => setEditingList(prev => prev ? { ...prev, name: e.target.value } : null)}
+              />
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="editListDescription">Description</Label>
+              <Input
+                id="editListDescription"
+                placeholder="Optional description"
+                value={editingList?.description || ''}
+                onChange={(e) => setEditingList(prev => prev ? { ...prev, description: e.target.value } : null)}
+              />
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setEditingList(null)}>
+              Cancel
+            </Button>
+            <Button onClick={handleEditList} disabled={!editingList?.name}>
+              <Save className="h-4 w-4 mr-2" />
+              Save Changes
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

@@ -52,13 +52,16 @@ interface NavItem {
   badge?: number;
 }
 
-const adminItems: NavItem[] = [
+// Admin-only items (super_admin role)
+const adminOnlyItems: NavItem[] = [
   { title: 'Users', href: '/users', icon: Users },
   { title: 'Sub-Accounts', href: '/subaccounts', icon: Building2 },
-  { title: 'API & Integrations', href: '/api-integration', icon: Plug },
-  // { title: 'Compliance', href: '/compliance', icon: Shield }, // Hidden temporarily
   { title: 'Activity Logs', href: '/logs', icon: ClipboardList },
-  // { title: 'Billing', href: '/billing', icon: CreditCard }, // Hidden temporarily
+];
+
+// Settings items for all users
+const settingsItems: NavItem[] = [
+  { title: 'API & Integrations', href: '/api-integration', icon: Plug },
   { title: 'Settings', href: '/settings', icon: Settings },
 ];
 
@@ -67,6 +70,9 @@ export const Sidebar = memo(function Sidebar() {
   const { user } = useAuth();
   const { analytics } = useTwilioAnalytics();
   const { currentAccount, accounts, selectAccount, isOverviewMode, selectOverview } = useAccount();
+  
+  // Determine if user is admin (super_admin) or client (user)
+  const isAdmin = user?.role === 'super_admin' || user?.role === 'admin';
 
   // Memoize inbox count calculation
   const inboxCount = useMemo(() => {
@@ -180,13 +186,41 @@ export const Sidebar = memo(function Sidebar() {
 
           <Separator className="my-3" />
 
-          <div className="space-y-1 py-2">
-            <div className="px-3 py-2">
-              <h2 className="mb-2 px-2 text-xs font-semibold tracking-tight text-gray-500 uppercase">
-                Administration
-              </h2>
+          {/* Admin-only section */}
+          {isAdmin && (
+            <div className="space-y-1 py-2">
+              <div className="px-3 py-2">
+                <h2 className="mb-2 px-2 text-xs font-semibold tracking-tight text-gray-500 uppercase">
+                  Administration
+                </h2>
+              </div>
+              {adminOnlyItems.map((item) => {
+                const Icon = item.icon;
+                const isActive = location === item.href;
+                
+                return (
+                  <Link key={item.href} href={item.href}>
+                    <Button
+                      variant={isActive ? 'secondary' : 'ghost'}
+                      className={cn(
+                        'w-full justify-start gap-3 px-3',
+                        isActive && 'bg-blue-50 text-blue-700 hover:bg-blue-100 hover:text-blue-800'
+                      )}
+                    >
+                      <Icon className="h-4 w-4" />
+                      <span className="flex-1 text-left">{item.title}</span>
+                    </Button>
+                  </Link>
+                );
+              })}
             </div>
-            {adminItems.map((item) => {
+          )}
+
+          <Separator className="my-3" />
+
+          {/* Settings section - visible to all users */}
+          <div className="space-y-1 py-2">
+            {settingsItems.map((item) => {
               const Icon = item.icon;
               const isActive = location === item.href;
               

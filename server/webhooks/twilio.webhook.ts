@@ -10,8 +10,8 @@
 
 import { Router, Request, Response } from 'express';
 import { db } from '../db';
-import { smsMessages, voiceCalls } from '../../shared/schema';
-import { eq } from 'drizzle-orm';
+import { smsMessages, voiceCalls, smsCampaigns, campaignRecipients } from '../../shared/schema';
+import { eq, sql } from 'drizzle-orm';
 import { redisService, CacheKeys } from '../services/redisService';
 import { messageService } from '../services/messageService';
 
@@ -86,6 +86,7 @@ router.post('/message-status', async (req: Request, res: Response) => {
 
     if (existingMessages.length > 0) {
       const message = existingMessages[0];
+      const previousStatus = message.status;
       
       // Update message status
       await db
@@ -94,6 +95,28 @@ router.post('/message-status', async (req: Request, res: Response) => {
           status: webhook.MessageStatus,
         })
         .where(eq(smsMessages.id, message.id));
+
+      // If message was delivered, update campaign delivered count
+      if (webhook.MessageStatus === 'delivered' && previousStatus !== 'delivered') {
+        // Find the campaign this message belongs to via the recipient's phone number
+        const recipients = await db
+          .select({ campaignId: campaignRecipients.campaignId })
+          .from(campaignRecipients)
+          .where(eq(campaignRecipients.phoneNumber, message.to))
+          .limit(1);
+        
+        if (recipients.length > 0) {
+          const campaignId = recipients[0].campaignId;
+          await db
+            .update(smsCampaigns)
+            .set({
+              deliveredCount: sql`${smsCampaigns.deliveredCount} + 1`,
+            })
+            .where(eq(smsCampaigns.id, campaignId));
+          
+          console.log(`[Twilio Webhook] Incremented delivered count for campaign ${campaignId}`);
+        }
+      }
 
       // Invalidate cache for this account
       if (message.accountId) {

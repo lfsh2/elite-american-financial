@@ -33,23 +33,36 @@ interface NavItem {
   badge?: number;
 }
 
-const navItems: NavItem[] = [
+// Common nav items for all users
+const commonNavItems: NavItem[] = [
   { href: '/dashboard', icon: LayoutDashboard, label: 'Dashboard' },
   { href: '/analytics', icon: TrendingUp, label: 'Analytics' },
   { href: '/messaging', icon: MessageSquare, label: 'Messaging', badge: 3 },
   { href: '/voice', icon: Phone, label: 'Voice Calls' },
-  { href: '/email', icon: Mail, label: 'Email' },
-  { href: '/campaigns', icon: Megaphone, label: 'Campaigns' },
+  { href: '/contacts', icon: Users, label: 'Contacts' },
+  { href: '/campaigns', icon: Megaphone, label: 'SMS Campaigns' },
+  { href: '/compliance', icon: Shield, label: 'A2P Compliance' },
   { href: '/phone-numbers', icon: Hash, label: 'Phone Numbers' },
 ];
 
-const adminItems: NavItem[] = [
+// Additional items only for super_admin
+const adminOnlyItems: NavItem[] = [
+  { href: '/email', icon: Mail, label: 'Email' },
   { href: '/users', icon: Users, label: 'Users' },
   { href: '/subaccounts', icon: Building2, label: 'Sub-Accounts' },
-  { href: '/api-integration', icon: Plug, label: 'API & Integrations' },
-  { href: '/compliance', icon: Shield, label: 'Compliance' },
   { href: '/logs', icon: ClipboardList, label: 'Activity Logs' },
   { href: '/billing', icon: CreditCard, label: 'Billing' },
+];
+
+// Items for client users (user role)
+const clientSettingsItems: NavItem[] = [
+  { href: '/api-integration', icon: Plug, label: 'API & Integrations' },
+  { href: '/settings', icon: Settings, label: 'Settings' },
+];
+
+// Admin settings items
+const adminSettingsItems: NavItem[] = [
+  { href: '/api-integration', icon: Plug, label: 'API & Integrations' },
   { href: '/settings', icon: Settings, label: 'Settings' },
 ];
 
@@ -57,6 +70,9 @@ export function ModernSidebar() {
   const [location] = useLocation();
   const { user, logout } = useAuth();
   const [isCollapsed, setIsCollapsed] = useState(false);
+  
+  // Determine if user is admin (super_admin) or client (user)
+  const isAdmin = user?.role === 'super_admin' || user?.role === 'admin';
 
   const NavLink = ({ item }: { item: NavItem }) => {
     const isActive = location === item.href;
@@ -120,13 +136,11 @@ export function ModernSidebar() {
               exit={{ opacity: 0 }}
               className="flex items-center gap-3"
             >
-              <div className="w-10 h-10 bg-gradient-to-br from-blue-400 to-blue-600 rounded-xl flex items-center justify-center shadow-lg">
-                <MessageSquare className="w-6 h-6 text-white" />
-              </div>
-              <div>
-                <h1 className="text-xl font-bold">Elite Financial</h1>
-                <p className="text-xs text-blue-200">Communications</p>
-              </div>
+              <img 
+                src="/logo.png" 
+                alt="TextFlow" 
+                className="h-10 w-auto object-contain brightness-0 invert"
+              />
             </motion.div>
           )}
         </AnimatePresence>
@@ -144,19 +158,36 @@ export function ModernSidebar() {
 
       {/* Navigation */}
       <div className="flex-1 overflow-y-auto px-3 py-4 space-y-1 scrollbar-thin scrollbar-thumb-white/10">
-        {navItems.map((item) => (
+        {/* Common items for all users */}
+        {commonNavItems.map((item) => (
           <NavLink key={item.href} item={item} />
         ))}
 
+        {/* Admin-only items */}
+        {isAdmin && (
+          <>
+            {!isCollapsed && (
+              <div className="pt-4 pb-2">
+                <p className="px-3 text-xs font-semibold text-blue-200 uppercase tracking-wider">
+                  Administration
+                </p>
+              </div>
+            )}
+            {adminOnlyItems.map((item) => (
+              <NavLink key={item.href} item={item} />
+            ))}
+          </>
+        )}
+
+        {/* Settings section */}
         {!isCollapsed && (
           <div className="pt-4 pb-2">
             <p className="px-3 text-xs font-semibold text-blue-200 uppercase tracking-wider">
-              Admin
+              Settings
             </p>
           </div>
         )}
-
-        {adminItems.map((item) => (
+        {(isAdmin ? adminSettingsItems : clientSettingsItems).map((item) => (
           <NavLink key={item.href} item={item} />
         ))}
       </div>

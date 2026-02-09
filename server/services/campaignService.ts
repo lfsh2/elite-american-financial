@@ -112,6 +112,12 @@ export async function importContacts(
     const existing = existingMap.get(phone);
     
     if (existing) {
+      // Merge custom fields: existing fields + new fields (new overrides existing)
+      const mergedCustomFields = {
+        ...((existing.customFields as Record<string, any>) || {}),
+        ...(row.customFields || {}),
+      };
+      
       toUpdate.push({
         id: existing.id,
         data: {
@@ -119,6 +125,7 @@ export async function importContacts(
           lastName: row.lastName || existing.lastName,
           email: row.email || existing.email,
           tags: row.tags || existing.tags,
+          customFields: Object.keys(mergedCustomFields).length > 0 ? mergedCustomFields : existing.customFields,
         }
       });
       contactPhoneMap.set(phone, existing.id);
@@ -131,6 +138,7 @@ export async function importContacts(
         lastName: row.lastName,
         email: row.email,
         tags: row.tags,
+        customFields: row.customFields && Object.keys(row.customFields).length > 0 ? row.customFields : undefined,
         createdAt: new Date(),
       });
     }
@@ -828,6 +836,7 @@ export async function addRecipientsFromContactList(
     phoneNumber: string;
     firstName: string | null;
     lastName: string | null;
+    customFields: Record<string, any> | null;
     status: string;
   }> = [];
 
@@ -857,6 +866,7 @@ export async function addRecipientsFromContactList(
       phoneNumber: contact.phoneNumber,
       firstName: contact.firstName,
       lastName: contact.lastName,
+      customFields: (contact.customFields as Record<string, any>) || null,
       status: 'pending',
     });
 

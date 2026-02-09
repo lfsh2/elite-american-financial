@@ -116,6 +116,48 @@ export interface IStorage {
   updateWebhook(id: number, updates: Partial<Webhook>): Promise<Webhook | undefined>;
   deleteWebhook(id: number): Promise<boolean>;
   updateWebhookFailCount(id: number, failCount: number, lastResponse?: any): Promise<boolean>;
+  
+  // User Phone Assignments
+  getUserPhoneAssignments(userId: number): Promise<UserPhoneAssignmentWithDetails[]>;
+  assignPhoneToUser(assignment: InsertUserPhoneAssignment): Promise<UserPhoneAssignment>;
+  removePhoneAssignment(assignmentId: number, userId: number): Promise<boolean>;
+  getAvailablePhoneNumbers(): Promise<AccountPhoneNumberWithAccount[]>;
+}
+
+// Types for phone assignments
+interface UserPhoneAssignment {
+  id: number;
+  userId: number;
+  phoneNumberId: number;
+  isPrimary: boolean | null;
+  canSend: boolean | null;
+  canReceive: boolean | null;
+  assignedAt: Date;
+  assignedBy: number | null;
+}
+
+interface InsertUserPhoneAssignment {
+  userId: number;
+  phoneNumberId: number;
+  isPrimary?: boolean;
+  canSend?: boolean;
+  canReceive?: boolean;
+  assignedBy?: number;
+}
+
+interface UserPhoneAssignmentWithDetails extends UserPhoneAssignment {
+  phoneNumber?: string;
+  friendlyName?: string;
+  accountName?: string;
+}
+
+interface AccountPhoneNumberWithAccount {
+  id: number;
+  phoneNumber: string;
+  friendlyName: string | null;
+  accountId: number;
+  accountName?: string;
+  isAssigned?: boolean;
 }
 
 export class MemStorage implements IStorage {
@@ -176,8 +218,8 @@ export class MemStorage implements IStorage {
       password: "admin123", // In real app, would be hashed
       firstName: "Admin",
       lastName: "User",
-      email: "admin@eliteamericanfinancials.com",
-      role: "admin"
+      email: "admin@textflow.ai",
+      role: "super_admin"
     });
   }
 
@@ -204,9 +246,22 @@ export class MemStorage implements IStorage {
     
     const user: User = {
       id,
-      ...userData,
+      username: userData.username,
+      password: userData.password,
+      firstName: userData.firstName,
+      lastName: userData.lastName,
+      email: userData.email,
+      role: userData.role || 'user',
+      status: (userData as any).status || 'active',
       credits: 100, // Give new users some initial credits
+      parentId: userData.parentId || null,
       isSubAccount: !!userData.parentId,
+      assignedPhoneNumberId: null,
+      autoRefillEnabled: false,
+      autoRefillThreshold: 100,
+      autoRefillAmount: 1000,
+      createdAt: now,
+      lastLoginAt: null,
     };
     
     this.users.set(id, user);
@@ -613,6 +668,481 @@ export class MemStorage implements IStorage {
       this.appleBusinessRegistrations.set(id, registration);
     }
   }
+
+  // ============================================
+  // USER PHONE ASSIGNMENTS
+  // ============================================
+  
+  private userPhoneAssignments: Map<number, UserPhoneAssignment> = new Map();
+  private phoneAssignmentIdCounter: number = 1;
+  
+  // Mock phone numbers for testing (in production, these come from accountPhoneNumbers table)
+  private mockPhoneNumbers: AccountPhoneNumberWithAccount[] = [
+    { id: 1, phoneNumber: '+18005551234', friendlyName: 'Main Line', accountId: 1, accountName: 'NMWR LLC', isAssigned: false },
+    { id: 2, phoneNumber: '+18005555678', friendlyName: 'Support Line', accountId: 1, accountName: 'NMWR LLC', isAssigned: false },
+    { id: 3, phoneNumber: '+18005559012', friendlyName: 'Sales Line', accountId: 2, accountName: 'Software Integration', isAssigned: false },
+  ];
+
+  async getUserPhoneAssignments(userId: number): Promise<UserPhoneAssignmentWithDetails[]> {
+    const assignments = Array.from(this.userPhoneAssignments.values())
+      .filter(a => a.userId === userId);
+    
+    // Enrich with phone number details
+    return assignments.map(assignment => {
+      const phoneNumber = this.mockPhoneNumbers.find(p => p.id === assignment.phoneNumberId);
+      return {
+        ...assignment,
+        phoneNumber: phoneNumber?.phoneNumber,
+        friendlyName: phoneNumber?.friendlyName || undefined,
+        accountName: phoneNumber?.accountName,
+      };
+    });
+  }
+
+  async assignPhoneToUser(assignment: InsertUserPhoneAssignment): Promise<UserPhoneAssignment> {
+    const id = this.phoneAssignmentIdCounter++;
+    
+    // If this is marked as primary, unset other primaries for this user
+    if (assignment.isPrimary) {
+      const entries = Array.from(this.userPhoneAssignments.entries());
+      for (let i = 0; i < entries.length; i++) {
+        const [key, existing] = entries[i];
+        if (existing.userId === assignment.userId && existing.isPrimary) {
+          existing.isPrimary = false;
+          this.userPhoneAssignments.set(key, existing);
+        }
+      }
+    }
+    
+    const newAssignment: UserPhoneAssignment = {
+      id,
+      userId: assignment.userId,
+      phoneNumberId: assignment.phoneNumberId,
+      isPrimary: assignment.isPrimary ?? false,
+      canSend: assignment.canSend ?? true,
+      canReceive: assignment.canReceive ?? true,
+      assignedAt: new Date(),
+      assignedBy: assignment.assignedBy ?? null,
+    };
+    
+    this.userPhoneAssignments.set(id, newAssignment);
+    
+    // Mark phone as assigned
+    const phoneIdx = this.mockPhoneNumbers.findIndex(p => p.id === assignment.phoneNumberId);
+    if (phoneIdx >= 0) {
+      this.mockPhoneNumbers[phoneIdx].isAssigned = true;
+    }
+    
+    return newAssignment;
+  }
+
+  async removePhoneAssignment(assignmentId: number, userId: number): Promise<boolean> {
+    const assignment = this.userPhoneAssignments.get(assignmentId);
+    if (!assignment || assignment.userId !== userId) {
+      return false;
+    }
+    
+    // Mark phone as available again
+    const phoneIdx = this.mockPhoneNumbers.findIndex(p => p.id === assignment.phoneNumberId);
+    if (phoneIdx >= 0) {
+      // Check if any other user has this phone assigned
+      const otherAssignments = Array.from(this.userPhoneAssignments.values())
+        .filter(a => a.phoneNumberId === assignment.phoneNumberId && a.id !== assignmentId);
+      if (otherAssignments.length === 0) {
+        this.mockPhoneNumbers[phoneIdx].isAssigned = false;
+      }
+    }
+    
+    this.userPhoneAssignments.delete(assignmentId);
+    return true;
+  }
+
+  async getAvailablePhoneNumbers(): Promise<AccountPhoneNumberWithAccount[]> {
+    // Return all phone numbers with their assignment status
+    return this.mockPhoneNumbers.map(phone => ({
+      ...phone,
+      isAssigned: Array.from(this.userPhoneAssignments.values())
+        .some(a => a.phoneNumberId === phone.id),
+    }));
+  }
+
+  // ============================================
+  // USER PRICING & BILLING
+  // ============================================
+  
+  private userPricingConfigs: Map<number, UserPricingConfigData> = new Map();
+  private userUsageRecords: Map<number, UserUsageRecordData[]> = new Map();
+  private userBillingSummaries: Map<number, UserBillingSummaryData[]> = new Map();
+  private usageRecordIdCounter: number = 1;
+  private billingSummaryIdCounter: number = 1;
+
+  async getUserPricingConfig(userId: number): Promise<UserPricingConfigData | undefined> {
+    return this.userPricingConfigs.get(userId);
+  }
+
+  async upsertUserPricingConfig(config: InsertUserPricingConfigData): Promise<UserPricingConfigData> {
+    const existing = this.userPricingConfigs.get(config.userId);
+    const now = new Date();
+    
+    if (existing) {
+      const updated: UserPricingConfigData = {
+        ...existing,
+        ...config,
+        updatedAt: now,
+      };
+      this.userPricingConfigs.set(config.userId, updated);
+      return updated;
+    }
+    
+    const newConfig: UserPricingConfigData = {
+      id: config.userId, // Use userId as id for simplicity
+      userId: config.userId,
+      smsOutboundRate: config.smsOutboundRate || "0.015",
+      smsInboundRate: config.smsInboundRate || "0.01",
+      mmsOutboundRate: config.mmsOutboundRate || "0.05",
+      mmsInboundRate: config.mmsInboundRate || "0.03",
+      monthlyPhoneNumberFee: config.monthlyPhoneNumberFee || "0",
+      billingCycleDay: config.billingCycleDay || 1,
+      createdAt: now,
+      updatedAt: now,
+    };
+    
+    this.userPricingConfigs.set(config.userId, newConfig);
+    return newConfig;
+  }
+
+  async getUserUsageRecords(userId: number, startDate?: Date, endDate?: Date): Promise<UserUsageRecordData[]> {
+    const records = this.userUsageRecords.get(userId) || [];
+    
+    if (!startDate && !endDate) {
+      return records;
+    }
+    
+    return records.filter(record => {
+      const recordDate = new Date(record.createdAt);
+      if (startDate && recordDate < startDate) return false;
+      if (endDate && recordDate > endDate) return false;
+      return true;
+    });
+  }
+
+  async createUsageRecord(record: InsertUserUsageRecordData): Promise<UserUsageRecordData> {
+    const id = this.usageRecordIdCounter++;
+    const newRecord: UserUsageRecordData = {
+      id,
+      userId: record.userId,
+      phoneNumberId: record.phoneNumberId || null,
+      messageType: record.messageType,
+      direction: record.direction,
+      segmentCount: record.segmentCount || 1,
+      rateApplied: record.rateApplied,
+      cost: record.cost,
+      messageSid: record.messageSid || null,
+      smsMessageId: record.smsMessageId || null,
+      createdAt: new Date(),
+    };
+    
+    const userRecords = this.userUsageRecords.get(record.userId) || [];
+    userRecords.push(newRecord);
+    this.userUsageRecords.set(record.userId, userRecords);
+    
+    return newRecord;
+  }
+
+  async getUserBillingSummaries(userId: number): Promise<UserBillingSummaryData[]> {
+    return this.userBillingSummaries.get(userId) || [];
+  }
+
+  async createBillingSummary(summary: InsertUserBillingSummaryData): Promise<UserBillingSummaryData> {
+    const id = this.billingSummaryIdCounter++;
+    const newSummary: UserBillingSummaryData = {
+      id,
+      userId: summary.userId,
+      periodStart: summary.periodStart,
+      periodEnd: summary.periodEnd,
+      totalSmsOutbound: summary.totalSmsOutbound || 0,
+      totalSmsInbound: summary.totalSmsInbound || 0,
+      totalMmsOutbound: summary.totalMmsOutbound || 0,
+      totalMmsInbound: summary.totalMmsInbound || 0,
+      smsCost: summary.smsCost || "0",
+      mmsCost: summary.mmsCost || "0",
+      phoneNumberFees: summary.phoneNumberFees || "0",
+      totalCost: summary.totalCost || "0",
+      status: summary.status || "pending",
+      paidAt: null,
+      createdAt: new Date(),
+    };
+    
+    const userSummaries = this.userBillingSummaries.get(summary.userId) || [];
+    userSummaries.push(newSummary);
+    this.userBillingSummaries.set(summary.userId, userSummaries);
+    
+    return newSummary;
+  }
+}
+
+// Types for pricing and billing
+interface UserPricingConfigData {
+  id: number;
+  userId: number;
+  smsOutboundRate: string;
+  smsInboundRate: string;
+  mmsOutboundRate: string;
+  mmsInboundRate: string;
+  monthlyPhoneNumberFee: string;
+  billingCycleDay: number;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+interface InsertUserPricingConfigData {
+  userId: number;
+  smsOutboundRate?: string;
+  smsInboundRate?: string;
+  mmsOutboundRate?: string;
+  mmsInboundRate?: string;
+  monthlyPhoneNumberFee?: string;
+  billingCycleDay?: number;
+}
+
+interface UserUsageRecordData {
+  id: number;
+  userId: number;
+  phoneNumberId: number | null;
+  messageType: string;
+  direction: string;
+  segmentCount: number;
+  rateApplied: string;
+  cost: string;
+  messageSid: string | null;
+  smsMessageId: number | null;
+  createdAt: Date;
+}
+
+interface InsertUserUsageRecordData {
+  userId: number;
+  phoneNumberId?: number;
+  messageType: string;
+  direction: string;
+  segmentCount?: number;
+  rateApplied: string;
+  cost: string;
+  messageSid?: string;
+  smsMessageId?: number;
+}
+
+interface UserBillingSummaryData {
+  id: number;
+  userId: number;
+  periodStart: Date;
+  periodEnd: Date;
+  totalSmsOutbound: number;
+  totalSmsInbound: number;
+  totalMmsOutbound: number;
+  totalMmsInbound: number;
+  smsCost: string;
+  mmsCost: string;
+  phoneNumberFees: string;
+  totalCost: string;
+  status: string;
+  paidAt: Date | null;
+  createdAt: Date;
+}
+
+interface InsertUserBillingSummaryData {
+  userId: number;
+  periodStart: Date;
+  periodEnd: Date;
+  totalSmsOutbound?: number;
+  totalSmsInbound?: number;
+  totalMmsOutbound?: number;
+  totalMmsInbound?: number;
+  smsCost?: string;
+  mmsCost?: string;
+  phoneNumberFees?: string;
+  totalCost?: string;
+  status?: string;
+}
+
+// Credit system types
+interface UserCreditRatesData {
+  id: number;
+  userId: number;
+  smsOutboundCredits: number;
+  smsInboundCredits: number;
+  mmsOutboundCredits: number;
+  mmsInboundCredits: number;
+  creditPurchaseRate: string;
+  lowBalanceThreshold: number;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+interface InsertUserCreditRatesData {
+  userId: number;
+  smsOutboundCredits?: number;
+  smsInboundCredits?: number;
+  mmsOutboundCredits?: number;
+  mmsInboundCredits?: number;
+  creditPurchaseRate?: string;
+  lowBalanceThreshold?: number;
+}
+
+interface CreditTransactionData {
+  id: number;
+  userId: number;
+  type: string;
+  amount: number;
+  balanceAfter: number;
+  description: string;
+  referenceType: string | null;
+  referenceId: number | null;
+  createdAt: Date;
+}
+
+interface CreditPackageData {
+  id: number;
+  name: string;
+  credits: number;
+  price: string;
+  description: string | null;
+  isActive: boolean;
+  sortOrder: number;
+  createdAt: Date;
 }
 
 export const storage = new MemStorage();
+
+// Add credit management methods to MemStorage prototype
+declare module './storage' {
+  interface MemStorage {
+    userCreditRates: Map<number, UserCreditRatesData>;
+    creditTransactions: Map<number, CreditTransactionData[]>;
+    creditPackages: CreditPackageData[];
+    creditTransactionIdCounter: number;
+    
+    getUserCreditRates(userId: number): Promise<UserCreditRatesData | undefined>;
+    upsertUserCreditRates(rates: InsertUserCreditRatesData): Promise<UserCreditRatesData>;
+    addCredits(userId: number, amount: number, description: string): Promise<{ success: boolean; balance: number; transaction: CreditTransactionData }>;
+    deductCredits(userId: number, amount: number, description: string, referenceType?: string, referenceId?: number): Promise<{ success: boolean; balance?: number; message?: string; transaction?: CreditTransactionData }>;
+    getCreditTransactions(userId: number, limit?: number, offset?: number): Promise<CreditTransactionData[]>;
+    getCreditPackages(): Promise<CreditPackageData[]>;
+  }
+}
+
+// Initialize credit storage on MemStorage
+(MemStorage.prototype as any).userCreditRates = new Map<number, UserCreditRatesData>();
+(MemStorage.prototype as any).creditTransactions = new Map<number, CreditTransactionData[]>();
+(MemStorage.prototype as any).creditTransactionIdCounter = 1;
+(MemStorage.prototype as any).creditPackages = [
+  { id: 1, name: 'Starter', credits: 100, price: '10.00', description: 'Perfect for getting started', isActive: true, sortOrder: 1, createdAt: new Date() },
+  { id: 2, name: 'Pro', credits: 500, price: '45.00', description: 'Best value for growing businesses', isActive: true, sortOrder: 2, createdAt: new Date() },
+  { id: 3, name: 'Enterprise', credits: 2000, price: '150.00', description: 'High volume messaging', isActive: true, sortOrder: 3, createdAt: new Date() },
+];
+
+MemStorage.prototype.getUserCreditRates = async function(userId: number): Promise<UserCreditRatesData | undefined> {
+  return (this as any).userCreditRates.get(userId);
+};
+
+MemStorage.prototype.upsertUserCreditRates = async function(rates: InsertUserCreditRatesData): Promise<UserCreditRatesData> {
+  const existing = (this as any).userCreditRates.get(rates.userId);
+  const now = new Date();
+  
+  if (existing) {
+    const updated: UserCreditRatesData = {
+      ...existing,
+      ...rates,
+      updatedAt: now,
+    };
+    (this as any).userCreditRates.set(rates.userId, updated);
+    return updated;
+  }
+  
+  const newRates: UserCreditRatesData = {
+    id: rates.userId,
+    userId: rates.userId,
+    smsOutboundCredits: rates.smsOutboundCredits ?? 1,
+    smsInboundCredits: rates.smsInboundCredits ?? 0,
+    mmsOutboundCredits: rates.mmsOutboundCredits ?? 3,
+    mmsInboundCredits: rates.mmsInboundCredits ?? 0,
+    creditPurchaseRate: rates.creditPurchaseRate ?? "0.01",
+    lowBalanceThreshold: rates.lowBalanceThreshold ?? 50,
+    createdAt: now,
+    updatedAt: now,
+  };
+  
+  (this as any).userCreditRates.set(rates.userId, newRates);
+  return newRates;
+};
+
+MemStorage.prototype.addCredits = async function(userId: number, amount: number, description: string): Promise<{ success: boolean; balance: number; transaction: CreditTransactionData }> {
+  const user = await this.getUser(userId);
+  if (!user) {
+    throw new Error("User not found");
+  }
+  
+  const newBalance = (user.credits || 0) + amount;
+  await this.updateUser(userId, { credits: newBalance });
+  
+  const transactionId = (this as any).creditTransactionIdCounter++;
+  const transaction: CreditTransactionData = {
+    id: transactionId,
+    userId,
+    type: 'purchase',
+    amount,
+    balanceAfter: newBalance,
+    description,
+    referenceType: null,
+    referenceId: null,
+    createdAt: new Date(),
+  };
+  
+  const userTransactions = (this as any).creditTransactions.get(userId) || [];
+  userTransactions.unshift(transaction);
+  (this as any).creditTransactions.set(userId, userTransactions);
+  
+  return { success: true, balance: newBalance, transaction };
+};
+
+MemStorage.prototype.deductCredits = async function(userId: number, amount: number, description: string, referenceType?: string, referenceId?: number): Promise<{ success: boolean; balance?: number; message?: string; transaction?: CreditTransactionData }> {
+  const user = await this.getUser(userId);
+  if (!user) {
+    return { success: false, message: "User not found" };
+  }
+  
+  const currentBalance = user.credits || 0;
+  if (currentBalance < amount) {
+    return { success: false, message: "Insufficient credits", balance: currentBalance };
+  }
+  
+  const newBalance = currentBalance - amount;
+  await this.updateUser(userId, { credits: newBalance });
+  
+  const transactionId = (this as any).creditTransactionIdCounter++;
+  const transaction: CreditTransactionData = {
+    id: transactionId,
+    userId,
+    type: 'consumption',
+    amount: -amount,
+    balanceAfter: newBalance,
+    description,
+    referenceType: referenceType || null,
+    referenceId: referenceId || null,
+    createdAt: new Date(),
+  };
+  
+  const userTransactions = (this as any).creditTransactions.get(userId) || [];
+  userTransactions.unshift(transaction);
+  (this as any).creditTransactions.set(userId, userTransactions);
+  
+  return { success: true, balance: newBalance, transaction };
+};
+
+MemStorage.prototype.getCreditTransactions = async function(userId: number, limit: number = 50, offset: number = 0): Promise<CreditTransactionData[]> {
+  const transactions = (this as any).creditTransactions.get(userId) || [];
+  return transactions.slice(offset, offset + limit);
+};
+
+MemStorage.prototype.getCreditPackages = async function(): Promise<CreditPackageData[]> {
+  return (this as any).creditPackages.filter((p: CreditPackageData) => p.isActive);
+};

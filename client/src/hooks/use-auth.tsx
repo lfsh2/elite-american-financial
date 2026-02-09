@@ -56,39 +56,33 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setError(null);
     
     try {
-      // For demo purposes, we'll just simulate a login with some test accounts
-      if (
-        (username === 'admin' && password === 'admin123') ||
-        (username === 'testuser' && password === 'testpass123') ||
-        (username === 'demo' && password === 'demo123')
-      ) {
-        // Simulate API response
-        const mockUser = {
-          id: 1,
-          username,
-          firstName: username === 'admin' ? 'Admin' : 'Test',
-          lastName: 'User',
-          email: `${username}@eliteamericanfinancials.com`,
-          role: username === 'admin' ? 'admin' : 'user',
-          credits: username === 'admin' ? 10000 : 1000,
-        };
+      // Call the actual login API
+      const response = await fetch('/api/auth/login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ username, password }),
+      });
+      
+      if (response.ok) {
+        const userData = await response.json();
         
         // Store the user in localStorage
-        localStorage.setItem('user', JSON.stringify(mockUser));
+        localStorage.setItem('user', JSON.stringify(userData));
         localStorage.setItem('isAuthenticated', 'true');
         
-        setUser(mockUser);
+        setUser(userData);
         setLocation('/dashboard');
         
         toast({
           title: 'Login successful',
-          description: `Welcome back, ${mockUser.firstName}!`,
+          description: `Welcome back, ${userData.firstName}!`,
         });
       } else {
-        setError('Invalid username or password');
+        const errorData = await response.json();
+        setError(errorData.message || 'Invalid username or password');
         toast({
           title: 'Login failed',
-          description: 'Invalid username or password',
+          description: errorData.message || 'Invalid username or password',
           variant: 'destructive',
         });
       }

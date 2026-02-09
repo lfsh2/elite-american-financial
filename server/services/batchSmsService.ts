@@ -1,5 +1,6 @@
 import { db } from '../db';
-import { smsMessages } from '@shared/schema';
+import { smsMessages, smsCampaigns } from '@shared/schema';
+import { eq } from 'drizzle-orm';
 import Twilio from 'twilio';
 
 interface BatchRecipient {
@@ -56,8 +57,26 @@ interface BatchResult {
   duration: number;
 }
 
+// Store active batch jobs for progress tracking
+const activeBatchJobs: Map<string, BatchProgress & { campaignId?: number; startTime: number }> = new Map();
+
 class BatchSmsService {
   private twilioClients: Map<string, Twilio.Twilio> = new Map();
+
+  // Get progress for a batch job
+  getJobProgress(jobId: string): (BatchProgress & { campaignId?: number; startTime: number }) | null {
+    return activeBatchJobs.get(jobId) || null;
+  }
+
+  // Get progress for a campaign
+  getCampaignProgress(campaignId: number): (BatchProgress & { jobId: string; startTime: number }) | null {
+    for (const [jobId, progress] of activeBatchJobs.entries()) {
+      if (progress.campaignId === campaignId) {
+        return { ...progress, jobId };
+      }
+    }
+    return null;
+  }
 
   private getTwilioClient(accountSid: string, authToken: string): Twilio.Twilio {
     const key = `${accountSid}`;
@@ -168,6 +187,66 @@ class BatchSmsService {
     } catch (error: any) {
       return { success: false, error: error.message || 'Commio send failed' };
     }
+  }
+
+  // Start batch job asynchronously and return immediately with job ID
+  async startBatchAsync(options: BatchSendOptions): Promise<{ jobId: string; total: number }> {
+    const jobId = `batch_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+    
+    const progress: BatchProgress & { campaignId?: number; startTime: number } = {
+      total: options.recipients.length,
+      sent: 0,
+      failed: 0,
+      inProgress: 0,
+      byNumber: {},
+      campaignId: options.campaignId,
+      startTime: Date.now(),
+    };
+    
+    // Initialize progress tracking per number
+    options.phoneNumbers.forEach(pn => {
+      progress.byNumber[pn.phoneNumber] = { sent: 0, failed: 0, pending: 0 };
+    });
+    
+    activeBatchJobs.set(jobId, progress);
+    
+    // Start sending in background (don't await)
+    this.sendBatch({ ...options, onProgress: (p) => {
+      // Update the stored progress
+      const stored = activeBatchJobs.get(jobId);
+      if (stored) {
+        stored.sent = p.sent;
+        stored.failed = p.failed;
+        stored.inProgress = p.inProgress;
+        stored.byNumber = p.byNumber;
+        stored.estimatedCompletionTime = p.estimatedCompletionTime;
+        stored.currentRate = p.currentRate;
+      }
+    }}).then(async (result) => {
+      // Update campaign status when complete
+      if (options.campaignId) {
+        try {
+          await db.update(smsCampaigns)
+            .set({
+              status: 'completed',
+              sentCount: result.sent,
+              failedCount: result.failed,
+            })
+            .where(eq(smsCampaigns.id, options.campaignId));
+          console.log(`[BatchSMS] Campaign ${options.campaignId} completed: ${result.sent} sent, ${result.failed} failed`);
+        } catch (err) {
+          console.error('[BatchSMS] Failed to update campaign status:', err);
+        }
+      }
+      // Clean up job after 5 minutes
+      setTimeout(() => activeBatchJobs.delete(jobId), 5 * 60 * 1000);
+    }).catch(err => {
+      console.error('[BatchSMS] Batch job failed:', err);
+      // Clean up on error
+      setTimeout(() => activeBatchJobs.delete(jobId), 60 * 1000);
+    });
+    
+    return { jobId, total: options.recipients.length };
   }
 
   async sendBatch(options: BatchSendOptions): Promise<BatchResult> {

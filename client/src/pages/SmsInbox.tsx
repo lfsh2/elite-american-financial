@@ -109,6 +109,7 @@ export default function SmsInbox() {
   const [scheduleTime, setScheduleTime] = useState('');
   const [isScheduled, setIsScheduled] = useState(false);
   const [phoneNumbers, setPhoneNumbers] = useState<any[]>([]);
+  const [isLoadingPhoneNumbers, setIsLoadingPhoneNumbers] = useState(true);
   const [selectedFromNumber, setSelectedFromNumber] = useState('');
   const [selectedFromNumbers, setSelectedFromNumbers] = useState<Set<string>>(new Set()); // Multi-select
   const [numberSelectionMode, setNumberSelectionMode] = useState<'all' | 'select' | 'single'>('all'); // all=use all, select=pick multiple, single=one number
@@ -136,29 +137,36 @@ export default function SmsInbox() {
   }, [selectedConversation?.messages]);
 
   const fetchPhoneNumbers = async () => {
+    setIsLoadingPhoneNumbers(true);
     try {
       const accountsRes = await fetch('/api/accounts', { credentials: 'include' });
       if (accountsRes.ok) {
         const accountsData = await accountsRes.json();
         const allPhoneNumbers: any[] = [];
         
-        for (const acc of accountsData.accounts || []) {
+        // Fetch phone numbers for all accounts in parallel
+        const phonePromises = (accountsData.accounts || []).map(async (acc: any) => {
           try {
             const phonesRes = await fetch(`/api/accounts/${acc.id}/phone-numbers`, { credentials: 'include' });
             if (phonesRes.ok) {
               const data = await phonesRes.json();
-              const numbersWithAccount = (data.phoneNumbers || []).map((pn: any) => ({
+              return (data.phoneNumbers || []).map((pn: any) => ({
                 ...pn,
                 accountId: acc.id,
                 accountName: acc.name,
                 provider: acc.provider
               }));
-              allPhoneNumbers.push(...numbersWithAccount);
             }
           } catch (e) {
             console.error(`Failed to fetch phone numbers for account ${acc.id}:`, e);
           }
-        }
+          return [];
+        });
+        
+        const results = await Promise.all(phonePromises);
+        results.forEach(numbers => allPhoneNumbers.push(...numbers));
+        
+        console.log(`[SmsInbox] Loaded ${allPhoneNumbers.length} phone numbers from ${accountsData.accounts?.length || 0} accounts`);
         setPhoneNumbers(allPhoneNumbers);
         if (allPhoneNumbers.length > 0) {
           setSelectedFromNumber(allPhoneNumbers[0].phoneNumber);
@@ -166,6 +174,8 @@ export default function SmsInbox() {
       }
     } catch (error) {
       console.error('Error fetching phone numbers:', error);
+    } finally {
+      setIsLoadingPhoneNumbers(false);
     }
   };
 
@@ -1127,7 +1137,9 @@ export default function SmsInbox() {
                   value={selectedFromNumber}
                   onChange={(e) => setSelectedFromNumber(e.target.value)}
                 >
-                  {phoneNumbers.length === 0 ? (
+                  {isLoadingPhoneNumbers ? (
+                    <option value="">Loading numbers...</option>
+                  ) : phoneNumbers.length === 0 ? (
                     <option value="">No numbers available</option>
                   ) : (
                     phoneNumbers.map((pn) => (
