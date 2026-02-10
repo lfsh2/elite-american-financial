@@ -236,6 +236,23 @@ export class MemStorage implements IStorage {
       } else {
         console.log('[Storage] Admin user already exists in database');
       }
+
+      // Ensure andrew admin account exists
+      const existingAndrew = await this.getUserByEmail("andrew@elite.com");
+      if (!existingAndrew) {
+        console.log('[Storage] Creating andrew admin user...');
+        await this.createUser({
+          username: "andrew",
+          password: "muniz123",
+          firstName: "Andrew",
+          lastName: "Muniz",
+          email: "andrew@elite.com",
+          role: "super_admin"
+        });
+        console.log('[Storage] Andrew admin user created');
+      } else {
+        console.log('[Storage] Andrew admin user already exists');
+      }
     } catch (error) {
       console.error('[Storage] Error initializing admin user:', error);
     }
