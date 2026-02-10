@@ -1255,23 +1255,22 @@ export default function SmsCampaigns() {
     setSendingProgress({ sent: 0, failed: 0, total: 0 });
 
     try {
-      // First get campaign recipients
-      const recipientsRes = await fetch(`/api/campaigns/sms-campaigns/${campaignId}/recipients`, {
+      // Get recipient count (lightweight query, no data transfer)
+      const countRes = await fetch(`/api/campaigns/sms-campaigns/${campaignId}/recipients/count`, {
         credentials: 'include',
       });
       
-      if (!recipientsRes.ok) {
-        throw new Error('Failed to fetch campaign recipients');
+      if (!countRes.ok) {
+        throw new Error('Failed to fetch campaign recipient count');
       }
       
-      const recipientsData = await recipientsRes.json();
-      const recipients = recipientsData.recipients || [];
+      const { count: recipientCount } = await countRes.json();
       
-      if (recipients.length === 0) {
+      if (recipientCount === 0) {
         throw new Error('No recipients in campaign. Add a contact list first.');
       }
 
-      setSendingProgress({ sent: 0, failed: 0, total: recipients.length });
+      setSendingProgress({ sent: 0, failed: 0, total: recipientCount });
 
       // Build phone number configs
       const phoneNumberConfigs = numbersToUse.map(num => {
@@ -1283,27 +1282,13 @@ export default function SmsCampaigns() {
         };
       });
 
-      // Use batch API for parallel sending with drip mode (status is updated to 'sending' by the API)
+      // Use batch API - server loads recipients from DB directly (handles 30k-50k+ contacts)
+      // No need to send recipients over the wire, the server loads from campaign_recipients table
       const batchRes = await fetch('/api/sms/batch', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         credentials: 'include',
         body: JSON.stringify({
-          recipients: recipients.map((r: any) => {
-            // Start with campaign's default custom variables (stored in metadata), then overlay contact-specific values
-            const metadata = (campaign as any)?.metadata || {};
-            const campaignDefaults = metadata.customVariables || {};
-            const customFields = r.customFields || {};
-            return {
-              phone: r.phoneNumber,
-              name: r.firstName ? `${r.firstName} ${r.lastName || ''}`.trim() : undefined,
-              firstName: r.firstName,
-              lastName: r.lastName,
-              // Apply campaign defaults first, then contact-specific values override
-              ...campaignDefaults,
-              ...customFields,
-            };
-          }),
           message: campaign?.messageTemplate || '',
           phoneNumbers: phoneNumberConfigs,
           campaignId,

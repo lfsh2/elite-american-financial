@@ -91,16 +91,24 @@ export async function importContacts(
     return result;
   }
 
-  // BATCH QUERY: Check all existing contacts in ONE query
+  // BATCH QUERY: Check existing contacts in chunks (PostgreSQL IN clause limit ~32k params)
   const phoneNumbers = validContacts.map(c => c.phone);
-  const existingContacts = await db
-    .select()
-    .from(contacts)
-    .where(and(
-      eq(contacts.userId, userId),
-      inArray(contacts.phoneNumber, phoneNumbers)
-    ));
-
+  const QUERY_CHUNK_SIZE = 5000;
+  const existingContacts: Contact[] = [];
+  
+  for (let i = 0; i < phoneNumbers.length; i += QUERY_CHUNK_SIZE) {
+    const chunk = phoneNumbers.slice(i, i + QUERY_CHUNK_SIZE);
+    const chunkResults = await db
+      .select()
+      .from(contacts)
+      .where(and(
+        eq(contacts.userId, userId),
+        inArray(contacts.phoneNumber, chunk)
+      ));
+    existingContacts.push(...chunkResults);
+  }
+  
+  console.log(`[Import] Found ${existingContacts.length} existing contacts out of ${phoneNumbers.length}`);
   const existingMap = new Map(existingContacts.map(c => [c.phoneNumber, c]));
 
   // Separate into updates and inserts
@@ -144,35 +152,47 @@ export async function importContacts(
     }
   }
 
-  // BATCH INSERT: Insert all new contacts at once
+  // BATCH INSERT: Insert new contacts in chunks of 1000
+  const INSERT_CHUNK_SIZE = 1000;
   if (toInsert.length > 0) {
-    try {
-      const insertedContacts = await db
-        .insert(contacts)
-        .values(toInsert)
-        .returning();
-      
-      insertedContacts.forEach(contact => {
-        contactPhoneMap.set(contact.phoneNumber, contact.id);
-      });
-      
-      result.imported = insertedContacts.length;
-    } catch (error: any) {
-      console.error('Batch insert error:', error);
-      result.errors += toInsert.length;
+    console.log(`[Import] Inserting ${toInsert.length} new contacts in chunks of ${INSERT_CHUNK_SIZE}`);
+    for (let i = 0; i < toInsert.length; i += INSERT_CHUNK_SIZE) {
+      const chunk = toInsert.slice(i, i + INSERT_CHUNK_SIZE);
+      try {
+        const insertedContacts = await db
+          .insert(contacts)
+          .values(chunk)
+          .returning();
+        
+        insertedContacts.forEach(contact => {
+          contactPhoneMap.set(contact.phoneNumber, contact.id);
+        });
+        
+        result.imported += insertedContacts.length;
+        console.log(`[Import] Inserted chunk ${Math.floor(i / INSERT_CHUNK_SIZE) + 1}: ${insertedContacts.length} contacts (total: ${result.imported})`);
+      } catch (error: any) {
+        console.error(`[Import] Batch insert error (chunk ${Math.floor(i / INSERT_CHUNK_SIZE) + 1}):`, error.message);
+        result.errors += chunk.length;
+      }
     }
   }
 
-  // BATCH UPDATE: Update existing contacts in transaction
+  // BATCH UPDATE: Update existing contacts in chunked transactions
+  const UPDATE_CHUNK_SIZE = 500;
   if (toUpdate.length > 0) {
-    try {
-      await db.transaction(async (tx) => {
-        for (const { id, data } of toUpdate) {
-          await tx.update(contacts).set(data).where(eq(contacts.id, id));
-        }
-      });
-    } catch (error: any) {
-      console.error('Batch update error:', error);
+    console.log(`[Import] Updating ${toUpdate.length} existing contacts in chunks of ${UPDATE_CHUNK_SIZE}`);
+    for (let i = 0; i < toUpdate.length; i += UPDATE_CHUNK_SIZE) {
+      const chunk = toUpdate.slice(i, i + UPDATE_CHUNK_SIZE);
+      try {
+        await db.transaction(async (tx) => {
+          for (const { id, data } of chunk) {
+            await tx.update(contacts).set(data).where(eq(contacts.id, id));
+          }
+        });
+        console.log(`[Import] Updated chunk ${Math.floor(i / UPDATE_CHUNK_SIZE) + 1}: ${chunk.length} contacts`);
+      } catch (error: any) {
+        console.error(`[Import] Batch update error (chunk ${Math.floor(i / UPDATE_CHUNK_SIZE) + 1}):`, error.message);
+      }
     }
   }
 
@@ -182,27 +202,35 @@ export async function importContacts(
       const allContactIds = Array.from(contactPhoneMap.values());
       console.log('[Import] Adding contacts to list - contactListId:', contactListId, 'contactCount:', allContactIds.length);
 
-      // BATCH QUERY: Check existing memberships
-      const existingMembers = await db
-        .select()
-        .from(contactListMembers)
-        .where(and(
-          eq(contactListMembers.contactListId, contactListId),
-          inArray(contactListMembers.contactId, allContactIds)
-        ));
-
-      const existingMemberIds = new Set(existingMembers.map(m => m.contactId));
+      // BATCH QUERY: Check existing memberships in chunks
+      const existingMemberIds = new Set<number>();
+      for (let i = 0; i < allContactIds.length; i += QUERY_CHUNK_SIZE) {
+        const chunk = allContactIds.slice(i, i + QUERY_CHUNK_SIZE);
+        const existingMembers = await db
+          .select()
+          .from(contactListMembers)
+          .where(and(
+            eq(contactListMembers.contactListId, contactListId),
+            inArray(contactListMembers.contactId, chunk)
+          ));
+        existingMembers.forEach(m => existingMemberIds.add(m.contactId));
+      }
       console.log('[Import] Existing members:', existingMemberIds.size);
 
-      // BATCH INSERT: Add new memberships
+      // BATCH INSERT: Add new memberships in chunks
       const newMemberships = allContactIds
         .filter(id => !existingMemberIds.has(id))
         .map(contactId => ({ contactListId, contactId }));
 
       console.log('[Import] New memberships to add:', newMemberships.length);
+      const MEMBERSHIP_CHUNK_SIZE = 1000;
+      for (let i = 0; i < newMemberships.length; i += MEMBERSHIP_CHUNK_SIZE) {
+        const chunk = newMemberships.slice(i, i + MEMBERSHIP_CHUNK_SIZE);
+        await db.insert(contactListMembers).values(chunk);
+        console.log(`[Import] Membership chunk ${Math.floor(i / MEMBERSHIP_CHUNK_SIZE) + 1}: ${chunk.length} added`);
+      }
       if (newMemberships.length > 0) {
-        await db.insert(contactListMembers).values(newMemberships);
-        console.log('[Import] Successfully added memberships');
+        console.log('[Import] Successfully added all memberships');
       }
     } catch (error: any) {
       console.error('[Import] Contact list membership error:', error);
