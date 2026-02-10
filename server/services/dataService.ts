@@ -16,7 +16,7 @@ import { cacheService } from './cacheService';
 import { redisService, CacheKeys, CACHE_TTL, STALE_TTL } from './redisService';
 import { db } from '../db';
 import { smsMessages, voiceCalls, accounts } from '../../shared/schema';
-import { eq, and, gte, desc, count, sql } from 'drizzle-orm';
+import { eq, and, gte, lte, desc, count, sql, or, isNull, inArray } from 'drizzle-orm';
 
 export interface DataContext {
   userId: number;
@@ -147,7 +147,8 @@ class DataService {
           accountName: account.name,
           provider: provider.code,
           analytics,
-        } as AccountAnalytics;
+          numericId,
+        } as AccountAnalytics & { numericId: number };
       } catch (error) {
         console.error(`[DataService] Error fetching analytics for account ${account.id}:`, error);
         return null;
@@ -158,6 +159,9 @@ class DataService {
     results.forEach(result => {
       if (result) accountAnalytics.push(result);
     });
+
+    // Supplement provider API data with database-stored messages and imported phone numbers
+    await this.supplementWithDbData(accountAnalytics, accountsToFetch);
 
     // Aggregate metrics across all fetched accounts
     const aggregatedMetrics = this.aggregateMetrics(accountAnalytics);
@@ -273,6 +277,213 @@ class DataService {
       messages: { today: [], thisWeek: [], thisMonth: [] },
       calls: { today: [], thisWeek: [], thisMonth: [] },
     };
+  }
+
+  /**
+   * Supplement provider API data with database-stored messages and imported phone numbers.
+   * This is critical for Commio where ThinQ API doesn't expose message history endpoints,
+   * and for any provider where batch-sent messages are stored locally in sms_messages table.
+   */
+  private async supplementWithDbData(accountAnalytics: AccountAnalytics[], accountsToFetch: any[]): Promise<void> {
+    try {
+      const now = new Date();
+      const startOfDay = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+      const yesterday = new Date(startOfDay);
+      yesterday.setDate(yesterday.getDate() - 1);
+      const startOfWeek = new Date(startOfDay);
+      startOfWeek.setDate(startOfWeek.getDate() - startOfWeek.getDay());
+      const lastWeekStart = new Date(startOfWeek);
+      lastWeekStart.setDate(lastWeekStart.getDate() - 7);
+      const lastWeekEnd = new Date(startOfWeek);
+      lastWeekEnd.setDate(lastWeekEnd.getDate() - 1);
+      const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
+      const lastMonth = new Date(now.getFullYear(), now.getMonth() - 1, 1);
+      const endOfLastMonth = new Date(now.getFullYear(), now.getMonth(), 0);
+      const sixMonthsAgo = new Date(now);
+      sixMonthsAgo.setMonth(sixMonthsAgo.getMonth() - 6);
+
+      for (const accAnalytics of accountAnalytics) {
+        const numericId = parseInt(String(accAnalytics.accountId).replace('acc_', ''));
+        if (isNaN(numericId)) continue;
+
+        // Check if provider API returned empty messages (common for Commio)
+        const apiMessageCount = (accAnalytics.analytics.messages?.all?.length || 0) +
+          (accAnalytics.analytics.messages?.thisMonth?.length || 0);
+
+        // Load DB messages for this account
+        const dbMessages = await db
+          .select()
+          .from(smsMessages)
+          .where(
+            and(
+              eq(smsMessages.accountId, numericId),
+              gte(smsMessages.sentAt, sixMonthsAgo)
+            )
+          )
+          .orderBy(desc(smsMessages.sentAt))
+          .limit(5000);
+
+        if (dbMessages.length > 0) {
+          console.log(`[DataService] DB supplement for account ${accAnalytics.accountId}: ${dbMessages.length} messages (API had ${apiMessageCount})`);
+
+          // Convert DB messages to Message format
+          const dbMsgFormatted: Message[] = dbMessages.map(m => ({
+            sid: m.messageSid || `db_${m.id}`,
+            from: m.from,
+            to: m.to,
+            body: m.body,
+            status: m.status as any,
+            direction: m.direction as any,
+            dateSent: m.sentAt.toISOString(),
+            dateCreated: (m.createdAt || m.sentAt).toISOString(),
+          }));
+
+          // Merge with existing API messages (deduplicate by sid)
+          const existingSids = new Set<string>();
+          const allPeriods = ['today', 'yesterday', 'thisWeek', 'lastWeek', 'thisMonth', 'lastMonth', 'all'] as const;
+          for (const period of allPeriods) {
+            const msgs = (accAnalytics.analytics.messages as any)[period];
+            if (Array.isArray(msgs)) {
+              msgs.forEach((m: any) => { if (m.sid) existingSids.add(m.sid); });
+            }
+          }
+
+          // Filter out duplicates
+          const newMessages = dbMsgFormatted.filter(m => !existingSids.has(m.sid));
+
+          if (newMessages.length > 0) {
+            // Filter into time periods
+            const filterByPeriod = (msgs: Message[], start: Date, end: Date) =>
+              msgs.filter(m => { const d = new Date(m.dateSent); return d >= start && d < end; });
+
+            const dbToday = filterByPeriod(newMessages, startOfDay, now);
+            const dbYesterday = filterByPeriod(newMessages, yesterday, startOfDay);
+            const dbThisWeek = filterByPeriod(newMessages, startOfWeek, now);
+            const dbLastWeek = filterByPeriod(newMessages, lastWeekStart, lastWeekEnd);
+            const dbThisMonth = filterByPeriod(newMessages, startOfMonth, now);
+            const dbLastMonth = filterByPeriod(newMessages, lastMonth, endOfLastMonth);
+
+            // Merge into analytics
+            const msgs = accAnalytics.analytics.messages as any;
+            msgs.today = [...(msgs.today || []), ...dbToday].sort((a: any, b: any) => new Date(b.dateSent).getTime() - new Date(a.dateSent).getTime());
+            msgs.yesterday = [...(msgs.yesterday || []), ...dbYesterday].sort((a: any, b: any) => new Date(b.dateSent).getTime() - new Date(a.dateSent).getTime());
+            msgs.thisWeek = [...(msgs.thisWeek || []), ...dbThisWeek].sort((a: any, b: any) => new Date(b.dateSent).getTime() - new Date(a.dateSent).getTime());
+            msgs.lastWeek = [...(msgs.lastWeek || []), ...dbLastWeek].sort((a: any, b: any) => new Date(b.dateSent).getTime() - new Date(a.dateSent).getTime());
+            msgs.thisMonth = [...(msgs.thisMonth || []), ...dbThisMonth].sort((a: any, b: any) => new Date(b.dateSent).getTime() - new Date(a.dateSent).getTime());
+            msgs.lastMonth = [...(msgs.lastMonth || []), ...dbLastMonth].sort((a: any, b: any) => new Date(b.dateSent).getTime() - new Date(a.dateSent).getTime());
+            msgs.all = [...(msgs.all || []), ...newMessages].sort((a: any, b: any) => new Date(b.dateSent).getTime() - new Date(a.dateSent).getTime());
+
+            // Recalculate metrics with merged data
+            const outboundToday = msgs.today.filter((m: any) => m.direction?.startsWith('outbound'));
+            const outboundMonth = msgs.thisMonth.filter((m: any) => m.direction?.startsWith('outbound'));
+            const inboundToday = msgs.today.filter((m: any) => m.direction === 'inbound');
+            const deliveredMonth = outboundMonth.filter((m: any) => m.status === 'delivered' || m.status === 'sent').length;
+            const failedMonth = outboundMonth.filter((m: any) => m.status === 'failed' || m.status === 'undelivered').length;
+
+            const metrics = accAnalytics.analytics.metrics;
+            metrics.totalMessagesSentToday = outboundToday.length;
+            metrics.totalMessagesReceivedToday = inboundToday.length;
+            metrics.totalMessagesSentThisWeek = msgs.thisWeek.filter((m: any) => m.direction?.startsWith('outbound')).length;
+            metrics.totalMessagesSentThisMonth = outboundMonth.length;
+            if (metrics.totalMessagesSentYesterday !== undefined) {
+              metrics.totalMessagesSentYesterday = (msgs.yesterday || []).filter((m: any) => m.direction?.startsWith('outbound')).length;
+            }
+            metrics.deliveryRate = outboundMonth.length > 0 ? (deliveredMonth / outboundMonth.length) * 100 : 100;
+            metrics.failureRate = outboundMonth.length > 0 ? (failedMonth / outboundMonth.length) * 100 : 0;
+
+            console.log(`[DataService] Updated metrics for ${accAnalytics.accountId}: sent today=${metrics.totalMessagesSentToday}, month=${metrics.totalMessagesSentThisMonth}`);
+          }
+        }
+
+        // Supplement phone numbers from imported numbers (for Commio accounts)
+        if (accAnalytics.analytics.phoneNumbers.length === 0) {
+          try {
+            const accountData = await accountService.getAccountById(numericId);
+            if (accountData) {
+              const settings = (accountData.settings || {}) as Record<string, any>;
+              if (settings.importedPhoneNumbers && Array.isArray(settings.importedPhoneNumbers)) {
+                accAnalytics.analytics.phoneNumbers = settings.importedPhoneNumbers.map((pn: any) => ({
+                  sid: pn.phoneNumber,
+                  phoneNumber: pn.phoneNumber,
+                  friendlyName: pn.friendlyName || pn.phoneNumber,
+                  capabilities: pn.capabilities || { sms: true, voice: true, mms: false },
+                  status: 'active',
+                  dateCreated: pn.dateCreated || new Date().toISOString(),
+                  a2pStatus: 'registered' as const,
+                }));
+                console.log(`[DataService] Loaded ${accAnalytics.analytics.phoneNumbers.length} imported phone numbers for ${accAnalytics.accountId}`);
+              }
+            }
+          } catch (err) {
+            console.error(`[DataService] Error loading imported numbers for ${accAnalytics.accountId}:`, err);
+          }
+        }
+      }
+
+      // Also load messages with no accountId (historical synced messages) and attribute them
+      const [untaggedCount] = await db
+        .select({ count: sql<number>`count(*)::int` })
+        .from(smsMessages)
+        .where(
+          and(
+            isNull(smsMessages.accountId),
+            gte(smsMessages.sentAt, sixMonthsAgo)
+          )
+        );
+
+      if (untaggedCount.count > 0 && accountAnalytics.length > 0) {
+        console.log(`[DataService] Found ${untaggedCount.count} untagged messages, loading for dashboard`);
+        
+        const untaggedMessages = await db
+          .select()
+          .from(smsMessages)
+          .where(
+            and(
+              isNull(smsMessages.accountId),
+              gte(smsMessages.sentAt, sixMonthsAgo)
+            )
+          )
+          .orderBy(desc(smsMessages.sentAt))
+          .limit(5000);
+
+        if (untaggedMessages.length > 0) {
+          // Add untagged messages to the first Twilio account (most likely source)
+          const twilioAccount = accountAnalytics.find(a => a.provider === 'twilio') || accountAnalytics[0];
+          
+          const untaggedFormatted: Message[] = untaggedMessages.map(m => ({
+            sid: m.messageSid || `db_${m.id}`,
+            from: m.from,
+            to: m.to,
+            body: m.body,
+            status: m.status as any,
+            direction: m.direction as any,
+            dateSent: m.sentAt.toISOString(),
+            dateCreated: (m.createdAt || m.sentAt).toISOString(),
+          }));
+
+          // Deduplicate against existing
+          const existingSids = new Set<string>();
+          const msgs = twilioAccount.analytics.messages as any;
+          ['today', 'yesterday', 'thisWeek', 'lastWeek', 'thisMonth', 'lastMonth', 'all'].forEach(period => {
+            (msgs[period] || []).forEach((m: any) => { if (m.sid) existingSids.add(m.sid); });
+          });
+
+          const newUntagged = untaggedFormatted.filter(m => !existingSids.has(m.sid));
+          if (newUntagged.length > 0) {
+            msgs.all = [...(msgs.all || []), ...newUntagged].sort((a: any, b: any) => new Date(b.dateSent).getTime() - new Date(a.dateSent).getTime());
+            
+            // Also add to thisMonth if applicable
+            const monthMsgs = newUntagged.filter(m => new Date(m.dateSent) >= startOfMonth);
+            if (monthMsgs.length > 0) {
+              msgs.thisMonth = [...(msgs.thisMonth || []), ...monthMsgs].sort((a: any, b: any) => new Date(b.dateSent).getTime() - new Date(a.dateSent).getTime());
+            }
+            console.log(`[DataService] Added ${newUntagged.length} untagged messages to ${twilioAccount.accountId}`);
+          }
+        }
+      }
+    } catch (error) {
+      console.error('[DataService] Error supplementing with DB data:', error);
+    }
   }
 
   /**
