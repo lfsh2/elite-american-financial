@@ -14,6 +14,7 @@ interface BatchRecipient {
 interface PhoneNumberConfig {
   phoneNumber: string;
   provider: 'twilio' | 'commio';
+  accountId?: number;
   accountSid?: string;
   authToken?: string;
   apiKey?: string;
@@ -357,6 +358,8 @@ class BatchSmsService {
         // Add to database batch (will be inserted in batches of 100)
         dbMessageBatch.push({
           userId,
+          accountId: phoneConfig.accountId || null,
+          providerCode: phoneConfig.provider || null,
           messageSid: result.messageSid || `batch_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
           from: phoneConfig.phoneNumber,
           to: recipient.phone,
@@ -365,6 +368,7 @@ class BatchSmsService {
           direction: 'outbound-api',
           sentAt: new Date(),
           createdAt: new Date(),
+          campaignId: campaignId || null,
         });
 
         // Report progress

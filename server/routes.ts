@@ -1461,10 +1461,13 @@ export async function registerRoutes(app: Express): Promise<Server> {
         const { account, creds } = match;
         const providerType = account.provider as 'twilio' | 'commio';
         
+        const numericAccountId = parseInt(account.id.replace('acc_', ''));
+        
         if (providerType === 'twilio' && creds?.accountSid && creds?.authToken) {
           phoneNumberConfigs.push({
             phoneNumber: pn.phoneNumber,
             provider: 'twilio',
+            accountId: numericAccountId,
             accountSid: creds.accountSid,
             authToken: creds.authToken,
           });
@@ -1482,6 +1485,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
             phoneNumberConfigs.push({
               phoneNumber: pn.phoneNumber,
               provider: 'commio',
+              accountId: numericAccountId,
               apiKey: thinqUsername,
               apiSecret: thinqToken,
               commioAccountId: thinqAccountId,
