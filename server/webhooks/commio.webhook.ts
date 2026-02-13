@@ -9,8 +9,8 @@
 
 import { Router, Request, Response } from 'express';
 import { db } from '../db';
-import { smsMessages, voiceCalls } from '../../shared/schema';
-import { eq } from 'drizzle-orm';
+import { smsMessages, voiceCalls, smsCampaigns } from '../../shared/schema';
+import { eq, sql } from 'drizzle-orm';
 import { redisService } from '../services/redisService';
 
 const router = Router();
@@ -70,6 +70,19 @@ router.post('/message-status', async (req: Request, res: Response) => {
           status: mappedStatus,
         })
         .where(eq(smsMessages.id, message.id));
+
+      // If message was delivered, update campaign delivered count
+      if (mappedStatus === 'delivered' && message.status !== 'delivered') {
+        if (message.campaignId) {
+          await db
+            .update(smsCampaigns)
+            .set({
+              deliveredCount: sql`${smsCampaigns.deliveredCount} + 1`,
+            })
+            .where(eq(smsCampaigns.id, message.campaignId));
+          console.log(`[Commio Webhook] Incremented delivered count for campaign ${message.campaignId}`);
+        }
+      }
 
       if (message.accountId) {
         await redisService.invalidateAccount(message.accountId);

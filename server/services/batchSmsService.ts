@@ -1,6 +1,6 @@
 import { db } from '../db';
 import { smsMessages, smsCampaigns } from '@shared/schema';
-import { eq } from 'drizzle-orm';
+import { eq, sql, and } from 'drizzle-orm';
 import Twilio from 'twilio';
 
 interface BatchRecipient {
@@ -235,6 +235,41 @@ class BatchSmsService {
             })
             .where(eq(smsCampaigns.id, options.campaignId));
           console.log(`[BatchSMS] Campaign ${options.campaignId} completed: ${result.sent} sent, ${result.failed} failed`);
+
+          // After 30s, recount delivered messages from DB (webhooks may have updated statuses)
+          const campaignId = options.campaignId;
+          setTimeout(async () => {
+            try {
+              const deliveredResult = await db
+                .select({ count: sql<number>`count(*)` })
+                .from(smsMessages)
+                .where(and(
+                  eq(smsMessages.campaignId, campaignId),
+                  eq(smsMessages.status, 'delivered')
+                ));
+              const deliveredCount = Number(deliveredResult[0]?.count || 0);
+              
+              // Also count 'sent' as delivered for providers that don't send delivery receipts
+              const sentResult = await db
+                .select({ count: sql<number>`count(*)` })
+                .from(smsMessages)
+                .where(and(
+                  eq(smsMessages.campaignId, campaignId),
+                  eq(smsMessages.status, 'sent')
+                ));
+              const sentAsDelivered = Number(sentResult[0]?.count || 0);
+              const totalDelivered = deliveredCount + sentAsDelivered;
+
+              if (totalDelivered > 0) {
+                await db.update(smsCampaigns)
+                  .set({ deliveredCount: totalDelivered })
+                  .where(eq(smsCampaigns.id, campaignId));
+                console.log(`[BatchSMS] Campaign ${campaignId} delivered count updated: ${totalDelivered} (${deliveredCount} delivered + ${sentAsDelivered} sent)`);
+              }
+            } catch (err) {
+              console.error('[BatchSMS] Failed to recount delivered:', err);
+            }
+          }, 30000);
         } catch (err) {
           console.error('[BatchSMS] Failed to update campaign status:', err);
         }
@@ -318,131 +353,187 @@ class BatchSmsService {
       numberIndex++;
     }
 
-    console.log(`[BatchSMS] Starting batch send: ${recipients.length} recipients across ${phoneNumbers.length} numbers`);
+    console.log(`[BatchSMS] Starting batch send: ${recipients.length} recipients across ${phoneNumbers.length} numbers, dripMode=${dripMode}, rate=${messagesPerMinute} msgs/min`);
     phoneNumbers.forEach(pn => {
       const queue = numberQueues.get(pn.phoneNumber)!;
       console.log(`[BatchSMS] ${pn.phoneNumber} (${pn.provider}): ${queue.length} messages`);
     });
 
-    // Process each number's queue in parallel
-    const numberPromises = phoneNumbers.map(async (phoneConfig) => {
-      const queue = numberQueues.get(phoneConfig.phoneNumber)!;
-      if (queue.length === 0) return;
+    // Helper: send a single message via the correct provider
+    const sendMessage = async (recipient: BatchRecipient, phoneConfig: PhoneNumberConfig): Promise<void> => {
+      const personalizedMessage = this.applyMergeTags(message, recipient);
+      let result: { success: boolean; messageSid?: string; error?: string };
 
-      // Create worker pool for this number
-      const sendMessage = async (recipient: BatchRecipient): Promise<void> => {
-        const personalizedMessage = this.applyMergeTags(message, recipient);
-        let result: { success: boolean; messageSid?: string; error?: string };
+      if (phoneConfig.provider === 'twilio' && phoneConfig.accountSid && phoneConfig.authToken) {
+        const client = this.getTwilioClient(phoneConfig.accountSid, phoneConfig.authToken);
+        result = await this.sendViaTwilio(client, phoneConfig.phoneNumber, recipient.phone, personalizedMessage);
+      } else if (phoneConfig.provider === 'commio' && phoneConfig.apiKey && phoneConfig.apiSecret) {
+        result = await this.sendViaCommio(phoneConfig.apiKey, phoneConfig.apiSecret, phoneConfig.phoneNumber, recipient.phone, personalizedMessage, phoneConfig.commioAccountId);
+      } else {
+        console.log(`[BatchSMS] Invalid config for ${phoneConfig.phoneNumber}: provider=${phoneConfig.provider}, hasSid=${!!phoneConfig.accountSid}, hasToken=${!!phoneConfig.authToken}, hasApiKey=${!!phoneConfig.apiKey}`);
+        result = { success: false, error: 'Invalid provider configuration' };
+      }
 
-        if (phoneConfig.provider === 'twilio' && phoneConfig.accountSid && phoneConfig.authToken) {
-          const client = this.getTwilioClient(phoneConfig.accountSid, phoneConfig.authToken);
-          result = await this.sendViaTwilio(client, phoneConfig.phoneNumber, recipient.phone, personalizedMessage);
-        } else if (phoneConfig.provider === 'commio' && phoneConfig.apiKey && phoneConfig.apiSecret) {
-          result = await this.sendViaCommio(phoneConfig.apiKey, phoneConfig.apiSecret, phoneConfig.phoneNumber, recipient.phone, personalizedMessage, phoneConfig.commioAccountId);
-        } else {
-          console.log(`[BatchSMS] Invalid config for ${phoneConfig.phoneNumber}: provider=${phoneConfig.provider}, hasSid=${!!phoneConfig.accountSid}, hasToken=${!!phoneConfig.authToken}, hasApiKey=${!!phoneConfig.apiKey}`);
-          result = { success: false, error: 'Invalid provider configuration' };
+      if (result.success) {
+        progress.sent++;
+        progress.byNumber[phoneConfig.phoneNumber].sent++;
+      } else {
+        progress.failed++;
+        progress.byNumber[phoneConfig.phoneNumber].failed++;
+        errors.push({ phone: recipient.phone, error: result.error || 'Unknown error' });
+      }
+      progress.byNumber[phoneConfig.phoneNumber].pending--;
+
+      dbMessageBatch.push({
+        userId,
+        accountId: phoneConfig.accountId || null,
+        providerCode: phoneConfig.provider || null,
+        messageSid: result.messageSid || `batch_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
+        from: phoneConfig.phoneNumber,
+        to: recipient.phone,
+        body: personalizedMessage,
+        status: result.success ? 'sent' : 'failed',
+        direction: 'outbound-api',
+        sentAt: new Date(),
+        createdAt: new Date(),
+        campaignId: campaignId || null,
+      });
+
+      if (onProgress) {
+        onProgress({ ...progress });
+      }
+    };
+
+    // Batch database inserts for better performance
+    const dbMessageBatch: any[] = [];
+    const flushDbBatch = async () => {
+      if (dbMessageBatch.length > 0) {
+        try {
+          await db.insert(smsMessages).values(dbMessageBatch);
+          dbMessageBatch.length = 0;
+        } catch (dbError) {
+          console.error('[BatchSMS] Batch DB insert error:', dbError);
         }
+      }
+    };
 
-        // Update progress
-        if (result.success) {
-          progress.sent++;
-          progress.byNumber[phoneConfig.phoneNumber].sent++;
-        } else {
-          progress.failed++;
-          progress.byNumber[phoneConfig.phoneNumber].failed++;
-          errors.push({ phone: recipient.phone, error: result.error || 'Unknown error' });
-        }
-        progress.byNumber[phoneConfig.phoneNumber].pending--;
+    if (dripMode) {
+      // ===== GHL-STYLE DRIP MODE (Anti-Flagging) =====
+      //
+      // How it works (matching GHL/industry best practices):
+      //   1. messagesPerMinute = TOTAL campaign throughput across all numbers
+      //   2. Per-number rate is capped: minimum 3 seconds between sends on the SAME number
+      //      (max ~20 msgs/min per number) to avoid carrier flagging
+      //   3. Round-robin across numbers so each number gets natural breathing room
+      //   4. Random jitter (±500ms) on delays to avoid robotic patterns
+      //   5. If user sets a rate higher than numbers can safely handle, we cap it
+      //
+      // Example: 500 msgs/min with 10 numbers → 50 msgs/min per number → 1.2s delay per number
+      //          But minimum per-number delay is 3s, so effective = 20/num × 10 = 200 msgs/min max
+      //          The system will send at 200 msgs/min (the safe max), not 500.
 
-        // Add to database batch (will be inserted in batches of 100)
-        dbMessageBatch.push({
-          userId,
-          accountId: phoneConfig.accountId || null,
-          providerCode: phoneConfig.provider || null,
-          messageSid: result.messageSid || `batch_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
-          from: phoneConfig.phoneNumber,
-          to: recipient.phone,
-          body: personalizedMessage,
-          status: result.success ? 'sent' : 'failed',
-          direction: 'outbound-api',
-          sentAt: new Date(),
-          createdAt: new Date(),
-          campaignId: campaignId || null,
-        });
+      const MIN_PER_NUMBER_DELAY_MS = 3000; // 3 seconds minimum between sends on same number
+      const JITTER_MS = 500; // ±500ms random jitter to avoid robotic patterns
+      const numNumbers = phoneNumbers.length;
 
-        // Report progress
-        if (onProgress) {
-          onProgress({ ...progress });
-        }
-      };
+      // Calculate per-number rate from total rate
+      const requestedPerNumberRate = messagesPerMinute / numNumbers; // msgs/min per number
+      const maxSafePerNumberRate = 60000 / MIN_PER_NUMBER_DELAY_MS; // ~20 msgs/min per number
+      const effectivePerNumberRate = Math.min(requestedPerNumberRate, maxSafePerNumberRate);
+      const effectiveTotalRate = Math.round(effectivePerNumberRate * numNumbers);
+      const perNumberDelayMs = 60000 / effectivePerNumberRate; // actual delay per number
 
-      // Calculate delay between messages based on rate limit
-      const delayBetweenMessages = dripMode ? (60000 / messagesPerMinute) : 50; // ms
-      
-      // Batch database inserts for better performance
-      const dbMessageBatch: any[] = [];
-      const flushDbBatch = async () => {
-        if (dbMessageBatch.length > 0) {
-          try {
-            await db.insert(smsMessages).values(dbMessageBatch);
-            dbMessageBatch.length = 0;
-          } catch (dbError) {
-            console.error('[BatchSMS] Batch DB insert error:', dbError);
+      if (effectiveTotalRate < messagesPerMinute) {
+        console.log(`[BatchSMS] Drip mode: Requested ${messagesPerMinute} msgs/min but capping at ${effectiveTotalRate} msgs/min (safe limit: ${maxSafePerNumberRate} msgs/min per number × ${numNumbers} numbers)`);
+      }
+      console.log(`[BatchSMS] Drip mode: ${effectiveTotalRate} effective msgs/min, ${perNumberDelayMs.toFixed(0)}ms per-number delay, ${numNumbers} numbers`);
+
+      // Track last send time per number for precise per-number throttling
+      const lastSendTime: Map<string, number> = new Map();
+      phoneNumbers.forEach(pn => lastSendTime.set(pn.phoneNumber, 0));
+
+      // Flatten all recipients into round-robin order across numbers
+      const allMessages: Array<{ recipient: BatchRecipient; phoneConfig: PhoneNumberConfig }> = [];
+      const queuesArray = phoneNumbers.map(pn => ({
+        config: pn,
+        queue: numberQueues.get(pn.phoneNumber)!,
+        index: 0,
+      }));
+
+      let hasRemaining = true;
+      while (hasRemaining) {
+        hasRemaining = false;
+        for (const q of queuesArray) {
+          if (q.index < q.queue.length) {
+            allMessages.push({ recipient: q.queue[q.index], phoneConfig: q.config });
+            q.index++;
+            if (q.index < q.queue.length) hasRemaining = true;
           }
         }
-      };
+      }
 
-      // Process queue with concurrency limit and rate limiting
-      const processBatch = async (batch: BatchRecipient[]): Promise<void> => {
-        if (dripMode) {
-          // In drip mode, send messages sequentially with delay
-          for (const recipient of batch) {
-            await sendMessage(recipient);
-            if (batch.indexOf(recipient) < batch.length - 1) {
-              await new Promise(resolve => setTimeout(resolve, delayBetweenMessages));
-            }
-          }
-        } else {
-          // Normal mode: parallel sending
-          await Promise.all(batch.map(sendMessage));
+      // Send sequentially with per-number delay enforcement
+      for (let i = 0; i < allMessages.length; i++) {
+        const { recipient, phoneConfig } = allMessages[i];
+        progress.inProgress = 1;
+
+        // Estimated completion
+        const remainingMessages = allMessages.length - i;
+        const estimatedMinutes = remainingMessages / effectiveTotalRate;
+        progress.estimatedCompletionTime = new Date(Date.now() + estimatedMinutes * 60000);
+        progress.currentRate = effectiveTotalRate;
+
+        // Enforce per-number delay: wait until enough time has passed since last send on this number
+        const lastTime = lastSendTime.get(phoneConfig.phoneNumber) || 0;
+        const elapsed = Date.now() - lastTime;
+        const jitter = Math.floor(Math.random() * JITTER_MS * 2) - JITTER_MS; // random ±500ms
+        const requiredDelay = perNumberDelayMs + jitter;
+        if (elapsed < requiredDelay && lastTime > 0) {
+          await new Promise(resolve => setTimeout(resolve, requiredDelay - elapsed));
         }
-        
+
+        // Send the message
+        lastSendTime.set(phoneConfig.phoneNumber, Date.now());
+        await sendMessage(recipient, phoneConfig);
+        progress.inProgress = 0;
+
         // Flush DB batch every 100 messages
         if (dbMessageBatch.length >= 100) {
           await flushDbBatch();
         }
-      };
-
-      // Split queue into batches
-      const batchSize = dripMode ? 1 : concurrentPerNumber; // In drip mode, process 1 at a time
-      for (let i = 0; i < queue.length; i += batchSize) {
-        const batch = queue.slice(i, i + batchSize);
-        progress.inProgress += batch.length;
-        
-        // Calculate and report estimated completion time
-        if (dripMode && onProgress) {
-          const remainingMessages = queue.length - i;
-          const estimatedMinutes = remainingMessages / messagesPerMinute;
-          progress.estimatedCompletionTime = new Date(Date.now() + estimatedMinutes * 60000);
-          progress.currentRate = messagesPerMinute;
-        }
-        
-        await processBatch(batch);
-        progress.inProgress -= batch.length;
-        
-        // Delay between batches
-        if (i + batchSize < queue.length) {
-          await new Promise(resolve => setTimeout(resolve, dripMode ? delayBetweenMessages : 50));
-        }
       }
-      
-      // Flush any remaining messages in the batch
-      await flushDbBatch();
-    });
 
-    // Wait for all numbers to complete
-    await Promise.all(numberPromises);
+      await flushDbBatch();
+    } else {
+      // ===== NORMAL PARALLEL MODE =====
+      // Process each number's queue in parallel with concurrency limit
+      const numberPromises = phoneNumbers.map(async (phoneConfig) => {
+        const queue = numberQueues.get(phoneConfig.phoneNumber)!;
+        if (queue.length === 0) return;
+
+        for (let i = 0; i < queue.length; i += concurrentPerNumber) {
+          const batch = queue.slice(i, i + concurrentPerNumber);
+          progress.inProgress += batch.length;
+
+          await Promise.all(batch.map(r => sendMessage(r, phoneConfig)));
+          progress.inProgress -= batch.length;
+
+          // Flush DB batch every 100 messages
+          if (dbMessageBatch.length >= 100) {
+            await flushDbBatch();
+          }
+
+          // Small delay between batches to avoid overwhelming
+          if (i + concurrentPerNumber < queue.length) {
+            await new Promise(resolve => setTimeout(resolve, 50));
+          }
+        }
+
+        await flushDbBatch();
+      });
+
+      await Promise.all(numberPromises);
+    }
 
     const duration = Date.now() - startTime;
     console.log(`[BatchSMS] Completed: ${progress.sent} sent, ${progress.failed} failed in ${duration}ms`);

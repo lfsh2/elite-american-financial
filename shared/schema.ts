@@ -589,15 +589,42 @@ export const smsCampaigns = pgTable("sms_campaigns", {
   startedAt: timestamp("started_at"),
   completedAt: timestamp("completed_at"),
   
+  // Send mode: 'immediate', 'scheduled', 'drip'
+  sendMode: text("send_mode").notNull().default("immediate"),
+  
+  // Drip mode settings
+  dripMessagesPerMinute: integer("drip_messages_per_minute").default(30),
+  dripConcurrentPerNumber: integer("drip_concurrent_per_number").default(20),
+  
   // Sending options
   sendingRate: integer("sending_rate").default(1), // Messages per second
   timezone: text("timezone").default("UTC"),
+  timezoneSchedulingEnabled: boolean("timezone_scheduling_enabled").default(false),
+  
+  // Campaign options
+  forwardNumberOverride: text("forward_number_override"),
+  filterChannelsEnabled: boolean("filter_channels_enabled").default(false),
+  disableClaimsEnabled: boolean("disable_claims_enabled").default(false),
+  optOutMessageEnabled: boolean("opt_out_message_enabled").default(false),
+  optOutMessageText: text("opt_out_message_text").default("Reply STOP to Opt-Out"),
+  
+  // Automated response
+  autoResponseEnabled: boolean("auto_response_enabled").default(false),
+  autoResponseMessage: text("auto_response_message"),
+  autoResponseKeywords: text("auto_response_keywords").array(),
   
   // Stats
   sentCount: integer("sent_count").default(0),
   deliveredCount: integer("delivered_count").default(0),
   failedCount: integer("failed_count").default(0),
   optOutCount: integer("opt_out_count").default(0),
+  responseCount: integer("response_count").default(0),
+  linkClickCount: integer("link_click_count").default(0),
+  invalidNumberCount: integer("invalid_number_count").default(0),
+  spamReportCount: integer("spam_report_count").default(0),
+  
+  // Archive
+  isArchived: boolean("is_archived").default(false),
   
   // Metadata
   metadata: jsonb("metadata"),
@@ -614,6 +641,11 @@ export const insertSmsCampaignSchema = createInsertSchema(smsCampaigns).omit({
   deliveredCount: true,
   failedCount: true,
   optOutCount: true,
+  responseCount: true,
+  linkClickCount: true,
+  invalidNumberCount: true,
+  spamReportCount: true,
+  isArchived: true,
   createdAt: true,
   updatedAt: true,
 });
@@ -641,6 +673,7 @@ export const campaignRecipients = pgTable("campaign_recipients", {
   errorCode: text("error_code"),
   errorMessage: text("error_message"),
   
+  recipientTimezone: text("recipient_timezone"),
   createdAt: timestamp("created_at").notNull().defaultNow(),
 });
 
@@ -691,6 +724,24 @@ export type InsertCampaignRecipient = z.infer<typeof insertCampaignRecipientSche
 
 export type OptOut = typeof optOutList.$inferSelect;
 export type InsertOptOut = z.infer<typeof insertOptOutSchema>;
+
+// Campaign Permissions
+export const campaignPermissions = pgTable("campaign_permissions", {
+  id: serial("id").primaryKey(),
+  smsCampaignId: integer("sms_campaign_id").notNull().references(() => smsCampaigns.id),
+  userId: integer("user_id").references(() => users.id),
+  userGroup: text("user_group"),
+  permissionType: text("permission_type").notNull().default("view"), // view, send, manage
+  createdAt: timestamp("created_at").defaultNow(),
+});
+
+export const insertCampaignPermissionSchema = createInsertSchema(campaignPermissions).omit({
+  id: true,
+  createdAt: true,
+});
+
+export type CampaignPermission = typeof campaignPermissions.$inferSelect;
+export type InsertCampaignPermission = z.infer<typeof insertCampaignPermissionSchema>;
 
 // Message Templates (reusable campaign message templates)
 export const messageTemplates = pgTable("message_templates", {

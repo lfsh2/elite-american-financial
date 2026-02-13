@@ -111,10 +111,29 @@ interface SmsCampaign {
   sentCount: number;
   deliveredCount: number;
   failedCount: number;
+  optOutCount: number;
   scheduledAt?: string;
   startedAt?: string;
   completedAt?: string;
   createdAt: string;
+  // New campaign mode fields
+  sendMode?: string;
+  dripMessagesPerMinute?: number;
+  dripConcurrentPerNumber?: number;
+  timezoneSchedulingEnabled?: boolean;
+  forwardNumberOverride?: string;
+  filterChannelsEnabled?: boolean;
+  disableClaimsEnabled?: boolean;
+  optOutMessageEnabled?: boolean;
+  optOutMessageText?: string;
+  autoResponseEnabled?: boolean;
+  autoResponseMessage?: string;
+  autoResponseKeywords?: string[];
+  responseCount?: number;
+  linkClickCount?: number;
+  invalidNumberCount?: number;
+  spamReportCount?: number;
+  isArchived?: boolean;
 }
 
 interface PhoneNumber {
@@ -171,6 +190,33 @@ export default function SmsCampaigns() {
     customVariables: {} as Record<string, string>, // Custom variable default values
   });
   
+  // Send mode: 'immediate', 'scheduled', 'drip'
+  const [sendMode, setSendMode] = useState<'immediate' | 'scheduled' | 'drip'>('immediate');
+  const [scheduledDate, setScheduledDate] = useState('');
+  const [scheduledTime, setScheduledTime] = useState('');
+  const [scheduledTimezone, setScheduledTimezone] = useState('America/New_York');
+  
+  // Campaign options
+  const [forwardNumberOverride, setForwardNumberOverride] = useState('');
+  const [filterChannelsEnabled, setFilterChannelsEnabled] = useState(false);
+  const [disableClaimsEnabled, setDisableClaimsEnabled] = useState(false);
+  const [optOutMessageEnabled, setOptOutMessageEnabled] = useState(false);
+  const [optOutMessageText, setOptOutMessageText] = useState('Reply STOP to Opt-Out');
+  const [timezoneSchedulingEnabled, setTimezoneSchedulingEnabled] = useState(false);
+  
+  // Automated response
+  const [autoResponseEnabled, setAutoResponseEnabled] = useState(false);
+  const [autoResponseMessage, setAutoResponseMessage] = useState('');
+  const [autoResponseKeywords, setAutoResponseKeywords] = useState('');
+  
+  // Test message
+  const [testPhoneNumber, setTestPhoneNumber] = useState('');
+  const [isSendingTest, setIsSendingTest] = useState(false);
+  const [testMessagePreview, setTestMessagePreview] = useState('');
+  
+  // Campaign detail view
+  const [viewingCampaignDetail, setViewingCampaignDetail] = useState<SmsCampaign | null>(null);
+  
   // Multi-select phone numbers for batch sending (Twilio-style)
   const [numberSelectionMode, setNumberSelectionMode] = useState<'all' | 'select' | 'single'>('all');
   const [selectedFromNumbers, setSelectedFromNumbers] = useState<Set<string>>(new Set());
@@ -193,6 +239,7 @@ export default function SmsCampaigns() {
   // Campaign sending
   const [isSending, setIsSending] = useState(false);
   const [selectedCampaign, setSelectedCampaign] = useState<SmsCampaign | null>(null);
+  const [sendingCampaignId, setSendingCampaignId] = useState<number | null>(null);
   
   // Message templates
   const [messageTemplates, setMessageTemplates] = useState<MessageTemplate[]>([]);
@@ -216,6 +263,44 @@ export default function SmsCampaigns() {
   useEffect(() => {
     fetchData();
   }, [currentAccount]);
+
+  // Resume polling for any active sending campaigns on mount
+  useEffect(() => {
+    const activeSending = campaigns.find(c => c.status === 'sending');
+    if (activeSending && !showProgress && !isSending) {
+      setSendingCampaignId(activeSending.id);
+      setShowProgress(true);
+      setIsSending(true);
+      setSendingProgress({ sent: activeSending.sentCount || 0, failed: activeSending.failedCount || 0, total: activeSending.recipientCount || 0 });
+
+      const pollProgress = async () => {
+        try {
+          const progressRes = await fetch(`/api/campaigns/sms-campaigns/${activeSending.id}/progress`, {
+            credentials: 'include',
+          });
+          if (progressRes.ok) {
+            const progress = await progressRes.json();
+            setSendingProgress({ sent: progress.sent, failed: progress.failed, total: progress.total });
+
+            if (progress.status === 'completed') {
+              setIsSending(false);
+              setSendingCampaignId(null);
+              fetchData();
+              setTimeout(() => setShowProgress(false), 5000);
+              return;
+            }
+            setTimeout(pollProgress, 2000);
+          } else {
+            setTimeout(pollProgress, 3000);
+          }
+        } catch (err) {
+          console.error('Error polling progress:', err);
+          setTimeout(pollProgress, 3000);
+        }
+      };
+      pollProgress();
+    }
+  }, [campaigns]);
 
   // Fetch custom fields when campaign dialog opens or contact list changes
   useEffect(() => {
@@ -1152,6 +1237,19 @@ export default function SmsCampaigns() {
     try {
       const accountId = currentAccount?.id ? parseInt(String(currentAccount.id).replace('acc_', '')) : undefined;
       
+      // Build scheduled date if in scheduled mode
+      let scheduledAt: string | undefined;
+      if (sendMode === 'scheduled' && scheduledDate && scheduledTime) {
+        const dateStr = `${scheduledDate}T${scheduledTime}:00`;
+        scheduledAt = new Date(dateStr).toISOString();
+      }
+
+      // Append opt-out text to message if enabled
+      let finalMessage = newCampaign.messageTemplate;
+      if (optOutMessageEnabled && optOutMessageText) {
+        finalMessage += '\n' + optOutMessageText;
+      }
+
       // Create campaign
       const res = await fetch('/api/campaigns/sms-campaigns', {
         method: 'POST',
@@ -1161,10 +1259,31 @@ export default function SmsCampaigns() {
           accountId: newCampaign.fromAccountId ? parseInt(String(newCampaign.fromAccountId).replace('acc_', '')) : accountId,
           name: newCampaign.name,
           description: newCampaign.description,
-          messageTemplate: newCampaign.messageTemplate,
+          messageTemplate: finalMessage,
           fromNumber: newCampaign.fromNumber,
           contactListId: newCampaign.contactListId ? parseInt(newCampaign.contactListId) : undefined,
           customVariables: Object.keys(newCampaign.customVariables).length > 0 ? newCampaign.customVariables : undefined,
+          // Send mode
+          sendMode,
+          scheduledAt,
+          timezone: scheduledTimezone,
+          // Drip settings
+          dripMessagesPerMinute: sendMode === 'drip' ? messagesPerMinute : undefined,
+          dripConcurrentPerNumber: sendMode === 'drip' ? 1 : 20,
+          // Time zone scheduling
+          timezoneSchedulingEnabled,
+          // Campaign options
+          forwardNumberOverride: forwardNumberOverride || undefined,
+          filterChannelsEnabled,
+          disableClaimsEnabled,
+          optOutMessageEnabled,
+          optOutMessageText: optOutMessageEnabled ? optOutMessageText : undefined,
+          // Automated response
+          autoResponseEnabled,
+          autoResponseMessage: autoResponseEnabled ? autoResponseMessage : undefined,
+          autoResponseKeywords: autoResponseEnabled && autoResponseKeywords 
+            ? autoResponseKeywords.split(',').map((k: string) => k.trim()).filter(Boolean)
+            : undefined,
         }),
       });
 
@@ -1252,6 +1371,7 @@ export default function SmsCampaigns() {
 
     setIsSending(true);
     setShowProgress(true);
+    setSendingCampaignId(campaignId);
     setSendingProgress({ sent: 0, failed: 0, total: 0 });
 
     try {
@@ -1282,6 +1402,10 @@ export default function SmsCampaigns() {
         };
       });
 
+      // Determine drip mode from campaign's saved settings or local state
+      const campaignDripMode = campaign?.sendMode === 'drip' || dripMode;
+      const campaignMsgsPerMin = campaign?.dripMessagesPerMinute || messagesPerMinute;
+
       // Use batch API - server loads recipients from DB directly (handles 30k-50k+ contacts)
       // No need to send recipients over the wire, the server loads from campaign_recipients table
       const batchRes = await fetch('/api/sms/batch', {
@@ -1294,9 +1418,9 @@ export default function SmsCampaigns() {
           campaignId,
           userId: 1,
           messagesPerNumber: 2000,
-          concurrentPerNumber: dripMode ? 1 : 20,
-          dripMode,
-          messagesPerMinute,
+          concurrentPerNumber: campaignDripMode ? 1 : 20,
+          dripMode: campaignDripMode,
+          messagesPerMinute: campaignMsgsPerMin,
         }),
       });
 
@@ -1335,12 +1459,13 @@ export default function SmsCampaigns() {
               
               if (progress.status === 'completed') {
                 setIsSending(false);
+                setSendingCampaignId(null);
                 toast({
                   title: 'Campaign Completed',
                   description: `Sent ${progress.sent} messages, ${progress.failed} failed`,
                 });
                 fetchData();
-                setTimeout(() => setShowProgress(false), 3000);
+                setTimeout(() => setShowProgress(false), 5000);
                 return;
               }
               
@@ -1369,6 +1494,7 @@ export default function SmsCampaigns() {
         variant: 'destructive'
       });
       setIsSending(false);
+      setSendingCampaignId(null);
       setShowProgress(false);
     }
   };
@@ -1923,91 +2049,260 @@ export default function SmsCampaigns() {
                       )}
                     </div>
                     
-                    {/* Drip Mode Settings */}
+                    {/* Send Mode Selector */}
                     <div className="space-y-3 border-t pt-5 mt-5">
-                      <div className="flex items-center justify-between">
-                        <div>
-                          <Label className="text-base font-semibold">Drip Mode (Safe Sending)</Label>
-                          <p className="text-xs text-gray-600 mt-1">
-                            Spread messages over time to avoid carrier filtering
-                          </p>
-                        </div>
+                      <Label className="text-base font-semibold">Send Mode</Label>
+                      <p className="text-xs text-gray-600">Choose how and when to send your campaign</p>
+                      
+                      <div className="grid grid-cols-3 gap-2">
                         <button
                           type="button"
-                          onClick={() => setDripMode(!dripMode)}
-                          className={`relative inline-flex h-7 w-12 items-center rounded-full transition-colors focus:outline-none focus:ring-2 focus:ring-green-500 focus:ring-offset-2 ${
-                            dripMode ? 'bg-green-600' : 'bg-gray-300'
+                          onClick={() => { setSendMode('immediate'); setDripMode(false); }}
+                          className={`p-3 rounded-lg border-2 text-center transition-all ${
+                            sendMode === 'immediate' 
+                              ? 'border-blue-500 bg-blue-50 text-blue-800' 
+                              : 'border-gray-200 hover:border-gray-300'
                           }`}
                         >
-                          <span
-                            className={`inline-block h-5 w-5 transform rounded-full bg-white shadow-sm transition-transform ${
-                              dripMode ? 'translate-x-6' : 'translate-x-1'
-                            }`}
-                          />
+                          <Zap className="h-5 w-5 mx-auto mb-1" />
+                          <div className="text-xs font-semibold">Immediate</div>
+                          <div className="text-[10px] text-gray-500">Send now</div>
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => { setSendMode('scheduled'); setDripMode(false); }}
+                          className={`p-3 rounded-lg border-2 text-center transition-all ${
+                            sendMode === 'scheduled' 
+                              ? 'border-purple-500 bg-purple-50 text-purple-800' 
+                              : 'border-gray-200 hover:border-gray-300'
+                          }`}
+                        >
+                          <Clock className="h-5 w-5 mx-auto mb-1" />
+                          <div className="text-xs font-semibold">Scheduled</div>
+                          <div className="text-[10px] text-gray-500">Send later</div>
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => { setSendMode('drip'); setDripMode(true); }}
+                          className={`p-3 rounded-lg border-2 text-center transition-all ${
+                            sendMode === 'drip' 
+                              ? 'border-green-500 bg-green-50 text-green-800' 
+                              : 'border-gray-200 hover:border-gray-300'
+                          }`}
+                        >
+                          <Target className="h-5 w-5 mx-auto mb-1" />
+                          <div className="text-xs font-semibold">Drip</div>
+                          <div className="text-[10px] text-gray-500">Throttled</div>
                         </button>
                       </div>
-                      
-                      {dripMode && (
-                        <div className="bg-gradient-to-br from-green-50 to-emerald-50 border border-green-200 rounded-xl p-5 space-y-4 shadow-sm">
-                          <div className="flex items-start gap-3">
-                            <div className="p-2 bg-green-100 rounded-lg">
-                              <Zap className="h-5 w-5 text-green-700" />
+
+                      {/* Scheduled Mode Settings */}
+                      {sendMode === 'scheduled' && (
+                        <div className="bg-purple-50 border border-purple-200 rounded-xl p-4 space-y-3">
+                          <div className="flex items-center gap-2 mb-1">
+                            <Clock className="h-4 w-4 text-purple-600" />
+                            <span className="font-semibold text-purple-900 text-sm">Schedule Settings</span>
+                          </div>
+                          <div className="grid grid-cols-2 gap-3">
+                            <div className="space-y-1">
+                              <Label className="text-xs text-purple-800">Date *</Label>
+                              <Input
+                                type="date"
+                                value={scheduledDate}
+                                onChange={(e) => setScheduledDate(e.target.value)}
+                                min={new Date().toISOString().split('T')[0]}
+                                className="border-purple-300 focus:border-purple-500"
+                              />
                             </div>
-                            <div className="flex-1">
-                              <Label className="text-sm font-semibold text-green-900">Messages Per Minute (Per Number)</Label>
-                              <p className="text-xs text-green-700 mt-1 mb-3">
-                                Safe rate: 20-60 msgs/min. Lower = safer for new numbers.
-                              </p>
-                              <div className="flex items-center gap-4">
-                                <input
-                                  type="range"
-                                  min="10"
-                                  max="120"
-                                  step="10"
-                                  value={messagesPerMinute}
-                                  onChange={(e) => setMessagesPerMinute(parseInt(e.target.value))}
-                                  className="flex-1 h-2 bg-green-200 rounded-lg appearance-none cursor-pointer accent-green-600"
-                                />
-                                <Input
-                                  type="number"
-                                  min="10"
-                                  max="120"
-                                  value={messagesPerMinute}
-                                  onChange={(e) => setMessagesPerMinute(parseInt(e.target.value) || 30)}
-                                  className="w-20 text-center font-semibold border-green-300 focus:border-green-500 focus:ring-green-500"
-                                />
-                              </div>
-                              <div className="flex items-center justify-between mt-3 text-xs">
-                                <span className="font-medium text-green-800">
-                                  {messagesPerMinute <= 30 ? '🟢 Very Safe' : messagesPerMinute <= 60 ? '🟡 Safe' : '🟠 Moderate'}
-                                </span>
-                                <span className="text-green-800 font-semibold">
-                                  {messagesPerMinute} msgs/min
-                                </span>
-                              </div>
+                            <div className="space-y-1">
+                              <Label className="text-xs text-purple-800">Time *</Label>
+                              <Input
+                                type="time"
+                                value={scheduledTime}
+                                onChange={(e) => setScheduledTime(e.target.value)}
+                                className="border-purple-300 focus:border-purple-500"
+                              />
                             </div>
                           </div>
-                          
-                          <div className="bg-white rounded-lg p-4 text-xs space-y-2 shadow-sm border border-green-100">
-                            <div className="flex justify-between">
-                              <span className="text-gray-600">Delay between messages:</span>
-                              <span className="font-medium">{(60 / messagesPerMinute).toFixed(1)}s</span>
-                            </div>
-                            <div className="flex justify-between">
-                              <span className="text-gray-600">Est. time for 1000 msgs:</span>
-                              <span className="font-medium">{Math.ceil(1000 / messagesPerMinute)} minutes</span>
-                            </div>
+                          <div className="space-y-1">
+                            <Label className="text-xs text-purple-800">Timezone</Label>
+                            <Select value={scheduledTimezone} onValueChange={setScheduledTimezone}>
+                              <SelectTrigger className="border-purple-300">
+                                <SelectValue />
+                              </SelectTrigger>
+                              <SelectContent>
+                                <SelectItem value="America/New_York">Eastern (ET)</SelectItem>
+                                <SelectItem value="America/Chicago">Central (CT)</SelectItem>
+                                <SelectItem value="America/Denver">Mountain (MT)</SelectItem>
+                                <SelectItem value="America/Los_Angeles">Pacific (PT)</SelectItem>
+                                <SelectItem value="America/Anchorage">Alaska (AKT)</SelectItem>
+                                <SelectItem value="Pacific/Honolulu">Hawaii (HT)</SelectItem>
+                                <SelectItem value="UTC">UTC</SelectItem>
+                              </SelectContent>
+                            </Select>
                           </div>
-                          
-                          <div className="flex items-start gap-2 text-xs text-green-800 bg-green-100 rounded-lg p-3 border border-green-200">
-                            <AlertCircle className="h-4 w-4 mt-0.5 flex-shrink-0" />
-                            <div>
-                              <strong className="font-semibold">Best Practices:</strong> Keep opt-out rate &lt;1%, error rate &lt;6%. 
-                              Include opt-out language and sender ID in messages.
+                          {scheduledDate && scheduledTime && (
+                            <div className="bg-white rounded-lg p-3 text-xs text-purple-800 border border-purple-100">
+                              Campaign will send on <strong>{new Date(`${scheduledDate}T${scheduledTime}`).toLocaleString()}</strong> ({scheduledTimezone.split('/')[1]?.replace('_', ' ')})
+                            </div>
+                          )}
+                        </div>
+                      )}
+
+                      {/* Drip Mode Settings */}
+                      {sendMode === 'drip' && (() => {
+                        // Calculate effective rate with anti-flagging caps (mirrors backend logic)
+                        const numNumbers = numberSelectionMode === 'all'
+                          ? filteredNumbers.length
+                          : numberSelectionMode === 'select'
+                            ? selectedFromNumbers.size
+                            : 1;
+                        const safeNumNumbers = Math.max(numNumbers, 1);
+                        const MIN_PER_NUMBER_DELAY_S = 3; // 3s minimum between sends on same number
+                        const maxSafePerNumber = 60 / MIN_PER_NUMBER_DELAY_S; // ~20 msgs/min per number
+                        const requestedPerNumber = messagesPerMinute / safeNumNumbers;
+                        const effectivePerNumber = Math.min(requestedPerNumber, maxSafePerNumber);
+                        const effectiveTotal = Math.round(effectivePerNumber * safeNumNumbers);
+                        const isCapped = effectiveTotal < messagesPerMinute;
+                        const perNumberDelay = 60 / effectivePerNumber;
+
+                        return (
+                        <div className="bg-green-50 border border-green-200 rounded-lg p-4 space-y-3">
+                          <div className="flex items-center gap-2">
+                            <Target className="h-4 w-4 text-green-600" />
+                            <span className="font-semibold text-green-900 text-sm">Drip Settings</span>
+                          </div>
+                          <div className="space-y-1">
+                            <Label className="text-xs text-green-800">Messages Per Minute (Total Campaign Rate)</Label>
+                            <input
+                              type="text"
+                              inputMode="numeric"
+                              pattern="[0-9]*"
+                              value={messagesPerMinute}
+                              onChange={(e) => {
+                                const val = e.target.value.replace(/\D/g, '');
+                                setMessagesPerMinute(val ? parseInt(val) : 0);
+                              }}
+                              onBlur={() => {
+                                if (!messagesPerMinute || messagesPerMinute < 1) setMessagesPerMinute(30);
+                              }}
+                              placeholder="30"
+                              className="w-full rounded-md border border-green-300 bg-white px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-green-500 focus:border-green-500"
+                            />
+                            <p className="text-[10px] text-green-600">Recommended: 20–60 msgs/min. Lower is safer for new numbers.</p>
+                          </div>
+
+                          {/* Anti-flagging warning */}
+                          {isCapped && (
+                            <div className="bg-amber-50 border border-amber-200 rounded-lg p-2.5 text-xs text-amber-800">
+                              <strong>Rate capped for safety:</strong> With {safeNumNumbers} number{safeNumNumbers > 1 ? 's' : ''}, max safe rate is <strong>{effectiveTotal} msgs/min</strong> (max ~{maxSafePerNumber}/min per number with {MIN_PER_NUMBER_DELAY_S}s delay). Your {messagesPerMinute} msgs/min will be automatically capped.
+                            </div>
+                          )}
+
+                          <div className="bg-white rounded-lg p-3 text-xs space-y-1.5 border border-green-100">
+                            <div className="flex justify-between">
+                              <span className="text-gray-600">Numbers selected:</span>
+                              <span className="font-medium">{safeNumNumbers}</span>
+                            </div>
+                            <div className="flex justify-between">
+                              <span className="text-gray-600">Per-number delay:</span>
+                              <span className="font-medium">{perNumberDelay.toFixed(1)}s</span>
+                            </div>
+                            <div className="flex justify-between">
+                              <span className="text-gray-600">Effective rate:</span>
+                              <span className={`font-medium ${isCapped ? 'text-amber-700' : 'text-green-700'}`}>{effectiveTotal} msgs/min</span>
+                            </div>
+                            <div className="flex justify-between">
+                              <span className="text-gray-600">Est. time for 1,000 msgs:</span>
+                              <span className="font-medium">{Math.ceil(1000 / effectiveTotal)} min</span>
                             </div>
                           </div>
                         </div>
-                      )}
+                        );
+                      })()}
+                    </div>
+
+                    {/* Campaign Options */}
+                    <div className="space-y-3 border-t pt-5 mt-3">
+                      <Label className="text-base font-semibold">Options</Label>
+                      
+                      {/* Forward Number Override */}
+                      <div className="space-y-1">
+                        <Label className="text-xs font-medium">Forward Number Override</Label>
+                        <div className="flex gap-2">
+                          <Input
+                            placeholder="Enter Forward Number"
+                            value={forwardNumberOverride}
+                            onChange={(e) => setForwardNumberOverride(e.target.value)}
+                            className="flex-1"
+                          />
+                          {forwardNumberOverride && (
+                            <Button variant="outline" size="sm" onClick={() => setForwardNumberOverride('')}>
+                              Clear
+                            </Button>
+                          )}
+                        </div>
+                      </div>
+
+                      {/* Toggle Options */}
+                      <div className="space-y-2">
+                        {/* Filter Channels */}
+                        <div className="flex items-center justify-between py-2">
+                          <div>
+                            <span className="text-sm font-medium">Filter Channels</span>
+                            <p className="text-[10px] text-gray-500">Filter out contacts that already have assigned channels</p>
+                          </div>
+                          <button
+                            type="button"
+                            onClick={() => setFilterChannelsEnabled(!filterChannelsEnabled)}
+                            className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors ${
+                              filterChannelsEnabled ? 'bg-blue-600' : 'bg-gray-300'
+                            }`}
+                          >
+                            <span className={`inline-block h-4 w-4 transform rounded-full bg-white shadow-sm transition-transform ${
+                              filterChannelsEnabled ? 'translate-x-6' : 'translate-x-1'
+                            }`} />
+                          </button>
+                        </div>
+
+                        {/* Disable Campaign Claims */}
+                        <div className="flex items-center justify-between py-2">
+                          <div>
+                            <span className="text-sm font-medium">Disable Campaign Claims</span>
+                            <p className="text-[10px] text-gray-500">Campaign level disable claims for round robin assignment</p>
+                          </div>
+                          <button
+                            type="button"
+                            onClick={() => setDisableClaimsEnabled(!disableClaimsEnabled)}
+                            className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors ${
+                              disableClaimsEnabled ? 'bg-blue-600' : 'bg-gray-300'
+                            }`}
+                          >
+                            <span className={`inline-block h-4 w-4 transform rounded-full bg-white shadow-sm transition-transform ${
+                              disableClaimsEnabled ? 'translate-x-6' : 'translate-x-1'
+                            }`} />
+                          </button>
+                        </div>
+
+                        {/* Time Zone Scheduling */}
+                        <div className="flex items-center justify-between py-2">
+                          <div>
+                            <span className="text-sm font-medium">Time Zone Scheduling</span>
+                            <p className="text-[10px] text-gray-500">Send at optimal times across different time zones, East to West</p>
+                          </div>
+                          <button
+                            type="button"
+                            onClick={() => setTimezoneSchedulingEnabled(!timezoneSchedulingEnabled)}
+                            className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors ${
+                              timezoneSchedulingEnabled ? 'bg-blue-600' : 'bg-gray-300'
+                            }`}
+                          >
+                            <span className={`inline-block h-4 w-4 transform rounded-full bg-white shadow-sm transition-transform ${
+                              timezoneSchedulingEnabled ? 'translate-x-6' : 'translate-x-1'
+                            }`} />
+                          </button>
+                        </div>
+                      </div>
                     </div>
                   </>
                 )}
@@ -2261,10 +2556,147 @@ export default function SmsCampaigns() {
                         })()}
                       </div>
                       <p className="text-xs text-muted-foreground mt-2">
-                        {newCampaign.messageTemplate.length} characters
-                        {newCampaign.messageTemplate.length > 160 && ` (${Math.ceil(newCampaign.messageTemplate.length / 160)} segments)`}
+                        Characters: {newCampaign.messageTemplate.length} &nbsp; Segments: {Math.ceil(newCampaign.messageTemplate.length / 160) || 0} / 8
                       </p>
                     </div>
+
+                    {/* Opt-out Message */}
+                    <div className="flex items-center justify-between py-3 border-t">
+                      <div>
+                        <span className="text-sm font-medium">Opt-out Message</span>
+                        <p className="text-[10px] text-gray-500">Include "Reply STOP to Opt-Out" in your message</p>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => setOptOutMessageEnabled(!optOutMessageEnabled)}
+                        className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors ${
+                          optOutMessageEnabled ? 'bg-blue-600' : 'bg-gray-300'
+                        }`}
+                      >
+                        <span className={`inline-block h-4 w-4 transform rounded-full bg-white shadow-sm transition-transform ${
+                          optOutMessageEnabled ? 'translate-x-6' : 'translate-x-1'
+                        }`} />
+                      </button>
+                    </div>
+                    {optOutMessageEnabled && (
+                      <Input
+                        value={optOutMessageText}
+                        onChange={(e) => setOptOutMessageText(e.target.value)}
+                        placeholder="Reply STOP to Opt-Out"
+                        className="text-sm"
+                      />
+                    )}
+
+                    {/* Live Preview with opt-out */}
+                    {optOutMessageEnabled && newCampaign.messageTemplate && (
+                      <div className="bg-gray-50 rounded-lg p-3">
+                        <Label className="text-xs font-medium text-gray-600">Live Preview</Label>
+                        <p className="text-sm mt-1 text-gray-800">
+                          {newCampaign.messageTemplate
+                            .replace(/\{first_name\}/g, 'John')
+                            .replace(/\{last_name\}/g, 'Doe')
+                            .replace(/\{phone\}/g, '+1234567890')}
+                          {'\n' + optOutMessageText}
+                        </p>
+                      </div>
+                    )}
+
+                    {/* Test Your Message */}
+                    <div className="border-t pt-3 space-y-2">
+                      <Label className="text-sm font-medium">Test Your Message</Label>
+                      <div className="flex gap-2">
+                        <Input
+                          placeholder="Enter phone number to test"
+                          value={testPhoneNumber}
+                          onChange={(e) => setTestPhoneNumber(e.target.value)}
+                          className="flex-1"
+                        />
+                        <Button
+                          variant="default"
+                          size="sm"
+                          disabled={!testPhoneNumber || !newCampaign.messageTemplate || isSendingTest}
+                          onClick={async () => {
+                            setIsSendingTest(true);
+                            try {
+                              // First create a temp campaign or use existing
+                              const preview = newCampaign.messageTemplate
+                                .replace(/\{first_name\}/g, 'John')
+                                .replace(/\{last_name\}/g, 'Doe')
+                                .replace(/\{phone\}/g, testPhoneNumber);
+                              
+                              setTestMessagePreview(preview);
+                              
+                              // Send test via the provider directly
+                              const testRes = await fetch('/api/sms/send', {
+                                method: 'POST',
+                                headers: { 'Content-Type': 'application/json' },
+                                credentials: 'include',
+                                body: JSON.stringify({
+                                  to: testPhoneNumber,
+                                  message: preview + (optOutMessageEnabled ? '\n' + optOutMessageText : ''),
+                                  from: newCampaign.fromNumber?.split(',')[0]?.trim(),
+                                }),
+                              });
+                              
+                              if (testRes.ok) {
+                                toast({ title: 'Test Sent', description: `Test message sent to ${testPhoneNumber}` });
+                              } else {
+                                const err = await testRes.json();
+                                toast({ title: 'Test Failed', description: err.error || 'Failed to send test', variant: 'destructive' });
+                              }
+                            } catch (e: any) {
+                              toast({ title: 'Error', description: e.message, variant: 'destructive' });
+                            } finally {
+                              setIsSendingTest(false);
+                            }
+                          }}
+                        >
+                          {isSendingTest ? <Loader2 className="h-4 w-4 animate-spin" /> : 'Send'}
+                        </Button>
+                      </div>
+                    </div>
+
+                    {/* Automated Response */}
+                    <div className="flex items-center justify-between py-3 border-t">
+                      <div>
+                        <span className="text-sm font-medium">Automated Response</span>
+                        <p className="text-[10px] text-gray-500">Configure an automatic reply for positive responses</p>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => setAutoResponseEnabled(!autoResponseEnabled)}
+                        className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors ${
+                          autoResponseEnabled ? 'bg-blue-600' : 'bg-gray-300'
+                        }`}
+                      >
+                        <span className={`inline-block h-4 w-4 transform rounded-full bg-white shadow-sm transition-transform ${
+                          autoResponseEnabled ? 'translate-x-6' : 'translate-x-1'
+                        }`} />
+                      </button>
+                    </div>
+                    {autoResponseEnabled && (
+                      <div className="space-y-2 bg-blue-50 border border-blue-200 rounded-lg p-3">
+                        <div className="space-y-1">
+                          <Label className="text-xs text-blue-800">Auto-Reply Message</Label>
+                          <Textarea
+                            placeholder="Thank you for your response! A representative will be in touch shortly."
+                            value={autoResponseMessage}
+                            onChange={(e) => setAutoResponseMessage(e.target.value)}
+                            className="min-h-[60px] text-sm border-blue-300"
+                          />
+                        </div>
+                        <div className="space-y-1">
+                          <Label className="text-xs text-blue-800">Trigger Keywords (comma-separated)</Label>
+                          <Input
+                            placeholder="yes, interested, call me, info"
+                            value={autoResponseKeywords}
+                            onChange={(e) => setAutoResponseKeywords(e.target.value)}
+                            className="text-sm border-blue-300"
+                          />
+                          <p className="text-[10px] text-blue-600">Leave empty to auto-reply to all responses</p>
+                        </div>
+                      </div>
+                    )}
                   </>
                 )}
 
@@ -2500,6 +2932,33 @@ export default function SmsCampaigns() {
         </Card>
       </div>
 
+      {/* Sending Progress - Sticky above tabs so it persists across page navigation */}
+      {showProgress && (
+        <Card className="mb-4 border-blue-200 bg-blue-50 shadow-md">
+          <CardContent className="pt-4">
+            <div className="flex items-center justify-between mb-2">
+              <div className="flex items-center gap-2">
+                <Loader2 className="h-4 w-4 animate-spin text-blue-600" />
+                <span className="font-medium text-blue-800">
+                  {isSending ? 'Sending' : 'Completed'}: {sendingCampaignId ? (campaigns.find(c => c.id === sendingCampaignId)?.name || `Campaign #${sendingCampaignId}`) : 'Campaign'}
+                </span>
+              </div>
+              <span className="text-sm font-semibold text-blue-700">
+                {sendingProgress.total > 0 ? Math.round(((sendingProgress.sent + sendingProgress.failed) / sendingProgress.total) * 100) : 0}% — {(sendingProgress.sent + sendingProgress.failed).toLocaleString()} / {sendingProgress.total.toLocaleString()}
+              </span>
+            </div>
+            <Progress 
+              value={sendingProgress.total > 0 ? ((sendingProgress.sent + sendingProgress.failed) / sendingProgress.total) * 100 : 0} 
+              className="h-3"
+            />
+            <div className="flex gap-4 mt-2 text-sm">
+              <span className="text-green-600">✓ Sent: {sendingProgress.sent.toLocaleString()}</span>
+              <span className="text-red-600">✗ Failed: {sendingProgress.failed.toLocaleString()}</span>
+            </div>
+          </CardContent>
+        </Card>
+      )}
+
       {/* Main Content */}
       <Tabs value={activeTab} onValueChange={setActiveTab}>
         <TabsList>
@@ -2519,29 +2978,6 @@ export default function SmsCampaigns() {
 
         {/* Campaigns Tab */}
         <TabsContent value="campaigns" className="mt-4">
-          {/* Sending Progress */}
-          {showProgress && (
-            <Card className="mb-4 border-blue-200 bg-blue-50">
-              <CardContent className="pt-4">
-                <div className="flex items-center justify-between mb-2">
-                  <span className="font-medium text-blue-800">Sending Messages...</span>
-                  <span className="text-sm text-blue-600">
-                    {sendingProgress.sent + sendingProgress.failed} / {sendingProgress.total}
-                  </span>
-                </div>
-                <Progress 
-                  value={sendingProgress.total > 0 ? ((sendingProgress.sent + sendingProgress.failed) / sendingProgress.total) * 100 : 0} 
-                  className="h-3"
-                />
-                <div className="flex gap-4 mt-2 text-sm">
-                  <span className="text-green-600">✓ Sent: {sendingProgress.sent}</span>
-                  <span className="text-red-600">✗ Failed: {sendingProgress.failed}</span>
-                  <span className="text-blue-600">Using {numberSelectionMode === 'all' ? phoneNumbers.length : numberSelectionMode === 'select' ? selectedFromNumbers.size : 1} numbers in parallel</span>
-                </div>
-              </CardContent>
-            </Card>
-          )}
-
           <Card>
             <CardHeader className="flex flex-row items-center justify-between">
               <div>
@@ -2552,35 +2988,15 @@ export default function SmsCampaigns() {
                 variant="outline" 
                 size="sm"
                 onClick={async () => {
-                  const sentCount = prompt('Enter total SMS sent count from Commio dashboard:', '11178');
-                  if (!sentCount) return;
-                  
-                  const sent = parseInt(sentCount);
-                  if (isNaN(sent)) {
-                    toast({ title: 'Error', description: 'Please enter a valid number', variant: 'destructive' });
-                    return;
-                  }
-
-                  // Update the most recent campaign with recipients
-                  const campaignWithRecipients = campaigns.find(c => c.recipientCount > 0);
-                  if (!campaignWithRecipients) {
-                    toast({ title: 'Error', description: 'No campaigns with recipients found', variant: 'destructive' });
-                    return;
-                  }
-
                   try {
-                    const res = await fetch(`/api/campaigns/sms-campaigns/${campaignWithRecipients.id}`, {
-                      method: 'PUT',
-                      headers: { 'Content-Type': 'application/json' },
+                    toast({ title: 'Syncing...', description: 'Recounting delivered messages from database...' });
+                    const res = await fetch('/api/campaigns/sms-campaigns/recount-delivered', {
+                      method: 'POST',
                       credentials: 'include',
-                      body: JSON.stringify({ 
-                        sentCount: sent, 
-                        status: 'completed',
-                        deliveredCount: sent,
-                      }),
                     });
-                    if (!res.ok) throw new Error('Failed to update');
-                    toast({ title: 'Updated', description: `Set sent count to ${sent.toLocaleString()}` });
+                    if (!res.ok) throw new Error('Failed to sync');
+                    const data = await res.json();
+                    toast({ title: 'Synced', description: `Updated ${data.campaignsUpdated} of ${data.totalCampaigns} campaigns` });
                     fetchData();
                   } catch (e: any) {
                     toast({ title: 'Error', description: e.message, variant: 'destructive' });
@@ -2588,7 +3004,7 @@ export default function SmsCampaigns() {
                 }}
               >
                 <RefreshCw className="mr-2 h-4 w-4" />
-                Update Sent Count
+                Sync Delivered
               </Button>
             </CardHeader>
             <CardContent>
@@ -2636,7 +3052,17 @@ export default function SmsCampaigns() {
                         <TableRow key={campaign.id}>
                           <TableCell>
                             <div>
-                              <div className="font-medium">{campaign.name}</div>
+                              <div className="font-medium flex items-center gap-2">
+                                {campaign.name}
+                                {campaign.sendMode && campaign.sendMode !== 'immediate' && (
+                                  <Badge variant="outline" className={
+                                    campaign.sendMode === 'scheduled' ? 'text-purple-700 border-purple-300 bg-purple-50 text-[10px]' :
+                                    campaign.sendMode === 'drip' ? 'text-orange-700 border-orange-300 bg-orange-50 text-[10px]' : ''
+                                  }>
+                                    {campaign.sendMode === 'scheduled' ? 'Scheduled' : 'Drip'}
+                                  </Badge>
+                                )}
+                              </div>
                               {campaign.description && (
                                 <div className="text-xs text-muted-foreground">{campaign.description}</div>
                               )}
@@ -2691,11 +3117,11 @@ export default function SmsCampaigns() {
                                 </DropdownMenuTrigger>
                                 <DropdownMenuContent align="end">
                                   <DropdownMenuLabel>Actions</DropdownMenuLabel>
-                                  <DropdownMenuItem>
+                                  <DropdownMenuItem onClick={() => setViewingCampaignDetail(campaign)}>
                                     <BarChart3 className="mr-2 h-4 w-4" />
-                                    View Stats
+                                    View Analytics
                                   </DropdownMenuItem>
-                                  <DropdownMenuItem>
+                                  <DropdownMenuItem onClick={() => setViewingCampaignDetail(campaign)}>
                                     <MessageSquare className="mr-2 h-4 w-4" />
                                     View Message
                                   </DropdownMenuItem>
@@ -2703,6 +3129,50 @@ export default function SmsCampaigns() {
                                     <RefreshCw className="mr-2 h-4 w-4" />
                                     Sync Metrics
                                   </DropdownMenuItem>
+                                  {campaign.status === 'completed' && (
+                                    <>
+                                      <DropdownMenuSeparator />
+                                      <DropdownMenuItem onClick={async () => {
+                                        try {
+                                          const res = await fetch(`/api/campaigns/sms-campaigns/${campaign.id}/archive`, {
+                                            method: 'POST',
+                                            headers: { 'Content-Type': 'application/json' },
+                                            credentials: 'include',
+                                            body: JSON.stringify({ archived: true }),
+                                          });
+                                          if (res.ok) {
+                                            toast({ title: 'Archived', description: `Campaign "${campaign.name}" archived` });
+                                            fetchData();
+                                          }
+                                        } catch (e: any) {
+                                          toast({ title: 'Error', description: e.message, variant: 'destructive' });
+                                        }
+                                      }}>
+                                        <Download className="mr-2 h-4 w-4" />
+                                        Archive
+                                      </DropdownMenuItem>
+                                      <DropdownMenuItem onClick={async () => {
+                                        try {
+                                          const res = await fetch(`/api/campaigns/sms-campaigns/${campaign.id}/retarget`, {
+                                            method: 'POST',
+                                            headers: { 'Content-Type': 'application/json' },
+                                            credentials: 'include',
+                                            body: JSON.stringify({ targetStatuses: ['failed', 'pending'] }),
+                                          });
+                                          if (res.ok) {
+                                            const data = await res.json();
+                                            toast({ title: 'Retarget Created', description: `New campaign with ${data.recipientsRetargeted} recipients` });
+                                            fetchData();
+                                          }
+                                        } catch (e: any) {
+                                          toast({ title: 'Error', description: e.message, variant: 'destructive' });
+                                        }
+                                      }}>
+                                        <Target className="mr-2 h-4 w-4" />
+                                        Retarget
+                                      </DropdownMenuItem>
+                                    </>
+                                  )}
                                   <DropdownMenuSeparator />
                                   <DropdownMenuItem 
                                     className="text-red-600"
@@ -3261,6 +3731,172 @@ export default function SmsCampaigns() {
               Save Changes
             </Button>
           </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Campaign Detail / Analytics Dialog */}
+      <Dialog open={!!viewingCampaignDetail} onOpenChange={(open) => !open && setViewingCampaignDetail(null)}>
+        <DialogContent className="max-w-3xl max-h-[90vh] overflow-y-auto">
+          {viewingCampaignDetail && (() => {
+            const c = viewingCampaignDetail;
+            const deliveryRate = c.recipientCount > 0 ? ((c.sentCount || 0) / c.recipientCount * 100).toFixed(1) : '0';
+            const deliveredRate = (c.sentCount || 0) > 0 ? (((c.deliveredCount || 0) / (c.sentCount || 1)) * 100).toFixed(1) : '0';
+            const undelivered = (c.sentCount || 0) - (c.deliveredCount || 0) - (c.failedCount || 0);
+            const undeliveredRate = (c.sentCount || 0) > 0 ? ((undelivered / (c.sentCount || 1)) * 100).toFixed(1) : '0';
+            return (
+              <>
+                <DialogHeader>
+                  <DialogTitle className="text-xl">{c.name}</DialogTitle>
+                  <DialogDescription>
+                    ID: {c.id} &nbsp; Created: {new Date(c.createdAt).toLocaleString()}
+                  </DialogDescription>
+                </DialogHeader>
+
+                {/* Delivery Metrics */}
+                <div className="space-y-4">
+                  <h3 className="font-semibold text-sm text-gray-700">Delivery Metrics</h3>
+                  <div className="grid grid-cols-3 gap-3">
+                    <div className="bg-blue-50 border border-blue-200 rounded-lg p-3 text-center">
+                      <div className="text-2xl font-bold text-blue-800">{(c.sentCount || 0).toLocaleString()}</div>
+                      <div className="text-xs text-blue-600">Sent</div>
+                      <div className="text-lg font-semibold text-blue-700">{c.recipientCount || 0}</div>
+                      <div className="text-xs text-blue-500">{deliveryRate}%</div>
+                    </div>
+                    <div className="bg-green-50 border border-green-200 rounded-lg p-3 text-center">
+                      <div className="text-2xl font-bold text-green-800">{(c.deliveredCount || 0).toLocaleString()}</div>
+                      <div className="text-xs text-green-600">Delivered</div>
+                      <div className="text-lg font-semibold text-green-700">{c.recipientCount || 0}</div>
+                      <div className="text-xs text-green-500">{deliveredRate}%</div>
+                    </div>
+                    <div className="bg-red-50 border border-red-200 rounded-lg p-3 text-center">
+                      <div className="text-2xl font-bold text-red-800">{(c.failedCount || 0).toLocaleString()}</div>
+                      <div className="text-xs text-red-600">Undelivered</div>
+                      <div className="text-lg font-semibold text-red-700">{undelivered > 0 ? undelivered : 0}</div>
+                      <div className="text-xs text-red-500">{undeliveredRate}%</div>
+                    </div>
+                  </div>
+
+                  {/* Engagement & Issue Tracking */}
+                  <div className="grid grid-cols-2 gap-4">
+                    <div>
+                      <h3 className="font-semibold text-sm text-gray-700 mb-2">Engagement Metrics</h3>
+                      <div className="grid grid-cols-2 gap-2">
+                        <div className="bg-gray-50 border rounded-lg p-2 text-center">
+                          <div className="text-lg font-bold">0</div>
+                          <div className="text-[10px] text-gray-500">Responses</div>
+                          <div className="text-xs text-green-600">0.0%</div>
+                        </div>
+                        <div className="bg-gray-50 border rounded-lg p-2 text-center">
+                          <div className="text-lg font-bold">0</div>
+                          <div className="text-[10px] text-gray-500">Link Clicks</div>
+                          <div className="text-xs text-green-600">0.0%</div>
+                        </div>
+                      </div>
+                    </div>
+                    <div>
+                      <h3 className="font-semibold text-sm text-gray-700 mb-2">Issue Tracking</h3>
+                      <div className="grid grid-cols-2 gap-2">
+                        <div className="bg-gray-50 border rounded-lg p-2 text-center">
+                          <div className="text-lg font-bold">{c.recipientCount || 0}</div>
+                          <div className="text-[10px] text-gray-500">Segments</div>
+                        </div>
+                        <div className="bg-gray-50 border rounded-lg p-2 text-center">
+                          <div className="text-lg font-bold">{c.failedCount || 0}</div>
+                          <div className="text-[10px] text-gray-500">Invalid Numbers</div>
+                        </div>
+                        <div className="bg-gray-50 border rounded-lg p-2 text-center">
+                          <div className="text-lg font-bold">0</div>
+                          <div className="text-[10px] text-gray-500">Spam Reports</div>
+                        </div>
+                        <div className="bg-gray-50 border rounded-lg p-2 text-center">
+                          <div className="text-lg font-bold">{c.optOutCount || 0}</div>
+                          <div className="text-[10px] text-gray-500">Opt-outs</div>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Text Message */}
+                  <div>
+                    <h3 className="font-semibold text-sm text-gray-700 mb-2">Text Message</h3>
+                    <div className="bg-gray-50 border rounded-lg p-4 text-sm whitespace-pre-wrap">
+                      {c.messageTemplate}
+                    </div>
+                  </div>
+
+                  {/* Action Buttons */}
+                  <div className="flex gap-2 justify-end pt-2">
+                    <Button
+                      variant="default"
+                      size="sm"
+                      className="bg-green-600 hover:bg-green-700"
+                      onClick={() => {
+                        handleSyncMetrics(c.id);
+                        setViewingCampaignDetail(null);
+                      }}
+                    >
+                      <BarChart3 className="mr-2 h-4 w-4" />
+                      View Analytics
+                    </Button>
+                    {c.status === 'completed' && (
+                      <>
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          onClick={async () => {
+                            try {
+                              const res = await fetch(`/api/campaigns/sms-campaigns/${c.id}/archive`, {
+                                method: 'POST',
+                                headers: { 'Content-Type': 'application/json' },
+                                credentials: 'include',
+                                body: JSON.stringify({ archived: true }),
+                              });
+                              if (res.ok) {
+                                toast({ title: 'Archived', description: `Campaign "${c.name}" archived` });
+                                setViewingCampaignDetail(null);
+                                fetchData();
+                              }
+                            } catch (e: any) {
+                              toast({ title: 'Error', description: e.message, variant: 'destructive' });
+                            }
+                          }}
+                        >
+                          <Download className="mr-2 h-4 w-4" />
+                          Archive
+                        </Button>
+                        <Button
+                          variant="default"
+                          size="sm"
+                          className="bg-blue-600 hover:bg-blue-700"
+                          onClick={async () => {
+                            try {
+                              const res = await fetch(`/api/campaigns/sms-campaigns/${c.id}/retarget`, {
+                                method: 'POST',
+                                headers: { 'Content-Type': 'application/json' },
+                                credentials: 'include',
+                                body: JSON.stringify({ targetStatuses: ['failed', 'pending'] }),
+                              });
+                              if (res.ok) {
+                                const data = await res.json();
+                                toast({ title: 'Retarget Created', description: `New campaign with ${data.recipientsRetargeted} recipients` });
+                                setViewingCampaignDetail(null);
+                                fetchData();
+                              }
+                            } catch (e: any) {
+                              toast({ title: 'Error', description: e.message, variant: 'destructive' });
+                            }
+                          }}
+                        >
+                          <Target className="mr-2 h-4 w-4" />
+                          Retarget
+                        </Button>
+                      </>
+                    )}
+                  </div>
+                </div>
+              </>
+            );
+          })()}
         </DialogContent>
       </Dialog>
     </div>

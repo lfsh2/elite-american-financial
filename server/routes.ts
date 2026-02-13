@@ -6057,6 +6057,46 @@ export async function registerRoutes(app: Express): Promise<Server> {
   });
 
   /**
+   * Recount delivered messages from DB for all completed campaigns
+   * Counts messages with status 'delivered' or 'sent' in sms_messages table
+   */
+  app.post("/api/campaigns/sms-campaigns/recount-delivered", async (req, res) => {
+    try {
+      const completedCampaigns = await db
+        .select({ id: smsCampaigns.id, name: smsCampaigns.name, sentCount: smsCampaigns.sentCount })
+        .from(smsCampaigns)
+        .where(eq(smsCampaigns.status, 'completed'));
+
+      let updated = 0;
+      for (const campaign of completedCampaigns) {
+        const result = await db
+          .select({ count: sql<number>`count(*)` })
+          .from(smsMessages)
+          .where(and(
+            eq(smsMessages.campaignId, campaign.id),
+            sql`${smsMessages.status} IN ('delivered', 'sent')`
+          ));
+        const deliveredCount = Number(result[0]?.count || 0);
+
+        // If no messages tracked in DB, use sentCount as delivered (legacy campaigns)
+        const finalCount = deliveredCount > 0 ? deliveredCount : (campaign.sentCount || 0);
+
+        if (finalCount > 0) {
+          await db.update(smsCampaigns)
+            .set({ deliveredCount: finalCount })
+            .where(eq(smsCampaigns.id, campaign.id));
+          updated++;
+        }
+      }
+
+      res.json({ success: true, campaignsUpdated: updated, totalCampaigns: completedCampaigns.length });
+    } catch (error: any) {
+      console.error("Error recounting delivered:", error);
+      res.status(500).json({ error: error.message || "Failed to recount delivered" });
+    }
+  });
+
+  /**
    * Sync SMS metrics from Commio API
    * Fetches delivery reports and updates campaign counts
    */
@@ -6487,6 +6527,296 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
+  // ============================================
+  // CAMPAIGN MODES & ENHANCED FEATURES
+  // ============================================
+
+  /**
+   * Test campaign message - send a single test SMS
+   */
+  app.post("/api/campaigns/sms-campaigns/:campaignId/test", async (req, res) => {
+    try {
+      const campaignId = parseInt(req.params.campaignId);
+      const { testPhoneNumber } = req.body;
+      const userId = (req as any).user?.id || 1;
+
+      if (!testPhoneNumber) {
+        return res.status(400).json({ error: "testPhoneNumber is required" });
+      }
+
+      // Get campaign
+      const [campaign] = await db
+        .select()
+        .from(smsCampaigns)
+        .where(eq(smsCampaigns.id, campaignId));
+
+      if (!campaign) {
+        return res.status(404).json({ error: "Campaign not found" });
+      }
+
+      // Apply sample merge tags for test
+      let testMessage = campaign.messageTemplate
+        .replace(/\{first_name\}/g, 'John')
+        .replace(/\{last_name\}/g, 'Doe')
+        .replace(/\{name\}/g, 'John Doe')
+        .replace(/\{phone\}/g, testPhoneNumber)
+        .replace(/\$\{dollar_amount\}/g, '$500');
+
+      // Append opt-out message if enabled
+      if (campaign.optOutMessageEnabled && campaign.optOutMessageText) {
+        testMessage += '\n' + campaign.optOutMessageText;
+      }
+
+      // Get the from number and send via provider
+      const fromNumber = campaign.fromNumber.split(',')[0].trim();
+      
+      // Use the batch SMS service infrastructure to send a single message
+      const { accounts: userAccounts } = await accountService.getAccountsForUser(userId);
+      let sent = false;
+
+      for (const account of userAccounts) {
+        try {
+          const accountIdNum = parseInt(account.id.replace('acc_', ''));
+          const creds = await accountService.getAccountCredentials(accountIdNum);
+          const provider = await accountService.getProviderForAccount(accountIdNum);
+          
+          if (provider) {
+            const result = await provider.sendMessage({
+              to: testPhoneNumber,
+              from: fromNumber,
+              body: testMessage,
+            });
+            
+            if (result.success) {
+              sent = true;
+              return res.json({ 
+                success: true, 
+                message: 'Test message sent successfully',
+                preview: testMessage,
+                messageSid: result.sid,
+              });
+            }
+          }
+        } catch (e) {
+          continue;
+        }
+      }
+
+      if (!sent) {
+        return res.status(400).json({ error: "Could not send test message. Check phone number credentials." });
+      }
+    } catch (error: any) {
+      console.error("Error sending test message:", error);
+      res.status(500).json({ error: error.message || "Failed to send test message" });
+    }
+  });
+
+  /**
+   * Archive/unarchive a campaign
+   */
+  app.post("/api/campaigns/sms-campaigns/:campaignId/archive", async (req, res) => {
+    try {
+      const campaignId = parseInt(req.params.campaignId);
+      const { archived } = req.body;
+
+      const [updated] = await db
+        .update(smsCampaigns)
+        .set({ 
+          isArchived: archived !== false,
+          updatedAt: new Date(),
+        })
+        .where(eq(smsCampaigns.id, campaignId))
+        .returning();
+
+      res.json({ success: true, campaign: updated });
+    } catch (error: any) {
+      console.error("Error archiving campaign:", error);
+      res.status(500).json({ error: error.message || "Failed to archive campaign" });
+    }
+  });
+
+  /**
+   * Retarget campaign - create new campaign from failed/undelivered recipients
+   */
+  app.post("/api/campaigns/sms-campaigns/:campaignId/retarget", async (req, res) => {
+    try {
+      const campaignId = parseInt(req.params.campaignId);
+      const userId = (req as any).user?.id || 1;
+      const { targetStatuses = ['failed', 'pending'] } = req.body;
+
+      // Get original campaign
+      const [originalCampaign] = await db
+        .select()
+        .from(smsCampaigns)
+        .where(eq(smsCampaigns.id, campaignId));
+
+      if (!originalCampaign) {
+        return res.status(404).json({ error: "Campaign not found" });
+      }
+
+      // Create new campaign
+      const [newCampaign] = await db
+        .insert(smsCampaigns)
+        .values({
+          userId,
+          accountId: originalCampaign.accountId,
+          name: `${originalCampaign.name} (Retarget)`,
+          description: `Retargeted from campaign #${campaignId}`,
+          messageTemplate: originalCampaign.messageTemplate,
+          fromNumber: originalCampaign.fromNumber,
+          sendMode: originalCampaign.sendMode || 'immediate',
+          status: 'draft',
+          metadata: originalCampaign.metadata,
+        })
+        .returning();
+
+      // Copy failed/undelivered recipients to new campaign
+      const failedRecipients = await db
+        .select()
+        .from(campaignRecipients)
+        .where(and(
+          eq(campaignRecipients.smsCampaignId, campaignId),
+          sql`${campaignRecipients.status} = ANY(${targetStatuses})`
+        ));
+
+      if (failedRecipients.length > 0) {
+        const BATCH_SIZE = 1000;
+        for (let i = 0; i < failedRecipients.length; i += BATCH_SIZE) {
+          const batch = failedRecipients.slice(i, i + BATCH_SIZE).map(r => ({
+            smsCampaignId: newCampaign.id,
+            contactId: r.contactId,
+            phoneNumber: r.phoneNumber,
+            firstName: r.firstName,
+            lastName: r.lastName,
+            customFields: r.customFields,
+            status: 'pending' as const,
+          }));
+          await db.insert(campaignRecipients).values(batch);
+        }
+
+        await db
+          .update(smsCampaigns)
+          .set({ recipientCount: failedRecipients.length, updatedAt: new Date() })
+          .where(eq(smsCampaigns.id, newCampaign.id));
+      }
+
+      res.json({ 
+        success: true, 
+        campaign: newCampaign,
+        recipientsRetargeted: failedRecipients.length,
+      });
+    } catch (error: any) {
+      console.error("Error retargeting campaign:", error);
+      res.status(500).json({ error: error.message || "Failed to retarget campaign" });
+    }
+  });
+
+  /**
+   * Get/update campaign permissions
+   */
+  app.get("/api/campaigns/sms-campaigns/:campaignId/permissions", async (req, res) => {
+    try {
+      const campaignId = parseInt(req.params.campaignId);
+      const { campaignPermissions: permTable } = await import("@shared/schema");
+      
+      const permissions = await db
+        .select()
+        .from(permTable)
+        .where(eq(permTable.smsCampaignId, campaignId));
+
+      res.json({ permissions });
+    } catch (error: any) {
+      console.error("Error fetching campaign permissions:", error);
+      res.status(500).json({ error: error.message || "Failed to fetch permissions" });
+    }
+  });
+
+  app.post("/api/campaigns/sms-campaigns/:campaignId/permissions", async (req, res) => {
+    try {
+      const campaignId = parseInt(req.params.campaignId);
+      const { userId: permUserId, userGroup, permissionType = 'view' } = req.body;
+      const { campaignPermissions: permTable } = await import("@shared/schema");
+
+      const [permission] = await db
+        .insert(permTable)
+        .values({
+          smsCampaignId: campaignId,
+          userId: permUserId,
+          userGroup,
+          permissionType,
+        })
+        .returning();
+
+      res.json({ success: true, permission });
+    } catch (error: any) {
+      console.error("Error adding campaign permission:", error);
+      res.status(500).json({ error: error.message || "Failed to add permission" });
+    }
+  });
+
+  /**
+   * Campaign scheduler - check and start scheduled campaigns
+   * This should be called periodically (e.g., every minute via cron or setInterval)
+   */
+  app.post("/api/campaigns/check-scheduled", async (req, res) => {
+    try {
+      const now = new Date();
+      
+      // Find campaigns that are scheduled and due
+      const dueCampaigns = await db
+        .select()
+        .from(smsCampaigns)
+        .where(and(
+          eq(smsCampaigns.status, 'scheduled'),
+          sql`${smsCampaigns.scheduledAt} <= ${now}`
+        ));
+
+      const results = [];
+      for (const campaign of dueCampaigns) {
+        try {
+          console.log(`[Scheduler] Starting scheduled campaign ${campaign.id}: ${campaign.name}`);
+          const result = await campaignService.startSmsCampaign(campaign.id);
+          results.push({ campaignId: campaign.id, name: campaign.name, ...result });
+        } catch (e: any) {
+          results.push({ campaignId: campaign.id, name: campaign.name, success: false, error: e.message });
+        }
+      }
+
+      res.json({ 
+        success: true, 
+        checked: dueCampaigns.length,
+        results,
+      });
+    } catch (error: any) {
+      console.error("Error checking scheduled campaigns:", error);
+      res.status(500).json({ error: error.message || "Failed to check scheduled campaigns" });
+    }
+  });
+
   const httpServer = createServer(app);
+
+  // Start campaign scheduler - checks every 60 seconds for due scheduled campaigns
+  setInterval(async () => {
+    try {
+      const now = new Date();
+      const dueCampaigns = await db
+        .select()
+        .from(smsCampaigns)
+        .where(and(
+          eq(smsCampaigns.status, 'scheduled'),
+          sql`${smsCampaigns.scheduledAt} <= ${now}`
+        ));
+
+      for (const campaign of dueCampaigns) {
+        console.log(`[Scheduler] Auto-starting scheduled campaign ${campaign.id}: ${campaign.name}`);
+        campaignService.startSmsCampaign(campaign.id).catch(err => {
+          console.error(`[Scheduler] Failed to start campaign ${campaign.id}:`, err);
+        });
+      }
+    } catch (err) {
+      console.error('[Scheduler] Error checking scheduled campaigns:', err);
+    }
+  }, 60_000);
+
   return httpServer;
 }

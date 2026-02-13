@@ -784,6 +784,23 @@ export interface CreateSmsCampaignData {
   sendingRate?: number;
   timezone?: string;
   customVariables?: Record<string, string>; // Default values for custom merge tags
+  // Send mode
+  sendMode?: string; // 'immediate' | 'scheduled' | 'drip'
+  // Drip settings
+  dripMessagesPerMinute?: number;
+  dripConcurrentPerNumber?: number;
+  // Time zone scheduling
+  timezoneSchedulingEnabled?: boolean;
+  // Campaign options
+  forwardNumberOverride?: string;
+  filterChannelsEnabled?: boolean;
+  disableClaimsEnabled?: boolean;
+  optOutMessageEnabled?: boolean;
+  optOutMessageText?: string;
+  // Automated response
+  autoResponseEnabled?: boolean;
+  autoResponseMessage?: string;
+  autoResponseKeywords?: string[];
 }
 
 /**
@@ -794,11 +811,17 @@ export async function createSmsCampaign(
 ): Promise<SmsCampaign> {
   const { customVariables, ...campaignData } = data;
   
+  // Determine initial status based on send mode
+  let initialStatus = 'draft';
+  if (campaignData.sendMode === 'scheduled' && campaignData.scheduledAt) {
+    initialStatus = 'scheduled';
+  }
+  
   const [campaign] = await db
     .insert(smsCampaigns)
     .values({
       ...campaignData,
-      status: 'draft',
+      status: initialStatus,
       // Store customVariables in metadata field
       metadata: customVariables ? { customVariables } : undefined,
     })
