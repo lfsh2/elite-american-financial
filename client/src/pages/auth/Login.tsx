@@ -158,30 +158,10 @@ export default function Login() {
             </Button>
           </form>
           
-          {/* Divider */}
-          <div className="relative">
-            <div className="absolute inset-0 flex items-center">
-              <div className="w-full border-t border-gray-200"></div>
-            </div>
-            <div className="relative flex justify-center text-sm">
-              <span className="px-4 bg-gradient-to-b from-gray-50 to-white text-gray-400">or</span>
-            </div>
-          </div>
-          
-          {/* Demo credentials */}
-          <div className="bg-blue-50 border border-blue-100 rounded-lg p-4">
-            <p className="text-sm text-blue-800 font-medium mb-2">Demo Credentials</p>
-            <div className="grid grid-cols-2 gap-3 text-xs">
-              <div className="bg-white rounded-md p-2 border border-blue-100">
-                <p className="text-gray-500">Admin</p>
-                <p className="font-mono text-gray-700">admin / admin123</p>
-              </div>
-              <div className="bg-white rounded-md p-2 border border-blue-100">
-                <p className="text-gray-500">Test User</p>
-                <p className="font-mono text-gray-700">testuser / testpass123</p>
-              </div>
-            </div>
-          </div>
+          {/* Footer note */}
+          <p className="text-center text-sm text-gray-400">
+            Secure enterprise communications platform
+          </p>
         </div>
       </div>
     </div>
