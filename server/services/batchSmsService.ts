@@ -211,9 +211,15 @@ class BatchSmsService {
     
     activeBatchJobs.set(jobId, progress);
     
+    // Track last DB update time for periodic persistence
+    let lastDbUpdateTime = Date.now();
+    let lastDbUpdateCount = 0;
+    const DB_UPDATE_INTERVAL_MS = 10000; // Update DB every 10 seconds
+    const DB_UPDATE_MESSAGE_COUNT = 100; // Or every 100 messages
+    
     // Start sending in background (don't await)
-    this.sendBatch({ ...options, onProgress: (p) => {
-      // Update the stored progress
+    this.sendBatch({ ...options, onProgress: async (p) => {
+      // Update the stored progress (in-memory)
       const stored = activeBatchJobs.get(jobId);
       if (stored) {
         stored.sent = p.sent;
@@ -222,6 +228,29 @@ class BatchSmsService {
         stored.byNumber = p.byNumber;
         stored.estimatedCompletionTime = p.estimatedCompletionTime;
         stored.currentRate = p.currentRate;
+      }
+      
+      // Periodically update database for cross-server visibility
+      const now = Date.now();
+      const messagesSinceLastUpdate = (p.sent + p.failed) - lastDbUpdateCount;
+      const timeSinceLastUpdate = now - lastDbUpdateTime;
+      
+      if (options.campaignId && (messagesSinceLastUpdate >= DB_UPDATE_MESSAGE_COUNT || timeSinceLastUpdate >= DB_UPDATE_INTERVAL_MS)) {
+        lastDbUpdateTime = now;
+        lastDbUpdateCount = p.sent + p.failed;
+        
+        try {
+          await db.update(smsCampaigns)
+            .set({
+              sentCount: p.sent,
+              failedCount: p.failed,
+              updatedAt: new Date(),
+            })
+            .where(eq(smsCampaigns.id, options.campaignId));
+        } catch (err) {
+          // Don't fail the batch on DB update errors
+          console.error('[BatchSMS] Periodic DB update failed:', err);
+        }
       }
     }}).then(async (result) => {
       // Update campaign status when complete
