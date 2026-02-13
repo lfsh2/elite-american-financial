@@ -15,19 +15,19 @@ const useTLS = REDIS_URL.startsWith('rediss://');
 
 // Cache TTL configurations (in seconds)
 export const CACHE_TTL = {
-  METRICS: 5 * 60,           // 5 minutes for real-time metrics
-  ANALYTICS: 10 * 60,        // 10 minutes for analytics data
-  CHART_DATA: 60 * 60,       // 1 hour for chart data (6 months)
-  MESSAGES_RECENT: 60,       // 1 minute for recent messages
-  PHONE_NUMBERS: 30 * 60,    // 30 minutes for phone numbers
-  ACCOUNT_INFO: 60 * 60,     // 1 hour for account info
+  METRICS: 30,               // 30 seconds for real-time metrics
+  ANALYTICS: 60,             // 1 minute for analytics data
+  CHART_DATA: 10 * 60,       // 10 minutes for chart data (6 months)
+  MESSAGES_RECENT: 15,       // 15 seconds for recent messages
+  PHONE_NUMBERS: 10 * 60,    // 10 minutes for phone numbers
+  ACCOUNT_INFO: 10 * 60,     // 10 minutes for account info
 };
 
 // Stale TTL - how long to serve stale data while revalidating
 export const STALE_TTL = {
-  METRICS: 15 * 60,          // Serve stale metrics for 15 min while refreshing
-  ANALYTICS: 30 * 60,        // Serve stale analytics for 30 min
-  CHART_DATA: 2 * 60 * 60,   // Serve stale chart data for 2 hours
+  METRICS: 60,               // Serve stale metrics for 1 min while refreshing
+  ANALYTICS: 2 * 60,         // Serve stale analytics for 2 min
+  CHART_DATA: 30 * 60,       // Serve stale chart data for 30 min
 };
 
 class RedisService {
@@ -36,52 +36,8 @@ class RedisService {
   private connectionPromise: Promise<void> | null = null;
 
   constructor() {
-    this.connect();
-  }
-
-  private async connect(): Promise<void> {
-    if (this.connectionPromise) {
-      return this.connectionPromise;
-    }
-
-    this.connectionPromise = new Promise((resolve) => {
-      try {
-        this.client = new Redis(REDIS_URL, {
-          maxRetriesPerRequest: 3,
-          lazyConnect: true,
-          connectTimeout: 5000,
-          tls: useTLS ? {} : undefined,
-        });
-
-        this.client.on('connect', () => {
-          console.log('[Redis] Connected successfully');
-          this.isConnected = true;
-          resolve();
-        });
-
-        this.client.on('error', (err) => {
-          console.error('[Redis] Connection error:', err.message);
-          this.isConnected = false;
-        });
-
-        this.client.on('close', () => {
-          console.log('[Redis] Connection closed');
-          this.isConnected = false;
-        });
-
-        this.client.connect().catch((err) => {
-          console.warn('[Redis] Failed to connect, running without cache:', err.message);
-          this.isConnected = false;
-          resolve();
-        });
-      } catch (error) {
-        console.warn('[Redis] Initialization failed, running without cache');
-        this.isConnected = false;
-        resolve();
-      }
-    });
-
-    return this.connectionPromise;
+    // Redis disabled — using in-memory cache only
+    console.log('[Redis] Disabled — using in-memory cache fallback');
   }
 
   /**

@@ -68,6 +68,11 @@ app.use((req, res, next) => {
   server.listen(port, "0.0.0.0", () => {
     log(`serving on port ${port}`);
     
+    // Log outbound IP for Commio IP whitelist management
+    fetch('https://api.ipify.org').then(r => r.text()).then(ip => {
+      log(`Server outbound IP: ${ip} (whitelist this in Commio if needed)`);
+    }).catch(() => {});
+    
     // Start the auto-refill service
     autoRefillService.start();
     

@@ -1,4 +1,4 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect } from 'react';
 import { useAuth } from '../hooks/use-auth';
 import { useAccountAnalytics, formatNumber } from '../hooks/useTwilioData';
 import { useLocation } from 'wouter';
@@ -78,29 +78,40 @@ export default function Dashboard() {
   const [isGeneratingReport, setIsGeneratingReport] = useState(false);
   const [chartTimeRange, setChartTimeRange] = useState<'weekly' | 'monthly'>('monthly');
 
+  // Live sending stats from in-memory active batch jobs (polls every 5 seconds)
+  const [liveStats, setLiveStats] = useState<{ totalSent: number; totalFailed: number; totalInProgress: number; activeCampaigns: number } | null>(null);
+  
+  useEffect(() => {
+    const fetchLiveStats = async () => {
+      try {
+        const res = await fetch('/api/dashboard/live-stats');
+        if (res.ok) {
+          const data = await res.json();
+          setLiveStats(data);
+        }
+      } catch { /* ignore */ }
+    };
+    fetchLiveStats();
+    const interval = setInterval(fetchLiveStats, 5000);
+    return () => clearInterval(interval);
+  }, []);
+
   // Transform account data to analytics format for compatibility
+  // ALWAYS use aggregatedMetrics from server (DB source of truth) for stat cards
   const analytics = useMemo(() => {
     if (!accountData || accountData.accounts.length === 0) return null;
     
-    // Use first account's analytics or merge all
-    if (accountData.accounts.length === 1) {
-      return accountData.accounts[0].analytics;
-    }
-    
-    // For multiple accounts, create merged structure
-    // Aggregate 'all' messages and calls from all accounts
+    // Merge messages/calls/phoneNumbers from all accounts
     const allMessages = accountData.accounts.flatMap(a => (a.analytics.messages as any)?.all || []);
     const allCalls = accountData.accounts.flatMap(a => (a.analytics.calls as any)?.all || []);
+    const allPhoneNumbers = accountData.accounts.flatMap(a => a.analytics.phoneNumbers || []);
+    const agg = accountData.aggregatedMetrics;
     
     return {
-      account: {
-        sid: 'merged',
-        friendlyName: 'All Accounts',
-        status: 'active',
-        type: 'merged',
-        dateCreated: new Date().toISOString(),
-      },
-      phoneNumbers: accountData.accounts.flatMap(a => a.analytics.phoneNumbers || []),
+      account: accountData.accounts.length === 1 
+        ? accountData.accounts[0].analytics.account 
+        : { sid: 'merged', friendlyName: 'All Accounts', status: 'active', type: 'merged', dateCreated: new Date().toISOString() },
+      phoneNumbers: allPhoneNumbers,
       messages: {
         ...accountData.messages,
         all: allMessages,
@@ -110,21 +121,22 @@ export default function Dashboard() {
         all: allCalls,
       },
       metrics: {
-        totalMessagesSentToday: accountData.aggregatedMetrics.totalMessagesSentToday,
-        totalMessagesReceivedToday: accountData.aggregatedMetrics.totalMessagesReceivedToday,
-        totalMessagesSentYesterday: 0,
+        totalMessagesSentToday: agg.totalMessagesSentToday,
+        totalMessagesReceivedToday: agg.totalMessagesReceivedToday,
+        totalMessagesSentYesterday: (agg as any).totalMessagesSentYesterday ?? 0,
         totalMessagesReceivedYesterday: 0,
-        totalMessagesSentThisWeek: accountData.aggregatedMetrics.totalMessagesSentThisWeek,
-        totalMessagesSentThisMonth: accountData.aggregatedMetrics.totalMessagesSentThisMonth,
-        deliveredToday: 0,
-        failedToday: 0,
-        deliveryRateToday: accountData.aggregatedMetrics.deliveryRate,
-        totalCallsToday: accountData.aggregatedMetrics.totalCallsToday,
-        totalCallsThisWeek: accountData.aggregatedMetrics.totalCallsThisWeek,
-        totalCallDurationToday: accountData.aggregatedMetrics.totalCallDurationToday,
-        totalSpendToday: accountData.aggregatedMetrics.totalSpendToday,
-        totalSpendThisMonth: accountData.aggregatedMetrics.totalSpendThisMonth,
-        averageMessageCost: 0.0075,
+        totalMessagesSentThisWeek: agg.totalMessagesSentThisWeek,
+        totalMessagesSentThisMonth: agg.totalMessagesSentThisMonth,
+        totalMessagesSentLastWeek: (agg as any).totalMessagesSentLastWeek ?? 0,
+        totalMessagesSentLastMonth: (agg as any).totalMessagesSentLastMonth ?? 0,
+        deliveryRate: agg.deliveryRate,
+        failureRate: agg.failureRate,
+        totalCallsToday: agg.totalCallsToday,
+        totalCallsYesterday: (agg as any).totalCallsYesterday ?? 0,
+        totalCallsThisWeek: agg.totalCallsThisWeek,
+        totalCallDurationToday: agg.totalCallDurationToday,
+        totalSpendToday: agg.totalSpendToday,
+        totalSpendThisMonth: agg.totalSpendThisMonth,
       },
     };
   }, [accountData]);
@@ -132,173 +144,126 @@ export default function Dashboard() {
   const stats = useMemo(() => {
     if (!analytics) {
       return {
-        messagesToday: 0, messageGrowth: 0, callsToday: 0, callGrowth: 0,
+        messagesToday: 0, messagesThisWeek: 0, messagesThisMonth: 0,
+        messageGrowth: 0, callsToday: 0, callGrowth: 0,
         activeNumbers: 0, deliveryRate: 0, deliveryGrowth: 0,
         inboundToday: 0, outboundToday: 0,
         totalMessagesToday: 0, totalCallsToday: 0,
+        liveSending: 0, liveFailed: 0, activeCampaigns: 0,
       };
     }
     
-    // TODAY's data
-    const messagesToday = analytics.messages.today?.length || 0;
-    const messagesYesterday = (analytics.messages as any).yesterday?.length || 0;
-    const callsToday = analytics.calls.today?.length || 0;
-    const callsYesterday = (analytics.calls as any).yesterday?.length || 0;
+    // Use aggregated metrics from DB as source of truth (uses ?? to handle 0 correctly)
+    // Server already includes sms_campaigns.sent_count in these totals
+    const metrics = analytics.metrics;
+    const sentToday = metrics.totalMessagesSentToday ?? 0;
+    const sentThisWeek = (metrics as any).totalMessagesSentThisWeek ?? 0;
+    const sentThisMonth = (metrics as any).totalMessagesSentThisMonth ?? 0;
+    const sentYesterday = (metrics as any).totalMessagesSentYesterday ?? 0;
+    
+    // Live stats are used only for the sending indicator badge (not added to totals)
+    const liveSent = liveStats?.totalSent ?? 0;
+    const liveFailed = liveStats?.totalFailed ?? 0;
+    const activeCampaigns = liveStats?.activeCampaigns ?? 0;
+    
+    const callsToday = metrics.totalCallsToday ?? 0;
+    const callsYesterday = (metrics as any).totalCallsYesterday ?? 0;
     
     // Growth: today vs yesterday
-    const messageGrowth = messagesYesterday > 0 
-      ? Math.round(((messagesToday - messagesYesterday) / messagesYesterday) * 100)
-      : messagesToday > 0 ? 100 : 0;
+    const messageGrowth = sentYesterday > 0 
+      ? Math.round(((sentToday - sentYesterday) / sentYesterday) * 100)
+      : sentToday > 0 ? 100 : 0;
     
     const callGrowth = callsYesterday > 0 
       ? Math.round(((callsToday - callsYesterday) / callsYesterday) * 100)
       : callsToday > 0 ? 100 : 0;
     
-    // Delivery rate from today's outbound messages
-    const outboundToday = analytics.messages.today?.filter((m: any) => m.direction?.startsWith('outbound')) || [];
-    const deliveredToday = outboundToday.filter((m: any) => m.status === 'delivered' || m.status === 'sent').length;
-    const failedToday = outboundToday.filter((m: any) => m.status === 'failed' || m.status === 'undelivered').length;
-    const deliveryRate = outboundToday.length > 0 
-      ? (deliveredToday / outboundToday.length) * 100 
-      : (analytics.metrics as any).deliveryRate || 100;
+    // Delivery rate: use the server-calculated rate (based on DB delivered/failed counts)
+    const deliveryRate = (metrics as any).deliveryRate ?? 100;
+    const deliveryGrowth = 0;
     
-    // Yesterday's delivery rate for comparison
-    const outboundYesterday = (analytics.messages as any).yesterday?.filter((m: any) => m.direction?.startsWith('outbound')) || [];
-    const deliveredYesterday = outboundYesterday.filter((m: any) => m.status === 'delivered' || m.status === 'sent').length;
-    const yesterdayRate = outboundYesterday.length > 0 ? (deliveredYesterday / outboundYesterday.length) * 100 : 0;
-    const deliveryGrowth = yesterdayRate > 0 
-      ? Math.round(deliveryRate - yesterdayRate)
-      : 0;
-    
-    const inboundToday = analytics.messages.today?.filter((m: any) => m.direction === 'inbound').length || 0;
+    const inboundToday = metrics.totalMessagesReceivedToday ?? 0;
     
     return {
-      messagesToday: analytics.metrics.totalMessagesSentToday || outboundToday.length,
+      messagesToday: sentToday,
+      messagesThisWeek: sentThisWeek,
+      messagesThisMonth: sentThisMonth,
       messageGrowth,
-      callsToday: analytics.metrics.totalCallsToday || callsToday,
+      callsToday,
       callGrowth,
       activeNumbers: analytics.phoneNumbers?.length || 0,
       deliveryRate,
       deliveryGrowth,
       inboundToday,
-      outboundToday: outboundToday.length,
-      totalMessagesToday: messagesToday,
+      outboundToday: sentToday,
+      totalMessagesToday: sentToday + inboundToday,
       totalCallsToday: callsToday,
+      liveSending: liveSent,
+      liveFailed: liveFailed,
+      activeCampaigns,
     };
-  }, [analytics]);
+  }, [analytics, liveStats]);
 
-  // Chart data for the weekly view - shows past 7 days with daily breakdown
+  // Chart data for the weekly view - uses server dailyChartData (includes campaigns + sms_messages)
   const weeklyChartData = useMemo(() => {
-    if (!analytics) {
-      return Array.from({ length: 7 }, (_, i) => ({ 
-        name: ['Sat', 'Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri'][i], 
-        messages: 0, 
-        calls: 0 
-      }));
-    }
-    
+    const daily = accountData?.dailyChartData || [];
     const now = new Date();
-    // Use 'all' data if available (6 months), otherwise fall back to thisMonth
-    const allMessages = (analytics.messages as any).all || analytics.messages.thisMonth || [];
-    const allCalls = (analytics.calls as any).all || analytics.calls.thisMonth || [];
     
-    console.log('[Dashboard] Weekly chart - Total messages available:', allMessages.length);
-    console.log('[Dashboard] Weekly chart - Total calls available:', allCalls.length);
-    
-    // Group by day for the last 7 days
-    const chartData = Array.from({ length: 7 }, (_, i) => {
+    return Array.from({ length: 7 }, (_, i) => {
       const date = new Date(now);
       date.setDate(now.getDate() - (6 - i));
-      date.setHours(0, 0, 0, 0);
+      const dateStr = date.toISOString().split('T')[0];
       
-      const nextDate = new Date(date);
-      nextDate.setDate(nextDate.getDate() + 1);
-      
-      // Count messages for this day
-      const dayMessages = allMessages.filter((m: any) => {
-        const msgDate = new Date(m.dateSent);
-        return msgDate >= date && msgDate < nextDate;
-      }).length;
-      
-      // Count calls for this day
-      const dayCalls = allCalls.filter((c: any) => {
-        const callDate = new Date(c.startTime);
-        return callDate >= date && callDate < nextDate;
-      }).length;
-      
+      const dayData = daily.find((d: any) => String(d.date).startsWith(dateStr));
       return {
         name: `${date.toLocaleDateString('en-US', { weekday: 'short' })} ${date.getMonth() + 1}/${date.getDate()}`,
-        messages: dayMessages,
-        calls: dayCalls
+        messages: dayData ? dayData.outbound + dayData.inbound : 0,
+        calls: 0
       };
     });
-    
-    console.log('[Dashboard] Weekly chart data:', chartData);
-    return chartData;
-  }, [analytics]);
+  }, [accountData]);
   
-  // Monthly trend data - shows last 6 months
+  // Monthly trend data - aggregates dailyChartData by month
   const sixMonthTrendData = useMemo(() => {
-    if (!analytics) {
-      return Array.from({ length: 6 }, (_, i) => ({ 
-        name: new Date(new Date().getFullYear(), new Date().getMonth() - (5 - i), 1)
-          .toLocaleDateString('en-US', { month: 'short' }), 
-        messages: 0, 
-        calls: 0 
-      }));
-    }
-    
+    const daily = accountData?.dailyChartData || [];
     const now = new Date();
-    const allMessages = (analytics.messages as any).all || analytics.messages.thisMonth || [];
-    const allCalls = (analytics.calls as any).all || analytics.calls.thisMonth || [];
     
-    // Group by month for the last 6 months
     return Array.from({ length: 6 }, (_, i) => {
       const monthDate = new Date(now.getFullYear(), now.getMonth() - (5 - i), 1);
       const nextMonth = new Date(now.getFullYear(), now.getMonth() - (4 - i), 1);
       
-      const monthMessages = allMessages.filter((m: any) => {
-        const msgDate = new Date(m.dateSent);
-        return msgDate >= monthDate && msgDate < nextMonth;
-      }).length;
-      
-      const monthCalls = allCalls.filter((c: any) => {
-        const callDate = new Date(c.startTime);
-        return callDate >= monthDate && callDate < nextMonth;
-      }).length;
+      const monthTotal = daily
+        .filter((d: any) => {
+          const dd = new Date(d.date);
+          return dd >= monthDate && dd < nextMonth;
+        })
+        .reduce((sum: number, d: any) => sum + (d.outbound || 0) + (d.inbound || 0), 0);
       
       return {
         name: monthDate.toLocaleDateString('en-US', { month: 'short' }),
-        messages: monthMessages,
-        calls: monthCalls
+        messages: monthTotal,
+        calls: 0
       };
     });
-  }, [analytics]);
+  }, [accountData]);
 
-  // Bar chart data - uses real daily message counts from this month
+  // Bar chart data - uses server dailyChartData for last 14 days
   const barChartData = useMemo(() => {
-    if (!analytics) {
-      return Array.from({ length: 14 }, (_, i) => ({ name: (i + 1).toString(), value: 0 }));
-    }
-    
+    const daily = accountData?.dailyChartData || [];
     const now = new Date();
-    // Get last 14 days of message data
+    
     return Array.from({ length: 14 }, (_, i) => {
       const date = new Date(now);
       date.setDate(now.getDate() - (13 - i));
-      const dateStr = date.toDateString();
+      const dateStr = date.toISOString().split('T')[0];
       
-      const dayMessages = analytics.messages.thisMonth?.filter((m: any) => {
-        const msgDate = new Date(m.dateSent);
-        return msgDate.toDateString() === dateStr;
-      }).length || 0;
-      
+      const dayData = daily.find((d: any) => String(d.date).startsWith(dateStr));
       return {
         name: date.getDate().toString(),
-        value: dayMessages
+        value: dayData ? dayData.outbound + dayData.inbound : 0
       };
     });
-  }, [analytics]);
+  }, [accountData]);
 
   // Recent messages for table
   const recentMessages = useMemo(() => {
@@ -320,35 +285,6 @@ export default function Dashboard() {
     { name: 'Isabella Nguyen', email: 'i@example.com', role: 'Member', avatar: 'IN' },
     { name: 'Hugan Romex', email: 'kai@example.com', role: 'Member', avatar: 'HR' },
   ];
-
-  // Sparkline data - derived from real daily message/call counts
-  const sparklineMessages = useMemo(() => {
-    if (!analytics) return [0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
-    const now = new Date();
-    return Array.from({ length: 10 }, (_, i) => {
-      const date = new Date(now);
-      date.setDate(now.getDate() - (9 - i));
-      const dateStr = date.toDateString();
-      return analytics.messages.thisMonth?.filter((m: any) => {
-        const msgDate = new Date(m.dateSent);
-        return msgDate.toDateString() === dateStr;
-      }).length || 0;
-    });
-  }, [analytics]);
-
-  const sparklineCalls = useMemo(() => {
-    if (!analytics) return [0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
-    const now = new Date();
-    return Array.from({ length: 10 }, (_, i) => {
-      const date = new Date(now);
-      date.setDate(now.getDate() - (9 - i));
-      const dateStr = date.toDateString();
-      return analytics.calls.thisMonth?.filter((c: any) => {
-        const callDate = new Date(c.startTime);
-        return callDate.toDateString() === dateStr;
-      }).length || 0;
-    });
-  }, [analytics]);
 
   const getStatusBadge = (status: string) => {
     switch (status) {
@@ -457,6 +393,10 @@ export default function Dashboard() {
       <div className="flex items-center justify-between">
         <h1 className="text-2xl font-semibold tracking-tight">Dashboard</h1>
         <div className="flex items-center gap-2">
+          <Button variant="outline" size="sm" className="gap-2" onClick={() => refresh()} disabled={loading}>
+            <RefreshCw className={`h-4 w-4 ${loading ? 'animate-spin' : ''}`} />
+            Refresh
+          </Button>
           <Button variant="default" size="sm" className="gap-2 bg-gray-900 hover:bg-gray-800">
             <Download className="h-4 w-4" />
             Download
@@ -491,81 +431,60 @@ export default function Dashboard() {
 
         <TabsContent value="overview" className="space-y-6 mt-6">
           {/* Stats Row */}
-          <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-4">
-            {/* Messages Card */}
+          <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-5">
+            {/* Messages Today */}
             <Card className="bg-white">
               <CardContent className="p-6">
                 <div className="flex items-center justify-between">
                   <div className="flex items-center gap-2 text-sm text-muted-foreground">
-                    <MessageSquare className="h-4 w-4" />
-                    Messages Today
+                    <Send className="h-4 w-4" />
+                    Outbound Today
                   </div>
-                  <Info className="h-4 w-4 text-muted-foreground" />
+                  {stats.activeCampaigns > 0 && (
+                    <Badge className="gap-1 text-xs bg-green-100 text-green-700 border-green-200 animate-pulse">
+                      <Activity className="h-3 w-3" />
+                      {stats.activeCampaigns} sending
+                    </Badge>
+                  )}
                 </div>
-                <div className="flex items-center justify-between mt-3">
-                  <div>
-                    <p className="text-3xl font-bold">{loading ? '...' : formatNumber(stats.messagesToday)}</p>
-                    <p className="text-xs text-muted-foreground mt-1">vs yesterday</p>
-                  </div>
-                  <MiniSparkline data={sparklineMessages} color="#f97316" trend="up" />
-                </div>
+                <p className="text-3xl font-bold mt-3">{loading ? '...' : formatNumber(stats.messagesToday)}</p>
                 <div className="flex items-center gap-2 mt-3 pt-3 border-t">
-                  <span className="text-sm text-muted-foreground">Details</span>
-                  <Badge variant="outline" className={`gap-1 ${stats.messageGrowth >= 0 ? 'text-green-600 border-green-200 bg-green-50' : 'text-red-600 border-red-200 bg-red-50'}`}>
+                  {stats.liveFailed > 0 && (
+                    <span className="text-xs text-red-500">Failed: {formatNumber(stats.liveFailed)}</span>
+                  )}
+                  <Badge variant="outline" className={`gap-1 text-xs ${stats.messageGrowth >= 0 ? 'text-green-600 border-green-200 bg-green-50' : 'text-red-600 border-red-200 bg-red-50'}`}>
                     {stats.messageGrowth >= 0 ? <ArrowUpRight className="h-3 w-3" /> : <ArrowDownRight className="h-3 w-3" />}
-                    {Math.abs(stats.messageGrowth)}%
+                    {Math.abs(stats.messageGrowth)}% vs yesterday
                   </Badge>
                 </div>
               </CardContent>
             </Card>
 
-            {/* Calls Card */}
+            {/* Messages This Week */}
             <Card className="bg-white">
               <CardContent className="p-6">
-                <div className="flex items-center justify-between">
-                  <div className="flex items-center gap-2 text-sm text-muted-foreground">
-                    <Phone className="h-4 w-4" />
-                    Calls Today
-                  </div>
-                  <Info className="h-4 w-4 text-muted-foreground" />
+                <div className="flex items-center gap-2 text-sm text-muted-foreground">
+                  <MessageSquare className="h-4 w-4" />
+                  Messages This Week
                 </div>
-                <div className="flex items-center justify-between mt-3">
-                  <div>
-                    <p className="text-3xl font-bold">{loading ? '...' : formatNumber(stats.callsToday)}</p>
-                    <p className="text-xs text-muted-foreground mt-1">vs yesterday</p>
-                  </div>
-                  <MiniSparkline data={sparklineCalls} color="#ef4444" trend="down" />
-                </div>
+                <p className="text-3xl font-bold mt-3">{loading ? '...' : formatNumber(stats.messagesThisWeek)}</p>
                 <div className="flex items-center gap-2 mt-3 pt-3 border-t">
-                  <span className="text-sm text-muted-foreground">Details</span>
-                  <Badge variant="outline" className="gap-1 text-red-600 border-red-200 bg-red-50">
-                    <ArrowDownRight className="h-3 w-3" />
-                    {Math.abs(stats.callGrowth)}%
-                  </Badge>
+                  <span className="text-xs text-muted-foreground">Avg {stats.messagesThisWeek > 0 ? formatNumber(Math.round(stats.messagesThisWeek / 7)) : '0'}/day</span>
                 </div>
               </CardContent>
             </Card>
 
-            {/* Delivery Rate Card */}
+            {/* Messages This Month */}
             <Card className="bg-white">
               <CardContent className="p-6">
-                <div className="flex items-center justify-between">
-                  <div className="flex items-center gap-2 text-sm text-muted-foreground">
-                    <CheckCircle className="h-4 w-4" />
-                    Inbound Today
-                  </div>
-                  <Info className="h-4 w-4 text-muted-foreground" />
+                <div className="flex items-center gap-2 text-sm text-muted-foreground">
+                  <TrendingUp className="h-4 w-4" />
+                  Messages This Month
                 </div>
-                <div className="flex items-center justify-between mt-3">
-                  <div>
-                    <p className="text-3xl font-bold">{loading ? '...' : stats.inboundToday}</p>
-                    <p className="text-xs text-muted-foreground mt-1">Received today</p>
-                  </div>
-                  <MiniSparkline data={sparklineMessages} color="#f97316" trend="up" />
-                </div>
+                <p className="text-3xl font-bold mt-3">{loading ? '...' : formatNumber(stats.messagesThisMonth)}</p>
                 <div className="flex items-center gap-2 mt-3 pt-3 border-t">
-                  <span className="text-sm text-muted-foreground">{stats.activeNumbers} numbers active</span>
-                  <Badge variant="outline" className="gap-1 text-blue-600 border-blue-200 bg-blue-50">
+                  <span className="text-xs text-muted-foreground">{stats.activeNumbers} numbers active</span>
+                  <Badge variant="outline" className="gap-1 text-xs text-blue-600 border-blue-200 bg-blue-50">
                     <Activity className="h-3 w-3" />
                     {stats.activeNumbers}
                   </Badge>
@@ -573,18 +492,34 @@ export default function Dashboard() {
               </CardContent>
             </Card>
 
-            {/* Total Revenue / Delivery Rate */}
+            {/* Delivery Rate */}
             <Card className="bg-white">
               <CardContent className="p-6">
-                <div className="text-sm text-muted-foreground">Delivery Rate Today</div>
-                <p className="text-3xl font-bold mt-2">{stats.deliveryRate.toFixed(1)}%</p>
-                <p className="text-xs text-green-600 mt-1">{stats.deliveryGrowth >= 0 ? '+' : ''}{stats.deliveryGrowth}% vs yesterday</p>
-                <div className="mt-4 h-16">
-                  <ResponsiveContainer width="100%" height="100%">
-                    <LineChart data={sparklineMessages.map((v: number) => ({ value: v }))}>
-                      <Line type="monotone" dataKey="value" stroke="#10b981" strokeWidth={2} dot={false} />
-                    </LineChart>
-                  </ResponsiveContainer>
+                <div className="flex items-center gap-2 text-sm text-muted-foreground">
+                  <CheckCircle className="h-4 w-4" />
+                  Delivery Rate
+                </div>
+                <p className="text-3xl font-bold mt-3">{loading ? '...' : stats.deliveryRate.toFixed(1)}%</p>
+                <div className="flex items-center gap-2 mt-3 pt-3 border-t">
+                  <span className="text-xs text-muted-foreground">This month</span>
+                </div>
+              </CardContent>
+            </Card>
+
+            {/* Calls Today */}
+            <Card className="bg-white">
+              <CardContent className="p-6">
+                <div className="flex items-center gap-2 text-sm text-muted-foreground">
+                  <Phone className="h-4 w-4" />
+                  Calls Today
+                </div>
+                <p className="text-3xl font-bold mt-3">{loading ? '...' : formatNumber(stats.callsToday)}</p>
+                <div className="flex items-center gap-2 mt-3 pt-3 border-t">
+                  <span className="text-xs text-muted-foreground">vs yesterday</span>
+                  <Badge variant="outline" className={`gap-1 text-xs ${stats.callGrowth >= 0 ? 'text-green-600 border-green-200 bg-green-50' : 'text-red-600 border-red-200 bg-red-50'}`}>
+                    {stats.callGrowth >= 0 ? <ArrowUpRight className="h-3 w-3" /> : <ArrowDownRight className="h-3 w-3" />}
+                    {Math.abs(stats.callGrowth)}%
+                  </Badge>
                 </div>
               </CardContent>
             </Card>
@@ -659,8 +594,8 @@ export default function Dashboard() {
               {/* Subscriptions / Messages Card */}
               <Card className="bg-white">
                 <CardContent className="p-6">
-                  <div className="text-sm text-muted-foreground">Total Messages Today</div>
-                  <p className="text-3xl font-bold mt-1">{formatNumber(stats.totalMessagesToday)}</p>
+                  <div className="text-sm text-muted-foreground">Outbound Today</div>
+                  <p className="text-3xl font-bold mt-1">{formatNumber(stats.messagesToday)}</p>
                   <p className="text-xs text-green-600 mt-1">
                     {stats.messageGrowth >= 0 ? '+' : ''}{stats.messageGrowth}% vs yesterday
                   </p>

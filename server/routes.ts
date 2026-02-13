@@ -42,7 +42,7 @@ import {
   messageTemplates,
 } from "@shared/schema";
 import { db } from "./db";
-import { eq, and, sql } from "drizzle-orm";
+import { eq, and, sql, desc, or } from "drizzle-orm";
 import { ZodError } from "zod";
 import { fromZodError } from "zod-validation-error";
 
@@ -1331,11 +1331,21 @@ export async function registerRoutes(app: Express): Promise<Server> {
         loadFromDb = false, // If true, load recipients from campaign_recipients table
       } = req.body;
 
-      // Load recipients from database if campaignId provided and loadFromDb is true (or no recipients sent)
+      // Load recipients from database if campaignId provided and no recipients sent from client
       let recipients = clientRecipients;
+      let isResume = false;
       
       if ((!recipients || recipients.length === 0) && campaignId) {
-        console.log(`[BatchSMS] Loading recipients from database for campaign ${campaignId}`);
+        // Check if this is a resume (campaign was paused) — only load pending recipients
+        const [campaignRecord] = await db.select({ status: smsCampaigns.status, sentCount: smsCampaigns.sentCount, failedCount: smsCampaigns.failedCount })
+          .from(smsCampaigns).where(eq(smsCampaigns.id, campaignId));
+        
+        isResume = campaignRecord?.status === 'paused';
+        if (isResume) {
+          console.log(`[BatchSMS] RESUMING campaign ${campaignId} from paused state (already sent: ${campaignRecord.sentCount}, failed: ${campaignRecord.failedCount})`);
+        }
+
+        console.log(`[BatchSMS] Loading ${isResume ? 'PENDING' : 'ALL'} recipients from database for campaign ${campaignId}`);
         
         // Load in chunks to avoid memory spikes
         const LOAD_CHUNK = 10000;
@@ -1352,7 +1362,11 @@ export async function registerRoutes(app: Express): Promise<Server> {
               customFields: campaignRecipients.customFields,
             })
             .from(campaignRecipients)
-            .where(eq(campaignRecipients.smsCampaignId, campaignId))
+            .where(
+              isResume
+                ? and(eq(campaignRecipients.smsCampaignId, campaignId), eq(campaignRecipients.status, 'pending'))
+                : eq(campaignRecipients.smsCampaignId, campaignId)
+            )
             .limit(LOAD_CHUNK)
             .offset(offset);
           
@@ -1383,7 +1397,11 @@ export async function registerRoutes(app: Express): Promise<Server> {
           console.log(`[BatchSMS] Loaded ${offset} recipients from DB so far`);
         }
         
-        console.log(`[BatchSMS] Total ${recipients.length} recipients loaded from database`);
+        console.log(`[BatchSMS] Total ${recipients.length} ${isResume ? 'pending' : ''} recipients loaded from database`);
+        
+        if (isResume && recipients.length === 0) {
+          return res.status(200).json({ success: true, message: 'All recipients already sent — nothing to resume', total: 0 });
+        }
       }
 
       if (!recipients || !Array.isArray(recipients) || recipients.length === 0) {
@@ -1656,6 +1674,57 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
   
+  // Live sending stats for dashboard (combines in-memory + DB for prod reliability)
+  app.get("/api/dashboard/live-stats", async (req, res) => {
+    try {
+      // 1. Get in-memory stats (works when campaigns run on this server)
+      const memoryStats = batchSmsService.getActiveSendingStats();
+      
+      // 2. Get DB stats for active campaigns (works on prod/Render even after restart)
+      const activeCampaigns = await db
+        .select({
+          id: smsCampaigns.id,
+          name: smsCampaigns.name,
+          status: smsCampaigns.status,
+          sentCount: smsCampaigns.sentCount,
+          failedCount: smsCampaigns.failedCount,
+          recipientCount: smsCampaigns.recipientCount,
+          accountId: smsCampaigns.accountId,
+        })
+        .from(smsCampaigns)
+        .where(eq(smsCampaigns.status, 'sending'));
+      
+      // Combine: use in-memory if available (more accurate), fall back to DB
+      let totalSent = memoryStats.totalSent;
+      let totalFailed = memoryStats.totalFailed;
+      let totalInProgress = memoryStats.totalInProgress;
+      let campaignCount = memoryStats.activeCampaigns;
+      const jobs = [...memoryStats.jobs];
+      
+      // For any DB-active campaigns NOT tracked in memory, add their DB counts
+      const memCampaignIds = new Set(memoryStats.jobs.map(j => j.campaignId).filter(Boolean));
+      for (const campaign of activeCampaigns) {
+        if (!memCampaignIds.has(campaign.id)) {
+          totalSent += campaign.sentCount || 0;
+          totalFailed += campaign.failedCount || 0;
+          campaignCount++;
+          jobs.push({
+            jobId: `db_campaign_${campaign.id}`,
+            campaignId: campaign.id,
+            sent: campaign.sentCount || 0,
+            failed: campaign.failedCount || 0,
+            total: campaign.recipientCount || 0,
+          });
+        }
+      }
+      
+      res.json({ totalSent, totalFailed, totalInProgress, activeCampaigns: campaignCount, jobs });
+    } catch (error: any) {
+      console.error("Error fetching live stats:", error);
+      res.status(500).json({ error: "Failed to fetch live stats" });
+    }
+  });
+
   // Billing endpoints
   app.post("/api/billing/purchase", async (req, res) => {
     try {
@@ -4735,11 +4804,12 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const userId = (req as any).user?.id || 1;
       const accountId = req.query.accountId as string | undefined;
       const isOverviewMode = req.query.overview === 'true' || !accountId;
+      const noCache = req.query.noCache === 'true';
 
       // Direct Redis cache check at route level for maximum speed
       const cacheKey = `textflow:dashboard:${userId}:${isOverviewMode ? 'overview' : accountId}`;
       
-      if (redisService.isAvailable()) {
+      if (!noCache && redisService.isAvailable()) {
         const { data: cached, isStale } = await redisService.getWithStale<any>(cacheKey);
         if (cached) {
           console.log(`[Routes] Dashboard cache ${isStale ? 'STALE' : 'HIT'} - returning instantly`);
@@ -4758,10 +4828,10 @@ export async function registerRoutes(app: Express): Promise<Server> {
         }
       }
 
-      const context = { userId, accountId, isOverviewMode };
+      const context = { userId, accountId, isOverviewMode, noCache };
       
       // Fetch from external APIs
-      console.log('[Routes] Dashboard cache MISS - fetching from APIs...');
+      console.log(`[Routes] Dashboard cache MISS - fetching from APIs...${noCache ? ' (noCache)' : ''}`);
       const result = await dataService.getAnalytics(context);
 
       // Cache lightweight version (metrics + limited recent messages/calls)
@@ -6183,6 +6253,84 @@ export async function registerRoutes(app: Express): Promise<Server> {
     } catch (error: any) {
       console.error("Error syncing campaign metrics:", error);
       res.status(500).json({ error: error.message || "Failed to sync campaign metrics" });
+    }
+  });
+
+  /**
+   * Sync Commio message delivery statuses from ThinQ API
+   * Looks up recent Commio messages in DB and checks their delivery status via GET /product/origination/sms/{guid}
+   */
+  app.post("/api/commio/sync-delivery-status", async (req, res) => {
+    try {
+      const userId = (req as any).user?.id || 1;
+      const limit = req.body.limit || 100;
+
+      // Get Commio account
+      const { accounts: userAccounts } = await accountService.getAccountsForUser(userId);
+      const commioAccount = userAccounts.find((a: any) => a.provider === 'commio');
+      
+      if (!commioAccount) {
+        return res.status(400).json({ error: "No Commio account found" });
+      }
+
+      const accountIdNum = parseInt(commioAccount.id.replace('acc_', ''));
+      const creds = await accountService.getAccountCredentials(accountIdNum);
+      
+      if (!creds?.accountSid || !creds?.authToken) {
+        return res.status(400).json({ error: "Commio credentials not configured" });
+      }
+
+      const { CommioProvider } = await import('./providers/commio.provider');
+      const commioProvider = new CommioProvider({
+        accountSid: creds.accountSid,
+        authToken: creds.authToken,
+        apiKey: creds.apiKey,
+      });
+
+      // Get recent Commio messages from DB that have real GUIDs (not batch_ prefixed)
+      const recentMessages = await db
+        .select({ id: smsMessages.id, messageSid: smsMessages.messageSid, status: smsMessages.status })
+        .from(smsMessages)
+        .where(and(
+          eq(smsMessages.providerCode, 'commio'),
+          sql`${smsMessages.messageSid} NOT LIKE 'batch_%'`,
+          sql`${smsMessages.messageSid} NOT LIKE 'commio_%'`,
+          or(
+            eq(smsMessages.status, 'sent'),
+            eq(smsMessages.status, 'queued'),
+            eq(smsMessages.status, 'sending')
+          )
+        ))
+        .orderBy(desc(smsMessages.sentAt))
+        .limit(limit);
+
+      if (recentMessages.length === 0) {
+        return res.json({ synced: 0, message: "No pending Commio messages to sync" });
+      }
+
+      console.log(`[Commio Sync] Checking delivery status for ${recentMessages.length} messages`);
+
+      // Batch check statuses
+      const guids = recentMessages.map(m => m.messageSid!).filter(Boolean);
+      const statusMap = await commioProvider.batchGetMessageStatus(guids, 5);
+
+      // Update DB with new statuses
+      let updated = 0;
+      for (const msg of recentMessages) {
+        const newStatus = statusMap.get(msg.messageSid!);
+        if (newStatus && newStatus !== msg.status) {
+          await db.update(smsMessages)
+            .set({ status: newStatus })
+            .where(eq(smsMessages.id, msg.id));
+          updated++;
+        }
+      }
+
+      console.log(`[Commio Sync] Updated ${updated}/${recentMessages.length} message statuses`);
+      res.json({ synced: updated, checked: recentMessages.length, statuses: Object.fromEntries(statusMap) });
+    } catch (error: any) {
+      console.error("Error syncing Commio delivery status:", error);
+      res.status(500).json({ error: error.message || "Failed to sync delivery status" });
     }
   });
 

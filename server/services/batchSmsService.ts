@@ -1,5 +1,5 @@
 import { db } from '../db';
-import { smsMessages, smsCampaigns } from '@shared/schema';
+import { smsMessages, smsCampaigns, campaignRecipients } from '@shared/schema';
 import { eq, sql, and } from 'drizzle-orm';
 import Twilio from 'twilio';
 
@@ -77,6 +77,30 @@ class BatchSmsService {
       }
     }
     return null;
+  }
+
+  // Get aggregated stats across all active batch jobs (for dashboard)
+  getActiveSendingStats(): { totalSent: number; totalFailed: number; totalInProgress: number; activeCampaigns: number; jobs: Array<{ jobId: string; campaignId?: number; sent: number; failed: number; total: number; currentRate?: number }> } {
+    let totalSent = 0;
+    let totalFailed = 0;
+    let totalInProgress = 0;
+    const jobs: Array<{ jobId: string; campaignId?: number; sent: number; failed: number; total: number; currentRate?: number }> = [];
+
+    for (const [jobId, progress] of activeBatchJobs.entries()) {
+      totalSent += progress.sent;
+      totalFailed += progress.failed;
+      totalInProgress += progress.inProgress;
+      jobs.push({
+        jobId,
+        campaignId: progress.campaignId,
+        sent: progress.sent,
+        failed: progress.failed,
+        total: progress.total,
+        currentRate: progress.currentRate,
+      });
+    }
+
+    return { totalSent, totalFailed, totalInProgress, activeCampaigns: jobs.length, jobs };
   }
 
   private getTwilioClient(accountSid: string, authToken: string): Twilio.Twilio {
@@ -194,6 +218,21 @@ class BatchSmsService {
   async startBatchAsync(options: BatchSendOptions): Promise<{ jobId: string; total: number }> {
     const jobId = `batch_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
     
+    // Load baseline counts from DB (for resume: existing sent/failed before this batch)
+    let baselineSent = 0;
+    let baselineFailed = 0;
+    if (options.campaignId) {
+      try {
+        const [camp] = await db.select({ sentCount: smsCampaigns.sentCount, failedCount: smsCampaigns.failedCount })
+          .from(smsCampaigns).where(eq(smsCampaigns.id, options.campaignId));
+        baselineSent = camp?.sentCount || 0;
+        baselineFailed = camp?.failedCount || 0;
+        if (baselineSent > 0 || baselineFailed > 0) {
+          console.log(`[BatchSMS] Resume baseline: sent=${baselineSent}, failed=${baselineFailed}`);
+        }
+      } catch { /* ignore */ }
+    }
+
     const progress: BatchProgress & { campaignId?: number; startTime: number } = {
       total: options.recipients.length,
       sent: 0,
@@ -231,6 +270,7 @@ class BatchSmsService {
       }
       
       // Periodically update database for cross-server visibility
+      // Use baseline + current batch counts so resume doesn't lose previous progress
       const now = Date.now();
       const messagesSinceLastUpdate = (p.sent + p.failed) - lastDbUpdateCount;
       const timeSinceLastUpdate = now - lastDbUpdateTime;
@@ -242,8 +282,8 @@ class BatchSmsService {
         try {
           await db.update(smsCampaigns)
             .set({
-              sentCount: p.sent,
-              failedCount: p.failed,
+              sentCount: baselineSent + p.sent,
+              failedCount: baselineFailed + p.failed,
               updatedAt: new Date(),
             })
             .where(eq(smsCampaigns.id, options.campaignId));
@@ -256,14 +296,21 @@ class BatchSmsService {
       // Update campaign status when complete
       if (options.campaignId) {
         try {
+          // Check current status — if paused, don't overwrite to 'completed'
+          const [currentCampaign] = await db.select({ status: smsCampaigns.status })
+            .from(smsCampaigns).where(eq(smsCampaigns.id, options.campaignId));
+          const wasPaused = currentCampaign?.status === 'paused';
+          
+          // Update counts using baseline + batch (periodic updates already wrote baseline + partial)
+          // Final update sets the definitive total
           await db.update(smsCampaigns)
             .set({
-              status: 'completed',
-              sentCount: result.sent,
-              failedCount: result.failed,
+              status: wasPaused ? 'paused' : 'completed',
+              sentCount: baselineSent + result.sent,
+              failedCount: baselineFailed + result.failed,
             })
             .where(eq(smsCampaigns.id, options.campaignId));
-          console.log(`[BatchSMS] Campaign ${options.campaignId} completed: ${result.sent} sent, ${result.failed} failed`);
+          console.log(`[BatchSMS] Campaign ${options.campaignId} ${wasPaused ? 'paused' : 'completed'}: ${baselineSent + result.sent} total sent, ${baselineFailed + result.failed} total failed (this batch: +${result.sent}/+${result.failed})`);
 
           // After 30s, recount delivered messages from DB (webhooks may have updated statuses)
           const campaignId = options.campaignId;
@@ -388,6 +435,9 @@ class BatchSmsService {
       console.log(`[BatchSMS] ${pn.phoneNumber} (${pn.provider}): ${queue.length} messages`);
     });
 
+    // Batch recipient status updates for campaign_recipients (enables pause/resume)
+    const recipientStatusBatch: Array<{ phone: string; status: string; messageSid: string | null; error: string | null }> = [];
+
     // Helper: send a single message via the correct provider
     const sendMessage = async (recipient: BatchRecipient, phoneConfig: PhoneNumberConfig): Promise<void> => {
       const personalizedMessage = this.applyMergeTags(message, recipient);
@@ -428,6 +478,16 @@ class BatchSmsService {
         campaignId: campaignId || null,
       });
 
+      // Track recipient status update for campaign_recipients table (enables pause/resume)
+      if (campaignId) {
+        recipientStatusBatch.push({
+          phone: recipient.phone,
+          status: result.success ? 'sent' : 'failed',
+          messageSid: result.messageSid || null,
+          error: result.error || null,
+        });
+      }
+
       if (onProgress) {
         onProgress({ ...progress });
       }
@@ -443,6 +503,30 @@ class BatchSmsService {
         } catch (dbError) {
           console.error('[BatchSMS] Batch DB insert error:', dbError);
         }
+      }
+    };
+
+    const flushRecipientStatusBatch = async () => {
+      if (recipientStatusBatch.length === 0 || !campaignId) return;
+      const batch = recipientStatusBatch.splice(0);
+      try {
+        for (const r of batch) {
+          await db.update(campaignRecipients)
+            .set({
+              status: r.status as any,
+              messageSid: r.messageSid,
+              sentAt: r.status === 'sent' ? new Date() : undefined,
+              failedAt: r.status === 'failed' ? new Date() : undefined,
+              errorMessage: r.error,
+            })
+            .where(and(
+              eq(campaignRecipients.smsCampaignId, campaignId),
+              eq(campaignRecipients.phoneNumber, r.phone),
+              eq(campaignRecipients.status, 'pending')
+            ));
+        }
+      } catch (err) {
+        console.error('[BatchSMS] Recipient status update error:', err);
       }
     };
 
@@ -513,6 +597,7 @@ class BatchSmsService {
           if (campaign?.status === 'paused' || campaign?.status === 'cancelled') {
             console.log(`[BatchSMS] Campaign ${campaignId} is ${campaign.status} - stopping send loop`);
             await flushDbBatch();
+            await flushRecipientStatusBatch();
             return {
               success: true,
               total: recipients.length,
@@ -550,10 +635,12 @@ class BatchSmsService {
         // Flush DB batch every 100 messages
         if (dbMessageBatch.length >= 100) {
           await flushDbBatch();
+          await flushRecipientStatusBatch();
         }
       }
 
       await flushDbBatch();
+      await flushRecipientStatusBatch();
     } else {
       // ===== NORMAL PARALLEL MODE =====
       // Process each number's queue in parallel with concurrency limit
@@ -589,6 +676,7 @@ class BatchSmsService {
           // Flush DB batch every 100 messages
           if (dbMessageBatch.length >= 100) {
             await flushDbBatch();
+            await flushRecipientStatusBatch();
           }
 
           // Small delay between batches to avoid overwhelming
@@ -598,6 +686,7 @@ class BatchSmsService {
         }
 
         await flushDbBatch();
+        await flushRecipientStatusBatch();
       });
 
       await Promise.all(numberPromises);

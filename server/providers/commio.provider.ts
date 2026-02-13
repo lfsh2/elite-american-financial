@@ -721,6 +721,90 @@ export class CommioProvider implements ICommunicationProvider {
   }
 
   // ============================================
+  // MESSAGE STATUS LOOKUP (Real ThinQ API)
+  // ============================================
+
+  /**
+   * Get delivery status for a specific message by GUID
+   * ThinQ API: GET /account/{id}/product/origination/sms/{guid}
+   * Returns delivery notifications with timestamps and status
+   */
+  async getMessageStatus(guid: string): Promise<{
+    id: string;
+    from: string;
+    to: string;
+    status: string;
+    sentAt: string;
+    deliveryNotifications: Array<{
+      timestamp: number;
+      sendStatus: string;
+      status: string;
+      error?: string;
+    }>;
+  } | null> {
+    try {
+      const data = await this.apiRequest<any>('GET', `/product/origination/sms/${guid}`);
+      
+      // Parse delivery notifications to determine final status
+      const notifications = data.delivery_notifications || [];
+      let finalStatus = 'sent';
+      
+      for (const n of notifications) {
+        const s = (n.send_status || n.status || '').toLowerCase();
+        if (s === 'delivered' || s === 'dlvrd') {
+          finalStatus = 'delivered';
+        } else if (s === 'carrier_rejected' || s === 'rejected' || s === 'rejectd' || s === 'failed') {
+          finalStatus = 'failed';
+        } else if (s === 'sent') {
+          if (finalStatus !== 'delivered' && finalStatus !== 'failed') {
+            finalStatus = 'sent';
+          }
+        }
+      }
+
+      return {
+        id: data.id,
+        from: data.from ? `+${data.from}` : '',
+        to: data.to ? `+${data.to}` : '',
+        status: finalStatus,
+        sentAt: data.sent_at || '',
+        deliveryNotifications: notifications.map((n: any) => ({
+          timestamp: n.timestamp,
+          sendStatus: n.send_status,
+          status: n.status,
+          error: n.error,
+        })),
+      };
+    } catch (error: any) {
+      console.log(`[Commio] Failed to get status for ${guid}: ${error.message}`);
+      return null;
+    }
+  }
+
+  /**
+   * Batch check delivery status for multiple message GUIDs
+   * Processes in parallel with concurrency limit to avoid rate limiting
+   */
+  async batchGetMessageStatus(guids: string[], concurrency = 5): Promise<Map<string, string>> {
+    const statusMap = new Map<string, string>();
+    
+    for (let i = 0; i < guids.length; i += concurrency) {
+      const batch = guids.slice(i, i + concurrency);
+      const results = await Promise.allSettled(
+        batch.map(guid => this.getMessageStatus(guid))
+      );
+      
+      results.forEach((result, idx) => {
+        if (result.status === 'fulfilled' && result.value) {
+          statusMap.set(batch[idx], result.value.status);
+        }
+      });
+    }
+    
+    return statusMap;
+  }
+
+  // ============================================
   // A2P MESSAGING CAMPAIGNS
   // ============================================
 

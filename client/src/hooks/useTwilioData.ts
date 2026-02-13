@@ -264,7 +264,7 @@ export function useAccountAnalytics() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
-  const fetchData = useCallback(async (useCache = true) => {
+  const fetchData = useCallback(async (useCache = true, bypassServerCache = false) => {
     setError(null);
     
     try {
@@ -274,6 +274,10 @@ export function useAccountAnalytics() {
         params.set('overview', 'true');
       } else if (currentAccount) {
         params.set('accountId', currentAccount.id);
+      }
+      
+      if (bypassServerCache) {
+        params.set('noCache', 'true');
       }
 
       // Check sessionStorage cache first for instant load
@@ -300,9 +304,9 @@ export function useAccountAnalytics() {
       const result = await response.json();
       setData(result);
       
-      // Cache for 3 minutes
+      // Cache for 30 seconds
       sessionStorage.setItem(cacheKey, JSON.stringify(result));
-      sessionStorage.setItem(cacheExpiry, String(Date.now() + 3 * 60 * 1000));
+      sessionStorage.setItem(cacheExpiry, String(Date.now() + 30 * 1000));
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Unknown error');
     } finally {
@@ -312,13 +316,25 @@ export function useAccountAnalytics() {
 
   useEffect(() => {
     fetchData();
+    // Auto-refresh every 30 seconds for near real-time updates
+    const interval = setInterval(() => fetchData(false), 30 * 1000);
+    return () => clearInterval(interval);
   }, [fetchData]);
+
+  // refresh() always bypasses ALL cache layers for instant fresh data
+  const refresh = useCallback(() => {
+    // Clear sessionStorage cache
+    const cacheKey = `dashboard_analytics_${isOverviewMode ? 'overview' : currentAccount?.id || 'default'}`;
+    sessionStorage.removeItem(cacheKey);
+    sessionStorage.removeItem(`${cacheKey}_expiry`);
+    return fetchData(false, true);
+  }, [fetchData, isOverviewMode, currentAccount]);
 
   return { 
     data, 
     loading, 
     error, 
-    refresh: fetchData,
+    refresh,
     isOverviewMode,
     currentAccount,
   };

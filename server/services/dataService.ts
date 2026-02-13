@@ -22,6 +22,7 @@ export interface DataContext {
   userId: number;
   accountId?: string | number;  // null/undefined = overview mode
   isOverviewMode: boolean;
+  noCache?: boolean;
 }
 
 export interface AccountAnalytics {
@@ -62,6 +63,7 @@ export interface DataServiceResult {
     thisWeek: Call[];
     thisMonth: Call[];
   };
+  dailyChartData?: { date: string; outbound: number; inbound: number; failed: number }[];
 }
 
 /**
@@ -80,27 +82,31 @@ class DataService {
    * @returns Analytics data scoped to the context
    */
   async getAnalytics(context: DataContext): Promise<DataServiceResult> {
-    const { userId, accountId, isOverviewMode } = context;
+    const { userId, accountId, isOverviewMode, noCache } = context;
 
     // Use consistent cache key with getAnalyticsFast
     const cacheKey = isOverviewMode 
       ? CacheKeys.aggregatedMetrics(userId)
       : CacheKeys.analytics(accountId || userId);
     
-    // Check Redis cache first (with stale-while-revalidate)
-    if (redisService.isAvailable()) {
-      const { data: cached, isStale } = await redisService.getWithStale<DataServiceResult>(cacheKey);
-      if (cached) {
-        console.log(`[DataService] Redis cache ${isStale ? 'STALE' : 'HIT'} for:`, cacheKey);
-        return cached;
+    if (!noCache) {
+      // Check Redis cache first (with stale-while-revalidate)
+      if (redisService.isAvailable()) {
+        const { data: cached, isStale } = await redisService.getWithStale<DataServiceResult>(cacheKey);
+        if (cached) {
+          console.log(`[DataService] Redis cache ${isStale ? 'STALE' : 'HIT'} for:`, cacheKey);
+          return cached;
+        }
       }
-    }
-    
-    // Fallback to in-memory cache
-    const memCached = cacheService.get<DataServiceResult>(cacheKey);
-    if (memCached) {
-      console.log('[DataService] Memory cache HIT for:', cacheKey);
-      return memCached;
+      
+      // Fallback to in-memory cache
+      const memCached = cacheService.get<DataServiceResult>(cacheKey);
+      if (memCached) {
+        console.log('[DataService] Memory cache HIT for:', cacheKey);
+        return memCached;
+      }
+    } else {
+      console.log('[DataService] Cache bypassed (noCache=true)');
     }
 
     console.log('[DataService] getAnalytics called with:', { userId, accountId, isOverviewMode });
@@ -161,32 +167,31 @@ class DataService {
     });
 
     // Supplement provider API data with database-stored messages and imported phone numbers
-    const dbCounts = await this.supplementWithDbData(accountAnalytics, accountsToFetch);
+    const dbResult = await this.supplementWithDbData(accountAnalytics, accountsToFetch);
 
     // Aggregate metrics across all fetched accounts
     const aggregatedMetrics = this.aggregateMetrics(accountAnalytics);
 
     // Override aggregated metrics with accurate DB counts (source of truth)
     // This avoids double-counting between API data and DB data
-    if (dbCounts) {
+    let dailyChartData: any[] = [];
+    if (dbResult) {
+      const { dbCounts } = dbResult;
+      dailyChartData = dbResult.dailyChartData || [];
       aggregatedMetrics.totalMessagesSentToday = dbCounts.outbound_today;
-      // For inbound: use the higher of DB count or API-aggregated count (API has webhook-received messages not in DB)
       aggregatedMetrics.totalMessagesReceivedToday = Math.max(dbCounts.inbound_today, aggregatedMetrics.totalMessagesReceivedToday || 0);
       aggregatedMetrics.totalMessagesSentThisWeek = dbCounts.outbound_week;
       aggregatedMetrics.totalMessagesSentThisMonth = dbCounts.outbound_month;
-      if ('totalMessagesSentYesterday' in aggregatedMetrics) {
-        (aggregatedMetrics as any).totalMessagesSentYesterday = dbCounts.outbound_yesterday;
-      }
-      if ('totalMessagesSentLastWeek' in aggregatedMetrics) {
-        (aggregatedMetrics as any).totalMessagesSentLastWeek = dbCounts.outbound_last_week;
-      }
-      if ('totalMessagesSentLastMonth' in aggregatedMetrics) {
-        (aggregatedMetrics as any).totalMessagesSentLastMonth = dbCounts.outbound_last_month;
-      }
-      const outboundMonth = dbCounts.outbound_month;
-      aggregatedMetrics.deliveryRate = outboundMonth > 0 ? (dbCounts.delivered_month / outboundMonth) * 100 : 100;
-      aggregatedMetrics.failureRate = outboundMonth > 0 ? (dbCounts.failed_month / outboundMonth) * 100 : 0;
-      console.log(`[DataService] Final aggregated: sentToday=${aggregatedMetrics.totalMessagesSentToday}, sentMonth=${aggregatedMetrics.totalMessagesSentThisMonth}, deliveryRate=${aggregatedMetrics.deliveryRate.toFixed(1)}%`);
+      // Always set yesterday/last week/last month for growth calculations
+      (aggregatedMetrics as any).totalMessagesSentYesterday = dbCounts.outbound_yesterday;
+      (aggregatedMetrics as any).totalMessagesSentLastWeek = dbCounts.outbound_last_week;
+      (aggregatedMetrics as any).totalMessagesSentLastMonth = dbCounts.outbound_last_month;
+      (aggregatedMetrics as any).totalCallsYesterday = 0; // TODO: add DB call counts
+      // Delivery rate: delivered / (delivered + failed) — total attempted messages
+      const totalAttempted = dbCounts.delivered_month + dbCounts.failed_month;
+      aggregatedMetrics.deliveryRate = totalAttempted > 0 ? (dbCounts.delivered_month / totalAttempted) * 100 : 100;
+      aggregatedMetrics.failureRate = totalAttempted > 0 ? (dbCounts.failed_month / totalAttempted) * 100 : 0;
+      console.log(`[DataService] Final aggregated: sentToday=${aggregatedMetrics.totalMessagesSentToday}, sentYesterday=${dbCounts.outbound_yesterday}, sentMonth=${aggregatedMetrics.totalMessagesSentThisMonth}, deliveryRate=${aggregatedMetrics.deliveryRate.toFixed(1)}%`);
     }
 
     // Merge messages and calls from all accounts
@@ -199,6 +204,7 @@ class DataService {
       aggregatedMetrics,
       messages,
       calls,
+      dailyChartData,
     };
 
     // Cache the result in Redis (primary) and memory (fallback)
@@ -206,7 +212,7 @@ class DataService {
       await redisService.set(cacheKey, result, CACHE_TTL.ANALYTICS, STALE_TTL.ANALYTICS);
       console.log('[DataService] Redis cached for:', cacheKey);
     }
-    cacheService.set(cacheKey, result, 5 * 60 * 1000);
+    cacheService.set(cacheKey, result, 60 * 1000);
 
     return result;
   }
@@ -351,7 +357,52 @@ class DataService {
       const counts = (dbMetrics as any).rows?.[0] || (dbMetrics as any)[0] || {};
       const toNum = (v: any) => parseInt(String(v || '0'), 10);
 
+      // ── Step 1b: Get campaign sent/failed counts (messages tracked in sms_campaigns but NOT in sms_messages) ──
+      const campaignMetrics = await db.execute(sql`
+        SELECT
+          COALESCE(SUM(sent_count), 0) AS campaign_sent_today,
+          COALESCE(SUM(failed_count), 0) AS campaign_failed_today,
+          COALESCE(SUM(sent_count + failed_count), 0) AS campaign_total_today
+        FROM sms_campaigns
+        WHERE status IN ('sending', 'completed', 'paused')
+          AND (started_at >= CURRENT_DATE OR updated_at >= CURRENT_DATE)
+          AND sent_count > 0
+      `);
+      const campaignCounts = (campaignMetrics as any).rows?.[0] || (campaignMetrics as any)[0] || {};
+      const campaignSentToday = toNum(campaignCounts.campaign_sent_today);
+      const campaignFailedToday = toNum(campaignCounts.campaign_failed_today);
+
+      // ── Step 1c: Get daily message breakdown for charts (sms_messages + campaigns) ──
+      const dailyBreakdown = await db.execute(sql`
+        SELECT d::date AS day,
+          COALESCE(msg.outbound, 0) AS msg_outbound,
+          COALESCE(msg.inbound, 0) AS msg_inbound,
+          COALESCE(camp.sent, 0) AS campaign_sent,
+          COALESCE(camp.failed, 0) AS campaign_failed
+        FROM generate_series(CURRENT_DATE - INTERVAL '30 days', CURRENT_DATE, '1 day') AS d
+        LEFT JOIN LATERAL (
+          SELECT COUNT(*) FILTER (WHERE direction LIKE 'outbound%') AS outbound,
+                 COUNT(*) FILTER (WHERE direction = 'inbound') AS inbound
+          FROM sms_messages WHERE sent_at >= d::date AND sent_at < d::date + INTERVAL '1 day'
+        ) msg ON true
+        LEFT JOIN LATERAL (
+          SELECT COALESCE(SUM(sent_count), 0) AS sent,
+                 COALESCE(SUM(failed_count), 0) AS failed
+          FROM sms_campaigns
+          WHERE status IN ('sending', 'completed', 'paused')
+            AND sent_count > 0
+            AND (
+              (started_at >= d::date AND started_at < d::date + INTERVAL '1 day')
+              OR (started_at IS NULL AND updated_at >= d::date AND updated_at < d::date + INTERVAL '1 day')
+            )
+        ) camp ON true
+        ORDER BY d
+      `);
+      const dailyRows = (dailyBreakdown as any).rows || dailyBreakdown || [];
+
       console.log(`[DataService] DB accurate counts: outbound_today=${counts.outbound_today}, inbound_today=${counts.inbound_today}, outbound_month=${counts.outbound_month}, total_all=${counts.total_all}`);
+      console.log(`[DataService] Campaign counts (not in sms_messages): sent=${campaignSentToday}, failed=${campaignFailedToday}`);
+      console.log(`[DataService] Daily breakdown rows: ${dailyRows.length}`);
 
       // ── Step 2: Load recent messages for display (limited, for table/list views) ──
       // Use SQL CURRENT_DATE to avoid JS/PG timezone mismatch
@@ -402,24 +453,29 @@ class DataService {
       }
 
       // Return accurate DB counts to be applied AFTER aggregation (avoids double-counting)
+      // Include campaign sent_count for messages tracked in sms_campaigns but not in sms_messages
+      // Campaign sent_count = accepted by provider (treat as "sent"), failed_count = provider rejected
+      const campaignTotal = campaignSentToday + campaignFailedToday;
       const dbCounts: Record<string, number> = {
-        outbound_today: toNum(counts.outbound_today),
+        outbound_today: toNum(counts.outbound_today) + campaignSentToday,
         inbound_today: toNum(counts.inbound_today),
         outbound_yesterday: toNum(counts.outbound_yesterday),
         inbound_yesterday: toNum(counts.inbound_yesterday),
-        outbound_week: toNum(counts.outbound_week),
+        outbound_week: toNum(counts.outbound_week) + campaignSentToday,
         outbound_last_week: toNum(counts.outbound_last_week),
-        outbound_month: toNum(counts.outbound_month),
+        outbound_month: toNum(counts.outbound_month) + campaignSentToday,
         outbound_last_month: toNum(counts.outbound_last_month),
-        delivered_month: toNum(counts.delivered_month),
-        failed_month: toNum(counts.failed_month),
-        total_today: toNum(counts.total_today),
+        // For delivery rate: campaign sent_count = "sent to provider" (same as sms_messages "sent" status)
+        // campaign failed_count = "provider rejected" (same as sms_messages "failed" status)
+        delivered_month: toNum(counts.delivered_month) + campaignSentToday,
+        failed_month: toNum(counts.failed_month) + campaignFailedToday,
+        total_today: toNum(counts.total_today) + campaignTotal,
         total_yesterday: toNum(counts.total_yesterday),
-        total_week: toNum(counts.total_week),
-        total_month: toNum(counts.total_month),
-        total_all: toNum(counts.total_all),
+        total_week: toNum(counts.total_week) + campaignTotal,
+        total_month: toNum(counts.total_month) + campaignTotal,
+        total_all: toNum(counts.total_all) + campaignTotal,
       };
-      console.log(`[DataService] DB counts: sentToday=${dbCounts.outbound_today}, sentMonth=${dbCounts.outbound_month}, deliveredMonth=${dbCounts.delivered_month}, failedMonth=${dbCounts.failed_month}`);
+      console.log(`[DataService] DB counts: sentToday=${dbCounts.outbound_today} (msgs=${toNum(counts.outbound_today)}, campaigns=${campaignSentToday}), sentMonth=${dbCounts.outbound_month}, deliveredMonth=${dbCounts.delivered_month}, failedMonth=${dbCounts.failed_month}`);
 
       // ── Step 5: Supplement phone numbers from imported numbers (for Commio accounts) ──
       for (const accAnalytics of accountAnalytics) {
@@ -448,7 +504,15 @@ class DataService {
           }
         }
       }
-      return dbCounts;
+      // Format daily breakdown for charts
+      const dailyChartData = dailyRows.map((row: any) => ({
+        date: row.day,
+        outbound: toNum(row.msg_outbound) + toNum(row.campaign_sent),
+        inbound: toNum(row.msg_inbound),
+        failed: toNum(row.campaign_failed),
+      }));
+
+      return { dbCounts, dailyChartData };
     } catch (error) {
       console.error('[DataService] Error supplementing with DB data:', error);
       return null;

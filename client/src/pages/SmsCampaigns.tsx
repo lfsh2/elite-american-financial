@@ -2986,14 +2986,29 @@ export default function SmsCampaigns() {
                 size="sm"
                 onClick={async () => {
                   try {
-                    toast({ title: 'Syncing...', description: 'Recounting delivered messages from database...' });
+                    toast({ title: 'Syncing...', description: 'Checking delivery statuses from Commio & Twilio...' });
+                    
+                    // 1. Sync Commio delivery statuses from ThinQ API
+                    const commioRes = await fetch('/api/commio/sync-delivery-status', {
+                      method: 'POST',
+                      headers: { 'Content-Type': 'application/json' },
+                      credentials: 'include',
+                      body: JSON.stringify({ limit: 500 }),
+                    });
+                    const commioData = commioRes.ok ? await commioRes.json() : { synced: 0 };
+                    
+                    // 2. Recount delivered from DB for all campaigns
                     const res = await fetch('/api/campaigns/sms-campaigns/recount-delivered', {
                       method: 'POST',
                       credentials: 'include',
                     });
                     if (!res.ok) throw new Error('Failed to sync');
                     const data = await res.json();
-                    toast({ title: 'Synced', description: `Updated ${data.campaignsUpdated} of ${data.totalCampaigns} campaigns` });
+                    
+                    toast({ 
+                      title: 'Synced', 
+                      description: `Updated ${data.campaignsUpdated} campaigns. Commio: ${commioData.synced || 0} statuses synced.` 
+                    });
                     fetchData();
                   } catch (e: any) {
                     toast({ title: 'Error', description: e.message, variant: 'destructive' });

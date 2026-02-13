@@ -92,53 +92,12 @@ class QueueService {
   private queues: Map<string, Queue> = new Map();
   private workers: Map<string, Worker> = new Map();
   private isInitialized: boolean = false;
+  private redisErrorLogged: boolean = false;
 
   constructor() {
     this.connection = parseRedisUrl(REDIS_URL);
-    this.initialize();
-  }
-
-  private async initialize(): Promise<void> {
-    try {
-      console.log('[BullMQ] Initializing queue service');
-      this.isInitialized = true;
-
-      // Create queues
-      this.createQueue('sync', {
-        defaultJobOptions: {
-          attempts: 3,
-          backoff: {
-            type: 'exponential',
-            delay: 5000,
-          },
-          removeOnComplete: 100,
-          removeOnFail: 50,
-        },
-      });
-
-      this.createQueue('metrics', {
-        defaultJobOptions: {
-          attempts: 2,
-          removeOnComplete: 50,
-          removeOnFail: 20,
-        },
-      });
-
-      this.createQueue('webhooks', {
-        defaultJobOptions: {
-          attempts: 5,
-          backoff: {
-            type: 'exponential',
-            delay: 1000,
-          },
-          removeOnComplete: 200,
-          removeOnFail: 100,
-        },
-      });
-
-    } catch (error) {
-      console.warn('[BullMQ] Failed to initialize, running without job queue:', error);
-    }
+    // BullMQ disabled — Redis (Upstash) request limit exceeded
+    console.log('[BullMQ] Disabled — running without job queues');
   }
 
   private createQueue(name: string, options: any = {}): Queue {
@@ -147,8 +106,15 @@ class QueueService {
     }
 
     const queue = new Queue(name, {
-      connection: this.connection,
+      connection: { ...this.connection, maxRetriesPerRequest: 1, enableOfflineQueue: false },
       ...options,
+    });
+
+    queue.on('error', (err) => {
+      if (!this.redisErrorLogged) {
+        console.warn(`[BullMQ] Queue "${name}" error (suppressing further):`, err.message);
+        this.redisErrorLogged = true;
+      }
     });
 
     this.queues.set(name, queue);
@@ -266,7 +232,7 @@ class QueueService {
     if (!this.connection) return null;
 
     const worker = new Worker(queueName, processor, {
-      connection: this.connection,
+      connection: { ...this.connection, maxRetriesPerRequest: 1, enableOfflineQueue: false },
       concurrency: 5,
     });
 
@@ -275,7 +241,16 @@ class QueueService {
     });
 
     worker.on('failed', (job, err: Error) => {
-      console.error(`[BullMQ] Job ${job?.id} failed:`, err.message);
+      if (!this.redisErrorLogged) {
+        console.error(`[BullMQ] Job ${job?.id} failed:`, err.message);
+      }
+    });
+
+    worker.on('error', (err) => {
+      if (!this.redisErrorLogged) {
+        console.warn(`[BullMQ] Worker "${queueName}" error (suppressing further):`, err.message);
+        this.redisErrorLogged = true;
+      }
     });
 
     this.workers.set(queueName, worker);
