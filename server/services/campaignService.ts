@@ -1163,6 +1163,19 @@ async function sendCampaignMessages(
 export async function pauseSmsCampaign(
   smsCampaignId: number
 ): Promise<{ success: boolean; message: string }> {
+  // Get current campaign status first
+  const [campaign] = await db
+    .select({ status: smsCampaigns.status, name: smsCampaigns.name })
+    .from(smsCampaigns)
+    .where(eq(smsCampaigns.id, smsCampaignId));
+  
+  if (!campaign) {
+    console.log(`[Campaign] Pause failed: Campaign ${smsCampaignId} not found`);
+    return { success: false, message: 'Campaign not found' };
+  }
+  
+  console.log(`[Campaign] Pausing campaign ${smsCampaignId} (${campaign.name}) - current status: ${campaign.status}`);
+  
   await db
     .update(smsCampaigns)
     .set({
@@ -1171,7 +1184,9 @@ export async function pauseSmsCampaign(
     })
     .where(eq(smsCampaigns.id, smsCampaignId));
 
-  return { success: true, message: 'Campaign paused' };
+  console.log(`[Campaign] ✓ Campaign ${smsCampaignId} (${campaign.name}) is now PAUSED - sending will stop within 10 messages`);
+  
+  return { success: true, message: 'Campaign paused - sending will stop shortly' };
 }
 
 /**

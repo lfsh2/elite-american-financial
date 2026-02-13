@@ -1609,8 +1609,19 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const progress = batchSmsService.getCampaignProgress(campaignId);
       
       if (progress) {
+        // Also check DB status in case campaign was paused/cancelled
+        const [dbCampaign] = await db
+          .select({ status: smsCampaigns.status })
+          .from(smsCampaigns)
+          .where(eq(smsCampaigns.id, campaignId))
+          .limit(1);
+        
+        const dbStatus = dbCampaign?.status;
+        const isFinished = progress.sent + progress.failed >= progress.total;
+        const status = dbStatus === 'paused' ? 'paused' : dbStatus === 'cancelled' ? 'cancelled' : isFinished ? 'completed' : 'sending';
+        
         return res.json({
-          status: progress.sent + progress.failed >= progress.total ? 'completed' : 'sending',
+          status,
           sent: progress.sent,
           failed: progress.failed,
           total: progress.total,

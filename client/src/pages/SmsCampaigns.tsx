@@ -220,8 +220,10 @@ export default function SmsCampaigns() {
   // Multi-select phone numbers for batch sending (Twilio-style)
   const [numberSelectionMode, setNumberSelectionMode] = useState<'all' | 'select' | 'single'>('all');
   const [selectedFromNumbers, setSelectedFromNumbers] = useState<Set<string>>(new Set());
-  const [sendingProgress, setSendingProgress] = useState({ sent: 0, failed: 0, total: 0 });
-  const [showProgress, setShowProgress] = useState(false);
+  
+  // Multi-campaign progress tracking: campaignId -> progress data
+  const [activeProgressMap, setActiveProgressMap] = useState<Record<number, { sent: number; failed: number; total: number; status: 'sending' | 'completed' | 'paused' }>>({});
+  const pollingCampaignsRef = React.useRef<Set<number>>(new Set());
   
   // Provider filter: 'all', 'commio', or 'twilio'
   const [providerFilter, setProviderFilter] = useState<'all' | 'commio' | 'twilio'>('all');
@@ -239,7 +241,6 @@ export default function SmsCampaigns() {
   // Campaign sending
   const [isSending, setIsSending] = useState(false);
   const [selectedCampaign, setSelectedCampaign] = useState<SmsCampaign | null>(null);
-  const [sendingCampaignId, setSendingCampaignId] = useState<number | null>(null);
   
   // Message templates
   const [messageTemplates, setMessageTemplates] = useState<MessageTemplate[]>([]);
@@ -264,43 +265,67 @@ export default function SmsCampaigns() {
     fetchData();
   }, [currentAccount]);
 
-  // Resume polling for any active sending campaigns on mount
-  useEffect(() => {
-    const activeSending = campaigns.find(c => c.status === 'sending');
-    if (activeSending && !showProgress && !isSending) {
-      setSendingCampaignId(activeSending.id);
-      setShowProgress(true);
-      setIsSending(true);
-      setSendingProgress({ sent: activeSending.sentCount || 0, failed: activeSending.failedCount || 0, total: activeSending.recipientCount || 0 });
+  // Helper: start polling progress for a campaign
+  const startPollingCampaign = useCallback((campaignId: number, initialProgress?: { sent: number; failed: number; total: number }) => {
+    if (pollingCampaignsRef.current.has(campaignId)) return; // Already polling
+    pollingCampaignsRef.current.add(campaignId);
 
-      const pollProgress = async () => {
-        try {
-          const progressRes = await fetch(`/api/campaigns/sms-campaigns/${activeSending.id}/progress`, {
-            credentials: 'include',
-          });
-          if (progressRes.ok) {
-            const progress = await progressRes.json();
-            setSendingProgress({ sent: progress.sent, failed: progress.failed, total: progress.total });
+    // Set initial progress
+    setActiveProgressMap(prev => ({
+      ...prev,
+      [campaignId]: { sent: initialProgress?.sent || 0, failed: initialProgress?.failed || 0, total: initialProgress?.total || 0, status: 'sending' },
+    }));
 
-            if (progress.status === 'completed') {
-              setIsSending(false);
-              setSendingCampaignId(null);
-              fetchData();
-              setTimeout(() => setShowProgress(false), 5000);
-              return;
-            }
-            setTimeout(pollProgress, 2000);
-          } else {
-            setTimeout(pollProgress, 3000);
+    const pollProgress = async () => {
+      try {
+        const progressRes = await fetch(`/api/campaigns/sms-campaigns/${campaignId}/progress`, {
+          credentials: 'include',
+        });
+        if (progressRes.ok) {
+          const progress = await progressRes.json();
+          const isFinished = progress.status === 'completed' || progress.status === 'paused';
+
+          setActiveProgressMap(prev => ({
+            ...prev,
+            [campaignId]: { sent: progress.sent, failed: progress.failed, total: progress.total, status: isFinished ? progress.status : 'sending' },
+          }));
+
+          if (isFinished) {
+            pollingCampaignsRef.current.delete(campaignId);
+            fetchData();
+            // Remove from progress map after 5 seconds
+            setTimeout(() => {
+              setActiveProgressMap(prev => {
+                const next = { ...prev };
+                delete next[campaignId];
+                return next;
+              });
+            }, 5000);
+            return;
           }
-        } catch (err) {
-          console.error('Error polling progress:', err);
+          setTimeout(pollProgress, 2000);
+        } else {
           setTimeout(pollProgress, 3000);
         }
-      };
-      pollProgress();
+      } catch (err) {
+        console.error(`Error polling progress for campaign ${campaignId}:`, err);
+        setTimeout(pollProgress, 3000);
+      }
+    };
+    pollProgress();
+  }, []);
+
+  // Resume polling for ALL active sending campaigns on mount / when campaigns change
+  useEffect(() => {
+    const activeSending = campaigns.filter(c => c.status === 'sending');
+    for (const campaign of activeSending) {
+      startPollingCampaign(campaign.id, {
+        sent: campaign.sentCount || 0,
+        failed: campaign.failedCount || 0,
+        total: campaign.recipientCount || 0,
+      });
     }
-  }, [campaigns]);
+  }, [campaigns, startPollingCampaign]);
 
   // Fetch custom fields when campaign dialog opens or contact list changes
   useEffect(() => {
@@ -1370,9 +1395,6 @@ export default function SmsCampaigns() {
     console.log('[Campaign] Starting campaign with', numbersToUse.length, 'phone numbers');
 
     setIsSending(true);
-    setShowProgress(true);
-    setSendingCampaignId(campaignId);
-    setSendingProgress({ sent: 0, failed: 0, total: 0 });
 
     try {
       // Get recipient count (lightweight query, no data transfer)
@@ -1389,8 +1411,6 @@ export default function SmsCampaigns() {
       if (recipientCount === 0) {
         throw new Error('No recipients in campaign. Add a contact list first.');
       }
-
-      setSendingProgress({ sent: 0, failed: 0, total: recipientCount });
 
       // Build phone number configs
       const phoneNumberConfigs = numbersToUse.map(num => {
@@ -1442,44 +1462,9 @@ export default function SmsCampaigns() {
           });
         }
         
-        // Poll for progress updates
-        const pollProgress = async () => {
-          try {
-            const progressRes = await fetch(`/api/campaigns/sms-campaigns/${campaignId}/progress`, {
-              credentials: 'include',
-            });
-            
-            if (progressRes.ok) {
-              const progress = await progressRes.json();
-              setSendingProgress({ 
-                sent: progress.sent, 
-                failed: progress.failed, 
-                total: progress.total 
-              });
-              
-              if (progress.status === 'completed') {
-                setIsSending(false);
-                setSendingCampaignId(null);
-                toast({
-                  title: 'Campaign Completed',
-                  description: `Sent ${progress.sent} messages, ${progress.failed} failed`,
-                });
-                fetchData();
-                setTimeout(() => setShowProgress(false), 5000);
-                return;
-              }
-              
-              // Continue polling
-              setTimeout(pollProgress, 1000);
-            }
-          } catch (err) {
-            console.error('Error polling progress:', err);
-            setTimeout(pollProgress, 2000);
-          }
-        };
-        
-        // Start polling
-        pollProgress();
+        // Start polling progress for this campaign
+        startPollingCampaign(campaignId, { sent: 0, failed: 0, total: result.total });
+        setIsSending(false);
         
         // Refresh data to show updated status
         fetchData();
@@ -1494,8 +1479,6 @@ export default function SmsCampaigns() {
         variant: 'destructive'
       });
       setIsSending(false);
-      setSendingCampaignId(null);
-      setShowProgress(false);
     }
   };
 
@@ -2932,31 +2915,45 @@ export default function SmsCampaigns() {
         </Card>
       </div>
 
-      {/* Sending Progress - Sticky above tabs so it persists across page navigation */}
-      {showProgress && (
-        <Card className="mb-4 border-blue-200 bg-blue-50 shadow-md">
-          <CardContent className="pt-4">
-            <div className="flex items-center justify-between mb-2">
-              <div className="flex items-center gap-2">
-                <Loader2 className="h-4 w-4 animate-spin text-blue-600" />
-                <span className="font-medium text-blue-800">
-                  {isSending ? 'Sending' : 'Completed'}: {sendingCampaignId ? (campaigns.find(c => c.id === sendingCampaignId)?.name || `Campaign #${sendingCampaignId}`) : 'Campaign'}
-                </span>
-              </div>
-              <span className="text-sm font-semibold text-blue-700">
-                {sendingProgress.total > 0 ? Math.round(((sendingProgress.sent + sendingProgress.failed) / sendingProgress.total) * 100) : 0}% — {(sendingProgress.sent + sendingProgress.failed).toLocaleString()} / {sendingProgress.total.toLocaleString()}
-              </span>
-            </div>
-            <Progress 
-              value={sendingProgress.total > 0 ? ((sendingProgress.sent + sendingProgress.failed) / sendingProgress.total) * 100 : 0} 
-              className="h-3"
-            />
-            <div className="flex gap-4 mt-2 text-sm">
-              <span className="text-green-600">✓ Sent: {sendingProgress.sent.toLocaleString()}</span>
-              <span className="text-red-600">✗ Failed: {sendingProgress.failed.toLocaleString()}</span>
-            </div>
-          </CardContent>
-        </Card>
+      {/* Active Campaign Progress Bars - one per sending/completing campaign */}
+      {Object.keys(activeProgressMap).length > 0 && (
+        <div className="space-y-3 mb-4">
+          {Object.entries(activeProgressMap).map(([idStr, prog]) => {
+            const cId = Number(idStr);
+            const campaignName = campaigns.find(c => c.id === cId)?.name || `Campaign #${cId}`;
+            const pct = prog.total > 0 ? Math.round(((prog.sent + prog.failed) / prog.total) * 100) : 0;
+            const borderColor = prog.status === 'completed' ? 'border-green-200 bg-green-50' : prog.status === 'paused' ? 'border-yellow-200 bg-yellow-50' : 'border-blue-200 bg-blue-50';
+            const textColor = prog.status === 'completed' ? 'text-green-800' : prog.status === 'paused' ? 'text-yellow-800' : 'text-blue-800';
+            const pctColor = prog.status === 'completed' ? 'text-green-700' : prog.status === 'paused' ? 'text-yellow-700' : 'text-blue-700';
+            return (
+              <Card key={cId} className={`shadow-md ${borderColor}`}>
+                <CardContent className="pt-4 pb-3">
+                  <div className="flex items-center justify-between mb-2">
+                    <div className="flex items-center gap-2">
+                      {prog.status === 'sending' && <Loader2 className="h-4 w-4 animate-spin text-blue-600" />}
+                      {prog.status === 'completed' && <CheckCircle className="h-4 w-4 text-green-600" />}
+                      {prog.status === 'paused' && <Clock className="h-4 w-4 text-yellow-600" />}
+                      <span className={`font-medium ${textColor}`}>
+                        {prog.status === 'sending' ? 'Sending' : prog.status === 'paused' ? 'Paused' : 'Completed'}: {campaignName}
+                      </span>
+                    </div>
+                    <span className={`text-sm font-semibold ${pctColor}`}>
+                      {pct}% — {(prog.sent + prog.failed).toLocaleString()} / {prog.total.toLocaleString()}
+                    </span>
+                  </div>
+                  <Progress 
+                    value={prog.total > 0 ? ((prog.sent + prog.failed) / prog.total) * 100 : 0} 
+                    className="h-3"
+                  />
+                  <div className="flex gap-4 mt-2 text-sm">
+                    <span className="text-green-600">✓ Sent: {prog.sent.toLocaleString()}</span>
+                    <span className="text-red-600">✗ Failed: {prog.failed.toLocaleString()}</span>
+                  </div>
+                </CardContent>
+              </Card>
+            );
+          })}
+        </div>
       )}
 
       {/* Main Content */}

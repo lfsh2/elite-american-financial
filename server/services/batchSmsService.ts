@@ -474,6 +474,27 @@ class BatchSmsService {
 
       // Send sequentially with per-number delay enforcement
       for (let i = 0; i < allMessages.length; i++) {
+        // Check if campaign is paused every 10 messages
+        if (campaignId && i % 10 === 0) {
+          const [campaign] = await db
+            .select({ status: smsCampaigns.status })
+            .from(smsCampaigns)
+            .where(eq(smsCampaigns.id, campaignId));
+          
+          if (campaign?.status === 'paused' || campaign?.status === 'cancelled') {
+            console.log(`[BatchSMS] Campaign ${campaignId} is ${campaign.status} - stopping send loop`);
+            await flushDbBatch();
+            return {
+              success: true,
+              total: recipients.length,
+              sent: progress.sent,
+              failed: progress.failed,
+              errors,
+              duration: Date.now() - startTime,
+            };
+          }
+        }
+
         const { recipient, phoneConfig } = allMessages[i];
         progress.inProgress = 1;
 
@@ -507,11 +528,29 @@ class BatchSmsService {
     } else {
       // ===== NORMAL PARALLEL MODE =====
       // Process each number's queue in parallel with concurrency limit
+      let campaignPaused = false;
+      
       const numberPromises = phoneNumbers.map(async (phoneConfig) => {
         const queue = numberQueues.get(phoneConfig.phoneNumber)!;
         if (queue.length === 0) return;
 
         for (let i = 0; i < queue.length; i += concurrentPerNumber) {
+          // Check if campaign is paused every batch
+          if (campaignId && i % (concurrentPerNumber * 5) === 0) {
+            const [campaign] = await db
+              .select({ status: smsCampaigns.status })
+              .from(smsCampaigns)
+              .where(eq(smsCampaigns.id, campaignId));
+            
+            if (campaign?.status === 'paused' || campaign?.status === 'cancelled') {
+              console.log(`[BatchSMS] Campaign ${campaignId} is ${campaign.status} - stopping parallel send`);
+              campaignPaused = true;
+              break;
+            }
+          }
+          
+          if (campaignPaused) break;
+          
           const batch = queue.slice(i, i + concurrentPerNumber);
           progress.inProgress += batch.length;
 
@@ -533,6 +572,18 @@ class BatchSmsService {
       });
 
       await Promise.all(numberPromises);
+      
+      if (campaignPaused) {
+        console.log(`[BatchSMS] Campaign ${campaignId} paused - returning early`);
+        return {
+          success: true,
+          total: recipients.length,
+          sent: progress.sent,
+          failed: progress.failed,
+          errors,
+          duration: Date.now() - startTime,
+        };
+      }
     }
 
     const duration = Date.now() - startTime;
