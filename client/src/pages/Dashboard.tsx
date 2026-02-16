@@ -76,7 +76,7 @@ export default function Dashboard() {
   const [messageFilter, setMessageFilter] = useState('');
   const [selectedReportType, setSelectedReportType] = useState<'messages' | 'calls' | 'usage' | 'summary'>('messages');
   const [isGeneratingReport, setIsGeneratingReport] = useState(false);
-  const [chartTimeRange, setChartTimeRange] = useState<'weekly' | 'monthly'>('monthly');
+  const [chartTimeRange, setChartTimeRange] = useState<'weekly' | 'monthly'>('weekly');
 
   // Live sending stats from in-memory active batch jobs (polls every 5 seconds)
   const [liveStats, setLiveStats] = useState<{ totalSent: number; totalFailed: number; totalInProgress: number; activeCampaigns: number } | null>(null);

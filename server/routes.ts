@@ -85,9 +85,11 @@ export async function registerRoutes(app: Express): Promise<Server> {
         return res.status(400).json({ message: "Username and password are required" });
       }
       
-      // To make testing easier, allow login with just the username
-      // This is for development only and would never be used in production
-      const user = await storage.getUserByUsername(username);
+      // Try username first, then fall back to email lookup
+      let user = await storage.getUserByUsername(username);
+      if (!user && username.includes('@')) {
+        user = await storage.getUserByEmail(username);
+      }
       
       if (!user) {
         console.log(`User not found: ${username}`);
