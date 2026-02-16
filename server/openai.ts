@@ -220,6 +220,41 @@ function getMockInsights(stats: MessagingStats): AIInsight[] {
 }
 
 /**
+ * Clean AI response by removing all markdown formatting and asterisks
+ */
+function cleanAIResponse(text: string): string {
+  let cleaned = text;
+  
+  // Remove all asterisks (**, *, etc.)
+  cleaned = cleaned.replace(/\*\*/g, '');
+  cleaned = cleaned.replace(/\*/g, '');
+  
+  // Remove markdown headers (###, ##, #)
+  cleaned = cleaned.replace(/^#{1,6}\s+/gm, '');
+  
+  // Remove markdown bold/italic syntax
+  cleaned = cleaned.replace(/__(.*?)__/g, '$1');
+  cleaned = cleaned.replace(/_(.*?)_/g, '$1');
+  
+  // Remove backticks for code
+  cleaned = cleaned.replace(/`{1,3}/g, '');
+  
+  // Remove markdown links [text](url) -> text
+  cleaned = cleaned.replace(/\[([^\]]+)\]\([^)]+\)/g, '$1');
+  
+  // Clean up multiple consecutive spaces
+  cleaned = cleaned.replace(/  +/g, ' ');
+  
+  // Clean up multiple consecutive line breaks (keep max 2)
+  cleaned = cleaned.replace(/\n{3,}/g, '\n\n');
+  
+  // Trim whitespace from each line
+  cleaned = cleaned.split('\n').map(line => line.trim()).join('\n');
+  
+  return cleaned.trim();
+}
+
+/**
  * AI Chatbot with Real-Time Business Intelligence
  * Fetches live data from database and provides contextual responses
  */
@@ -234,7 +269,7 @@ export async function chatWithAI(message: string, userId?: number): Promise<stri
     // Fetch real-time business intelligence data
     const biReport = await businessIntelligenceService.generateAISummary(userId);
     
-    const systemPrompt = `You are Elite Financial AI, a senior business intelligence assistant for a business messaging and communication platform. You provide executive-level insights, KPI analysis, and actionable recommendations.
+    const systemPrompt = `You are SoftLink iQ AI, a logistics and business intelligence assistant for an SMS messaging and communication platform. You provide executive-level insights, KPI analysis, and actionable recommendations.
 
 ${biReport}
 
@@ -242,7 +277,7 @@ ${biReport}
 ASSISTANT GUIDELINES
 ═══════════════════════════════════════════════════════════════
 1. You are a senior business analyst - provide strategic insights, not just data
-2. When asked for summaries, structure responses with clear sections and bullet points
+2. When asked for summaries, structure responses with clear sections
 3. Always include relevant KPIs and metrics with context (good/bad, trending up/down)
 4. Proactively highlight anomalies, risks, and opportunities
 5. Provide actionable recommendations based on the data
@@ -252,12 +287,55 @@ ASSISTANT GUIDELINES
 9. If data shows concerning trends, flag them with appropriate urgency
 10. Celebrate wins and positive metrics
 
-RESPONSE FORMAT:
-- Use clear headings for different sections
-- Use bullet points for lists
-- Bold important numbers and metrics
-- Include trend indicators (↑ ↓ →) where appropriate
-- End with a brief recommendation or next step when applicable`;
+FAILURE ANALYSIS EXPERTISE:
+- When asked about failed messages, analyze the FAILURE ANALYSIS section above
+- Identify root causes: invalid numbers, carrier blocking, rate limits, spam filters, opt-outs
+- Explain WHY messages are failing based on error patterns
+- Provide specific remediation steps for each failure type
+- Prioritize issues by impact (percentage of total failures)
+- Reference specific phone numbers that are repeatedly failing
+- Suggest contact list cleanup, number validation, or content adjustments
+
+PHONE HEALTH EXPERTISE:
+- When asked about phone number health, reference the PHONE NUMBER HEALTH ANALYSIS section
+- Health scores range from 0-100 based on delivery rate, volume, and recency
+- Healthy (80+): Good delivery rate (95%+), reliable performance
+- Degraded (60-79): Moderate issues, needs monitoring
+- Unhealthy (<60): Poor delivery, immediate action required
+- Identify the LOWEST health phone numbers and explain their specific issues
+- Recommend which numbers to stop using or investigate
+- Explain how delivery rate, failure count, and inactivity affect health scores
+
+CRITICAL FORMATTING RULES:
+- DO NOT use asterisks (**) for emphasis or bold text
+- DO NOT use markdown formatting (**, *, ##, etc.)
+- Use plain text with clear line breaks and spacing
+- Use simple dashes (-) or bullet points (•) for lists
+- Use UPPERCASE for section headers
+- Use numbers with proper formatting (12,345 not 12345)
+- Use percentage signs (98.5% not 98.5 percent)
+- Use emoji sparingly and only for visual indicators (✓ ✗ ↑ ↓)
+- Keep responses clean, professional, and easy to read
+- Structure data with clear labels followed by values
+- Use line breaks to separate sections
+
+RESPONSE FORMAT EXAMPLE:
+SMS CAMPAIGN PERFORMANCE - 2/17/2026
+
+Messages Sent: 9770
+Messages Delivered: 6871
+Delivery Rate: 70.3%
+Messages Received: 199
+Failed Messages: 2829
+
+COMPARISON
+Yesterday Sent: 0
+Change: +9770 messages (0%)
+
+VOLUME
+This Week: 9770 messages
+
+End with a brief recommendation when applicable.`;
 
     const response = await openai!.chat.completions.create({
       model: 'gpt-3.5-turbo',
@@ -269,7 +347,11 @@ RESPONSE FORMAT:
       max_tokens: 1000,
     });
 
-    const answer = response.choices[0]?.message?.content || "I couldn't process that request.";
+    let answer = response.choices[0]?.message?.content || "I couldn't process that request.";
+    
+    // Post-process to remove ALL markdown formatting and asterisks
+    answer = cleanAIResponse(answer);
+    
     console.log('AI Chat: Response generated successfully with real-time BI data');
     return answer;
   } catch (error) {

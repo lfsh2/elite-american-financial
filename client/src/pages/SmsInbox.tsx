@@ -127,10 +127,69 @@ export default function SmsInbox() {
   const [newConversationPhone, setNewConversationPhone] = useState('');
 
   useEffect(() => {
-    fetchConversations();
+    fetchConversations(false); // Always fetch fresh data on initial load
     fetchPhoneNumbers();
     fetchCampaigns();
   }, [currentAccount]);
+
+  // Auto-refresh conversations every 10 seconds to pick up new inbound messages
+  useEffect(() => {
+    const interval = setInterval(() => {
+      fetchConversations(false); // Refresh without cache
+    }, 10000); // 10 seconds
+
+    return () => clearInterval(interval);
+  }, [currentAccount]);
+
+  // Auto-refresh selected conversation messages every 5 seconds to show new replies
+  useEffect(() => {
+    if (!selectedConversation) return;
+
+    const interval = setInterval(async () => {
+      try {
+        const encodedPhone = encodeURIComponent(selectedConversation.contactPhone);
+        const res = await fetch(`/api/conversations/${encodedPhone}/messages?limit=100`, { 
+          credentials: 'include' 
+        });
+        
+        if (res.ok) {
+          const data = await res.json();
+          const messages: Message[] = (data.messages || []).map((msg: any) => ({
+            id: msg.id?.toString() || msg.messageSid || String(Math.random()),
+            from: msg.from,
+            to: msg.to,
+            body: msg.body,
+            direction: msg.direction?.startsWith('outbound') ? 'outbound' : 'inbound',
+            status: msg.status || 'sent',
+            createdAt: msg.sentAt || msg.createdAt || new Date().toISOString(),
+          }));
+          
+          // Only update if there are new messages
+          if (messages.length !== selectedConversation.messages.length) {
+            setSelectedConversation(prev => prev ? { ...prev, messages } : null);
+            
+            // Update conversation list with latest message
+            setConversations(prevConvs => 
+              prevConvs.map(c => 
+                c.contactPhone === selectedConversation.contactPhone 
+                  ? { 
+                      ...c, 
+                      messages,
+                      lastMessage: messages[messages.length - 1]?.body || c.lastMessage,
+                      lastMessageTime: messages[messages.length - 1]?.createdAt || c.lastMessageTime,
+                    } 
+                  : c
+              ).sort((a, b) => new Date(b.lastMessageTime).getTime() - new Date(a.lastMessageTime).getTime())
+            );
+          }
+        }
+      } catch (error) {
+        console.error('[SmsInbox] Error refreshing conversation:', error);
+      }
+    }, 5000); // 5 seconds
+
+    return () => clearInterval(interval);
+  }, [selectedConversation?.contactPhone]);
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -906,7 +965,7 @@ export default function SmsInbox() {
               >
                 <Megaphone className="h-4 w-4" />
               </Button>
-              <Button variant="ghost" size="icon" className="h-8 w-8" onClick={() => fetchConversations()}>
+              <Button variant="ghost" size="icon" className="h-8 w-8" onClick={() => fetchConversations(false)} title="Refresh conversations">
                 <RefreshCw className="h-4 w-4" />
               </Button>
             </div>

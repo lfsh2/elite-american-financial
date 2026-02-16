@@ -105,6 +105,56 @@ export interface ExecutiveSummary {
   };
 }
 
+export interface FailureAnalysis {
+  totalFailed: number;
+  failureRate: number;
+  failuresByReason: Array<{
+    reason: string;
+    count: number;
+    percentage: number;
+    errorCode?: string;
+  }>;
+  failedPhoneNumbers: Array<{
+    phoneNumber: string;
+    failureCount: number;
+    lastError: string;
+    lastErrorCode?: string;
+  }>;
+  recentFailures: Array<{
+    phoneNumber: string;
+    errorMessage: string;
+    errorCode?: string;
+    timestamp: Date;
+    campaignId?: number;
+  }>;
+  topRecommendations: string[];
+}
+
+export interface PhoneHealthMetrics {
+  totalPhones: number;
+  healthyPhones: number;
+  degradedPhones: number;
+  unhealthyPhones: number;
+  phoneHealthScores: Array<{
+    phoneNumber: string;
+    healthScore: number;
+    totalSent: number;
+    delivered: number;
+    failed: number;
+    deliveryRate: number;
+    lastUsed: Date;
+    status: 'healthy' | 'degraded' | 'unhealthy';
+    issues: string[];
+  }>;
+  lowestHealthPhones: Array<{
+    phoneNumber: string;
+    healthScore: number;
+    deliveryRate: number;
+    failureCount: number;
+    primaryIssue: string;
+  }>;
+}
+
 class BusinessIntelligenceService {
   
   /**
@@ -519,9 +569,11 @@ class BusinessIntelligenceService {
    * Includes real Twilio data when available
    */
   async generateAISummary(userId?: number): Promise<string> {
-    const [dashboard, twilioSummary] = await Promise.all([
+    const [dashboard, twilioSummary, failureAnalysis, phoneHealth] = await Promise.all([
       this.getKPIDashboard(userId),
-      twilioAnalyticsService.generateTwilioSummary()
+      twilioAnalyticsService.generateTwilioSummary(),
+      this.analyzeFailures(userId),
+      this.getPhoneHealthMetrics(userId)
     ]);
     const { leads, campaigns, messaging, financial, summary } = dashboard;
 
@@ -613,8 +665,276 @@ PERIOD COMPARISON (vs Yesterday):
 • Leads: ${summary.periodComparison.leadsChange > 0 ? '+' : ''}${Math.round(summary.periodComparison.leadsChange)}%
 • Messages: ${summary.periodComparison.messagesChange > 0 ? '+' : ''}${Math.round(summary.periodComparison.messagesChange)}%
 
+═══════════════════════════════════════════════════════════════
+FAILURE ANALYSIS
+═══════════════════════════════════════════════════════════════
+• Total failed messages: ${failureAnalysis.totalFailed}
+• Failure rate: ${failureAnalysis.failureRate}%
+
+Failure Breakdown by Reason:
+${failureAnalysis.failuresByReason.slice(0, 5).map(f => `  - ${f.reason}: ${f.count} failures (${f.percentage.toFixed(1)}%)${f.errorCode ? ` [Code: ${f.errorCode}]` : ''}`).join('\n')}
+
+${failureAnalysis.failedPhoneNumbers.length > 0 ? `Phone Numbers with Repeated Failures (Top 5):
+${failureAnalysis.failedPhoneNumbers.slice(0, 5).map(p => `  - ${p.phoneNumber}: ${p.failureCount} failures - ${p.lastError}`).join('\n')}` : ''}
+
+${failureAnalysis.recentFailures.length > 0 ? `Recent Failures (Last 5):
+${failureAnalysis.recentFailures.slice(0, 5).map(f => `  - ${f.phoneNumber} at ${f.timestamp.toLocaleTimeString()}: ${f.errorMessage}`).join('\n')}` : ''}
+
+${failureAnalysis.topRecommendations.length > 0 ? `Failure Recommendations:
+${failureAnalysis.topRecommendations.map(r => `  ✓ ${r}`).join('\n')}` : ''}
+
+═══════════════════════════════════════════════════════════════
+PHONE NUMBER HEALTH ANALYSIS
+═══════════════════════════════════════════════════════════════
+• Total phone numbers tracked: ${phoneHealth.totalPhones}
+• Healthy numbers: ${phoneHealth.healthyPhones} (${phoneHealth.totalPhones > 0 ? ((phoneHealth.healthyPhones / phoneHealth.totalPhones) * 100).toFixed(1) : 0}%)
+• Degraded numbers: ${phoneHealth.degradedPhones} (${phoneHealth.totalPhones > 0 ? ((phoneHealth.degradedPhones / phoneHealth.totalPhones) * 100).toFixed(1) : 0}%)
+• Unhealthy numbers: ${phoneHealth.unhealthyPhones} (${phoneHealth.totalPhones > 0 ? ((phoneHealth.unhealthyPhones / phoneHealth.totalPhones) * 100).toFixed(1) : 0}%)
+
+${phoneHealth.lowestHealthPhones.length > 0 ? `Lowest Health Phone Numbers (Action Required):
+${phoneHealth.lowestHealthPhones.map(p => `  - ${p.phoneNumber}
+    Health Score: ${p.healthScore}/100
+    Delivery Rate: ${p.deliveryRate}%
+    Failures: ${p.failureCount}
+    Issue: ${p.primaryIssue}`).join('\n')}` : ''}
+
 ${twilioSummary}
 `;
+  }
+
+  /**
+   * Analyze failed messages to identify patterns and root causes
+   */
+  async analyzeFailures(userId?: number): Promise<FailureAnalysis> {
+    const messages = await storage.getSmsMessages(userId || 1);
+    const failedMessages = messages.filter(m => 
+      m.status === 'failed' || 
+      m.status === 'undelivered' || 
+      m.status === 'error'
+    );
+
+    const totalMessages = messages.filter(m => m.direction === 'outbound').length;
+    const totalFailed = failedMessages.length;
+    const failureRate = totalMessages > 0 ? (totalFailed / totalMessages) * 100 : 0;
+
+    // Analyze failure reasons from error messages
+    const reasonMap = new Map<string, { count: number; errorCode?: string }>();
+    
+    failedMessages.forEach(msg => {
+      const errorMsg = (msg as any).errorMessage || 'Unknown error';
+      const errorCode = (msg as any).errorCode;
+      
+      // Categorize common error patterns
+      let reason = 'Unknown error';
+      if (errorMsg.toLowerCase().includes('invalid') || errorMsg.toLowerCase().includes('not a valid')) {
+        reason = 'Invalid phone number';
+      } else if (errorMsg.toLowerCase().includes('unsubscribed') || errorMsg.toLowerCase().includes('opt')) {
+        reason = 'Recipient opted out';
+      } else if (errorMsg.toLowerCase().includes('landline') || errorMsg.toLowerCase().includes('unreachable')) {
+        reason = 'Unreachable number (landline/disconnected)';
+      } else if (errorMsg.toLowerCase().includes('carrier') || errorMsg.toLowerCase().includes('blocked')) {
+        reason = 'Carrier blocked/filtered';
+      } else if (errorMsg.toLowerCase().includes('queue') || errorMsg.toLowerCase().includes('rate')) {
+        reason = 'Rate limit exceeded';
+      } else if (errorMsg.toLowerCase().includes('spam')) {
+        reason = 'Spam filter triggered';
+      } else if (errorCode) {
+        reason = `Error code ${errorCode}`;
+      }
+      
+      const existing = reasonMap.get(reason) || { count: 0, errorCode };
+      reasonMap.set(reason, { count: existing.count + 1, errorCode });
+    });
+
+    const failuresByReason = Array.from(reasonMap.entries())
+      .map(([reason, data]) => ({
+        reason,
+        count: data.count,
+        percentage: (data.count / totalFailed) * 100,
+        errorCode: data.errorCode
+      }))
+      .sort((a, b) => b.count - a.count);
+
+    // Identify phone numbers with repeated failures
+    const phoneFailureMap = new Map<string, { count: number; lastError: string; lastErrorCode?: string }>();
+    
+    failedMessages.forEach(msg => {
+      const phone = msg.to;
+      const errorMsg = (msg as any).errorMessage || 'Unknown error';
+      const errorCode = (msg as any).errorCode;
+      
+      const existing = phoneFailureMap.get(phone) || { count: 0, lastError: '', lastErrorCode: undefined };
+      phoneFailureMap.set(phone, {
+        count: existing.count + 1,
+        lastError: errorMsg,
+        lastErrorCode: errorCode
+      });
+    });
+
+    const failedPhoneNumbers = Array.from(phoneFailureMap.entries())
+      .map(([phoneNumber, data]) => ({
+        phoneNumber,
+        failureCount: data.count,
+        lastError: data.lastError,
+        lastErrorCode: data.lastErrorCode
+      }))
+      .sort((a, b) => b.failureCount - a.failureCount)
+      .slice(0, 20);
+
+    // Recent failures for immediate attention
+    const recentFailures = failedMessages
+      .sort((a, b) => new Date(b.sentAt).getTime() - new Date(a.sentAt).getTime())
+      .slice(0, 10)
+      .map(msg => ({
+        phoneNumber: msg.to,
+        errorMessage: (msg as any).errorMessage || 'Unknown error',
+        errorCode: (msg as any).errorCode,
+        timestamp: new Date(msg.sentAt),
+        campaignId: msg.campaignId || undefined
+      }));
+
+    // Generate recommendations based on failure patterns
+    const recommendations: string[] = [];
+    
+    const invalidNumberFailures = failuresByReason.find(r => r.reason.includes('Invalid'));
+    if (invalidNumberFailures && invalidNumberFailures.percentage > 20) {
+      recommendations.push('High invalid number rate - validate phone numbers before sending');
+    }
+    
+    const carrierBlocked = failuresByReason.find(r => r.reason.includes('Carrier'));
+    if (carrierBlocked && carrierBlocked.percentage > 15) {
+      recommendations.push('Carrier filtering detected - review message content and sender reputation');
+    }
+    
+    const rateLimitIssues = failuresByReason.find(r => r.reason.includes('rate'));
+    if (rateLimitIssues && rateLimitIssues.count > 10) {
+      recommendations.push('Rate limit issues - reduce sending speed or distribute across multiple numbers');
+    }
+    
+    const spamFiltered = failuresByReason.find(r => r.reason.includes('spam'));
+    if (spamFiltered && spamFiltered.count > 0) {
+      recommendations.push('Spam filtering detected - review message content and ensure A2P compliance');
+    }
+    
+    if (failedPhoneNumbers.length > 10) {
+      recommendations.push(`${failedPhoneNumbers.length} phone numbers have repeated failures - consider removing from contact list`);
+    }
+
+    return {
+      totalFailed,
+      failureRate: Math.round(failureRate * 100) / 100,
+      failuresByReason,
+      failedPhoneNumbers,
+      recentFailures,
+      topRecommendations: recommendations
+    };
+  }
+
+  /**
+   * Calculate health scores for phone numbers based on delivery performance
+   */
+  async getPhoneHealthMetrics(userId?: number): Promise<PhoneHealthMetrics> {
+    const messages = await storage.getSmsMessages(userId || 1);
+    
+    // Group messages by 'from' phone number (sender numbers)
+    const phoneStatsMap = new Map<string, {
+      totalSent: number;
+      delivered: number;
+      failed: number;
+      lastUsed: Date;
+    }>();
+
+    messages.filter(m => m.direction === 'outbound').forEach(msg => {
+      const phone = msg.from;
+      const existing = phoneStatsMap.get(phone) || {
+        totalSent: 0,
+        delivered: 0,
+        failed: 0,
+        lastUsed: new Date(msg.sentAt)
+      };
+
+      existing.totalSent++;
+      if (msg.status === 'delivered' || msg.status === 'sent') {
+        existing.delivered++;
+      } else if (msg.status === 'failed' || msg.status === 'undelivered' || msg.status === 'error') {
+        existing.failed++;
+      }
+      
+      if (new Date(msg.sentAt) > existing.lastUsed) {
+        existing.lastUsed = new Date(msg.sentAt);
+      }
+
+      phoneStatsMap.set(phone, existing);
+    });
+
+    // Calculate health scores
+    const phoneHealthScores = Array.from(phoneStatsMap.entries()).map(([phoneNumber, stats]) => {
+      const deliveryRate = stats.totalSent > 0 ? (stats.delivered / stats.totalSent) * 100 : 0;
+      
+      // Health score calculation (0-100)
+      // 70% weight on delivery rate, 20% on volume, 10% on recency
+      const deliveryScore = deliveryRate * 0.7;
+      const volumeScore = Math.min(stats.totalSent / 100, 1) * 20; // Max 20 points for 100+ messages
+      const daysSinceUse = (Date.now() - stats.lastUsed.getTime()) / (1000 * 60 * 60 * 24);
+      const recencyScore = Math.max(0, 10 - (daysSinceUse / 30)); // Lose points after 30 days
+      
+      const healthScore = Math.round(deliveryScore + volumeScore + recencyScore);
+      
+      // Determine status
+      let status: 'healthy' | 'degraded' | 'unhealthy';
+      if (healthScore >= 80 && deliveryRate >= 95) {
+        status = 'healthy';
+      } else if (healthScore >= 60 && deliveryRate >= 85) {
+        status = 'degraded';
+      } else {
+        status = 'unhealthy';
+      }
+
+      // Identify issues
+      const issues: string[] = [];
+      if (deliveryRate < 90) issues.push(`Low delivery rate: ${deliveryRate.toFixed(1)}%`);
+      if (stats.failed > stats.totalSent * 0.1) issues.push(`High failure count: ${stats.failed} failures`);
+      if (daysSinceUse > 30) issues.push(`Inactive for ${Math.round(daysSinceUse)} days`);
+      if (stats.totalSent < 10) issues.push('Low message volume');
+
+      return {
+        phoneNumber,
+        healthScore,
+        totalSent: stats.totalSent,
+        delivered: stats.delivered,
+        failed: stats.failed,
+        deliveryRate: Math.round(deliveryRate * 10) / 10,
+        lastUsed: stats.lastUsed,
+        status,
+        issues
+      };
+    });
+
+    // Count by status
+    const healthyPhones = phoneHealthScores.filter(p => p.status === 'healthy').length;
+    const degradedPhones = phoneHealthScores.filter(p => p.status === 'degraded').length;
+    const unhealthyPhones = phoneHealthScores.filter(p => p.status === 'unhealthy').length;
+
+    // Get lowest health phones
+    const lowestHealthPhones = phoneHealthScores
+      .sort((a, b) => a.healthScore - b.healthScore)
+      .slice(0, 10)
+      .map(p => ({
+        phoneNumber: p.phoneNumber,
+        healthScore: p.healthScore,
+        deliveryRate: p.deliveryRate,
+        failureCount: p.failed,
+        primaryIssue: p.issues[0] || 'No specific issues'
+      }));
+
+    return {
+      totalPhones: phoneHealthScores.length,
+      healthyPhones,
+      degradedPhones,
+      unhealthyPhones,
+      phoneHealthScores: phoneHealthScores.sort((a, b) => a.healthScore - b.healthScore),
+      lowestHealthPhones
+    };
   }
 
   /**
