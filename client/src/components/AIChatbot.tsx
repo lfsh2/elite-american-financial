@@ -213,16 +213,13 @@ export default function AIChatbot() {
         className={`fixed bottom-6 right-6 w-16 h-16 rounded-full shadow-2xl flex items-center justify-center transition-all duration-300 z-50 ${
           isOpen 
             ? 'bg-gray-700 hover:bg-gray-800' 
-            : 'bg-gradient-to-br from-purple-600 via-blue-600 to-cyan-500 hover:from-purple-700 hover:via-blue-700 hover:to-cyan-600 animate-pulse'
+            : 'bg-purple-600 hover:bg-purple-700'
         }`}
       >
         {isOpen ? (
           <X className="w-6 h-6 text-white" />
         ) : (
-          <div className="relative">
-            <Sparkles className="w-7 h-7 text-white" />
-            <div className="absolute -top-1 -right-1 w-3 h-3 bg-green-400 rounded-full animate-ping"></div>
-          </div>
+          <Sparkles className="w-7 h-7 text-white" />
         )}
       </button>
 
@@ -244,7 +241,7 @@ export default function AIChatbot() {
             </div>
             <div className="ml-auto relative z-10">
               <div className="flex items-center gap-1 bg-white/20 backdrop-blur-sm px-2 py-1 rounded-full">
-                <div className="w-2 h-2 bg-green-400 rounded-full animate-pulse"></div>
+                <div className="w-2 h-2 bg-green-400 rounded-full"></div>
                 <span className="text-xs text-white font-medium">Live</span>
               </div>
             </div>
