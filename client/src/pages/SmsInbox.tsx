@@ -132,16 +132,16 @@ export default function SmsInbox() {
     fetchCampaigns();
   }, [currentAccount]);
 
-  // Auto-refresh conversations every 10 seconds to pick up new inbound messages
+  // Auto-refresh conversations every 30 seconds to pick up new inbound messages
   useEffect(() => {
     const interval = setInterval(() => {
       fetchConversations(false); // Refresh without cache
-    }, 10000); // 10 seconds
+    }, 30000); // 30 seconds - reduced frequency for better UX
 
     return () => clearInterval(interval);
   }, [currentAccount]);
 
-  // Auto-refresh selected conversation messages every 5 seconds to show new replies
+  // Auto-refresh selected conversation messages every 15 seconds to show new replies
   useEffect(() => {
     if (!selectedConversation) return;
 
@@ -164,7 +164,7 @@ export default function SmsInbox() {
             createdAt: msg.sentAt || msg.createdAt || new Date().toISOString(),
           }));
           
-          // Only update if there are new messages
+          // Only update if there are new messages (silent update, no loading state)
           if (messages.length !== selectedConversation.messages.length) {
             setSelectedConversation(prev => prev ? { ...prev, messages } : null);
             
@@ -186,7 +186,7 @@ export default function SmsInbox() {
       } catch (error) {
         console.error('[SmsInbox] Error refreshing conversation:', error);
       }
-    }, 5000); // 5 seconds
+    }, 15000); // 15 seconds - reduced frequency for better UX
 
     return () => clearInterval(interval);
   }, [selectedConversation?.contactPhone]);
@@ -251,7 +251,10 @@ export default function SmsInbox() {
   };
 
   const fetchConversations = async (useCache = true, page = 1) => {
-    setIsLoading(true);
+    // Only show loading on initial load, not on background refreshes
+    if (conversations.length === 0) {
+      setIsLoading(true);
+    }
     try {
       const cacheKey = 'smsInbox_conversations';
       const cacheExpiry = 'smsInbox_expiry';
@@ -372,7 +375,10 @@ export default function SmsInbox() {
     } catch (error) {
       console.error('Error fetching conversations:', error);
     } finally {
-      setIsLoading(false);
+      // Only clear loading if we actually showed it
+      if (conversations.length === 0) {
+        setIsLoading(false);
+      }
     }
   };
 

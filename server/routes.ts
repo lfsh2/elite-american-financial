@@ -6299,6 +6299,52 @@ export async function registerRoutes(app: Express): Promise<Server> {
   });
 
   /**
+   * Fix stuck campaigns that are 100% complete but still showing "Sending" status
+   */
+  app.post("/api/campaigns/fix-stuck", async (req, res) => {
+    try {
+      // Find campaigns with status 'sending' where sent + failed >= recipientCount
+      const stuckCampaigns = await db
+        .select()
+        .from(smsCampaigns)
+        .where(eq(smsCampaigns.status, 'sending'));
+      
+      let fixed = 0;
+      const fixedCampaigns: Array<{ id: number; name: string; sent: number; failed: number; total: number }> = [];
+      
+      for (const campaign of stuckCampaigns) {
+        const sent = campaign.sentCount || 0;
+        const failed = campaign.failedCount || 0;
+        const total = campaign.recipientCount || 0;
+        
+        // If sent + failed >= total, mark as completed
+        if (total > 0 && (sent + failed) >= total) {
+          await db.update(smsCampaigns)
+            .set({ 
+              status: 'completed',
+              updatedAt: new Date()
+            })
+            .where(eq(smsCampaigns.id, campaign.id));
+          
+          fixed++;
+          fixedCampaigns.push({ id: campaign.id, name: campaign.name, sent, failed, total });
+          console.log(`[FixStuck] Campaign ${campaign.id} "${campaign.name}" marked as completed (${sent}/${total} sent, ${failed} failed)`);
+        }
+      }
+      
+      res.json({ 
+        success: true, 
+        fixed, 
+        totalStuck: stuckCampaigns.length,
+        fixedCampaigns 
+      });
+    } catch (error: any) {
+      console.error("Error fixing stuck campaigns:", error);
+      res.status(500).json({ error: error.message || "Failed to fix stuck campaigns" });
+    }
+  });
+
+  /**
    * Sync SMS metrics from Commio API
    * Fetches delivery reports and updates campaign counts
    */
