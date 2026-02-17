@@ -671,8 +671,8 @@ FAILURE ANALYSIS
 • Total failed messages: ${failureAnalysis.totalFailed}
 • Failure rate: ${failureAnalysis.failureRate}%
 
-Failure Breakdown by Reason:
-${failureAnalysis.failuresByReason.slice(0, 5).map(f => `  - ${f.reason}: ${f.count} failures (${f.percentage.toFixed(1)}%)${f.errorCode ? ` [Code: ${f.errorCode}]` : ''}`).join('\n')}
+${failureAnalysis.failuresByReason.length > 0 ? `Failure Breakdown by Reason:
+${failureAnalysis.failuresByReason.slice(0, 5).map(f => `  - ${f.reason}: ${f.count} failures (${(f.percentage || 0).toFixed(1)}%)${f.errorCode ? ` [Code: ${f.errorCode}]` : ''}`).join('\n')}` : 'No failure patterns detected.'}
 
 ${failureAnalysis.failedPhoneNumbers.length > 0 ? `Phone Numbers with Repeated Failures (Top 5):
 ${failureAnalysis.failedPhoneNumbers.slice(0, 5).map(p => `  - ${p.phoneNumber}: ${p.failureCount} failures - ${p.lastError}`).join('\n')}` : ''}
@@ -750,7 +750,7 @@ ${twilioSummary}
       .map(([reason, data]) => ({
         reason,
         count: data.count,
-        percentage: (data.count / totalFailed) * 100,
+        percentage: totalFailed > 0 ? (data.count / totalFailed) * 100 : 0,
         errorCode: data.errorCode
       }))
       .sort((a, b) => b.count - a.count);
