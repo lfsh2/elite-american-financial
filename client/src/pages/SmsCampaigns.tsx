@@ -327,6 +327,58 @@ export default function SmsCampaigns() {
     }
   }, [campaigns, startPollingCampaign]);
 
+  // Auto-clear completed campaigns from progress map
+  // Immediately remove campaigns over 100%, short delay for exactly 100%
+  useEffect(() => {
+    const immediateRemoveIds: number[] = [];
+    const delayedRemoveIds: number[] = [];
+    
+    for (const [idStr, prog] of Object.entries(activeProgressMap)) {
+      const pct = prog.total > 0 ? ((prog.sent + prog.failed) / prog.total) * 100 : 0;
+      if (pct > 100) {
+        // Over 100% - remove immediately (like campaign #13 at 184%)
+        immediateRemoveIds.push(Number(idStr));
+      } else if (pct >= 100 || prog.status === 'completed') {
+        // Exactly 100% - short delay to show completion
+        delayedRemoveIds.push(Number(idStr));
+      }
+    }
+    
+    // Immediately remove over-100% campaigns
+    if (immediateRemoveIds.length > 0) {
+      setActiveProgressMap(prev => {
+        const next = { ...prev };
+        for (const id of immediateRemoveIds) {
+          delete next[id];
+        }
+        return next;
+      });
+      fetchData();
+    }
+    
+    // Delayed removal for exactly 100% campaigns
+    if (delayedRemoveIds.length > 0) {
+      const timer = setTimeout(() => {
+        setActiveProgressMap(prev => {
+          const next = { ...prev };
+          for (const id of delayedRemoveIds) {
+            const prog = next[id];
+            if (prog) {
+              const pct = prog.total > 0 ? ((prog.sent + prog.failed) / prog.total) * 100 : 0;
+              if (pct >= 100 || prog.status === 'completed') {
+                delete next[id];
+              }
+            }
+          }
+          return next;
+        });
+        fetchData();
+      }, 2000);
+      
+      return () => clearTimeout(timer);
+    }
+  }, [activeProgressMap]);
+
   // Fetch custom fields when campaign dialog opens or contact list changes
   useEffect(() => {
     const fetchCustomFields = async () => {
@@ -2922,19 +2974,22 @@ export default function SmsCampaigns() {
             const cId = Number(idStr);
             const campaignName = campaigns.find(c => c.id === cId)?.name || `Campaign #${cId}`;
             const pct = prog.total > 0 ? Math.round(((prog.sent + prog.failed) / prog.total) * 100) : 0;
-            const borderColor = prog.status === 'completed' ? 'border-green-200 bg-green-50' : prog.status === 'paused' ? 'border-yellow-200 bg-yellow-50' : 'border-blue-200 bg-blue-50';
-            const textColor = prog.status === 'completed' ? 'text-green-800' : prog.status === 'paused' ? 'text-yellow-800' : 'text-blue-800';
-            const pctColor = prog.status === 'completed' ? 'text-green-700' : prog.status === 'paused' ? 'text-yellow-700' : 'text-blue-700';
+            // Determine effective status: if 100% complete, show as completed regardless of stored status
+            const isComplete = pct >= 100 || prog.status === 'completed';
+            const effectiveStatus = isComplete ? 'completed' : prog.status;
+            const borderColor = effectiveStatus === 'completed' ? 'border-green-200 bg-green-50' : effectiveStatus === 'paused' ? 'border-yellow-200 bg-yellow-50' : 'border-blue-200 bg-blue-50';
+            const textColor = effectiveStatus === 'completed' ? 'text-green-800' : effectiveStatus === 'paused' ? 'text-yellow-800' : 'text-blue-800';
+            const pctColor = effectiveStatus === 'completed' ? 'text-green-700' : effectiveStatus === 'paused' ? 'text-yellow-700' : 'text-blue-700';
             return (
               <Card key={cId} className={`shadow-md ${borderColor}`}>
                 <CardContent className="pt-4 pb-3">
                   <div className="flex items-center justify-between mb-2">
                     <div className="flex items-center gap-2">
-                      {prog.status === 'sending' && <Loader2 className="h-4 w-4 animate-spin text-blue-600" />}
-                      {prog.status === 'completed' && <CheckCircle className="h-4 w-4 text-green-600" />}
-                      {prog.status === 'paused' && <Clock className="h-4 w-4 text-yellow-600" />}
+                      {effectiveStatus === 'sending' && <Loader2 className="h-4 w-4 animate-spin text-blue-600" />}
+                      {effectiveStatus === 'completed' && <CheckCircle className="h-4 w-4 text-green-600" />}
+                      {effectiveStatus === 'paused' && <Clock className="h-4 w-4 text-yellow-600" />}
                       <span className={`font-medium ${textColor}`}>
-                        {prog.status === 'sending' ? 'Sending' : prog.status === 'paused' ? 'Paused' : 'Completed'}: {campaignName}
+                        {effectiveStatus === 'sending' ? 'Sending' : effectiveStatus === 'paused' ? 'Paused' : 'Completed'}: {campaignName}
                       </span>
                     </div>
                     <span className={`text-sm font-semibold ${pctColor}`}>
@@ -3053,7 +3108,6 @@ export default function SmsCampaigns() {
                         <TableHead>Status</TableHead>
                         <TableHead>Recipients</TableHead>
                         <TableHead>Sent</TableHead>
-                        <TableHead>Delivered</TableHead>
                         <TableHead>Failed</TableHead>
                         <TableHead>Created</TableHead>
                         <TableHead className="w-[100px]">Actions</TableHead>
@@ -3082,8 +3136,7 @@ export default function SmsCampaigns() {
                           </TableCell>
                           <TableCell>{getStatusBadge(campaign.status)}</TableCell>
                           <TableCell>{campaign.recipientCount?.toLocaleString() || 0}</TableCell>
-                          <TableCell>{campaign.sentCount?.toLocaleString() || 0}</TableCell>
-                          <TableCell className="text-green-600">{campaign.deliveredCount?.toLocaleString() || 0}</TableCell>
+                          <TableCell className="text-green-600 font-medium">{campaign.sentCount?.toLocaleString() || 0}</TableCell>
                           <TableCell className="text-red-600">{campaign.failedCount?.toLocaleString() || 0}</TableCell>
                           <TableCell className="text-sm text-muted-foreground">
                             {new Date(campaign.createdAt).toLocaleDateString()}
