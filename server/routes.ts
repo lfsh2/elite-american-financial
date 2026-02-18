@@ -1345,6 +1345,34 @@ export async function registerRoutes(app: Express): Promise<Server> {
         isResume = campaignRecord?.status === 'paused';
         if (isResume) {
           console.log(`[BatchSMS] RESUMING campaign ${campaignId} from paused state (already sent: ${campaignRecord.sentCount}, failed: ${campaignRecord.failedCount})`);
+          
+          // CRITICAL: Sync recipient statuses from sms_messages before loading pending recipients
+          // This fixes the bug where recipients are resent because their status wasn't properly updated
+          console.log(`[BatchSMS] Syncing recipient statuses from sms_messages...`);
+          const syncResult = await db.execute(sql`
+            UPDATE campaign_recipients cr
+            SET status = 'sent', sent_at = sm.sent_at
+            FROM sms_messages sm
+            WHERE cr.sms_campaign_id = ${campaignId}
+              AND cr.phone_number = sm."to"
+              AND sm.campaign_id = ${campaignId}
+              AND sm.status IN ('sent', 'delivered')
+              AND cr.status = 'pending'
+          `);
+          console.log(`[BatchSMS] Synced sent recipients from sms_messages`);
+          
+          // Also sync failed recipients
+          await db.execute(sql`
+            UPDATE campaign_recipients cr
+            SET status = 'failed', failed_at = sm.sent_at
+            FROM sms_messages sm
+            WHERE cr.sms_campaign_id = ${campaignId}
+              AND cr.phone_number = sm."to"
+              AND sm.campaign_id = ${campaignId}
+              AND sm.status = 'failed'
+              AND cr.status = 'pending'
+          `);
+          console.log(`[BatchSMS] Synced failed recipients from sms_messages`);
         }
 
         console.log(`[BatchSMS] Loading ${isResume ? 'PENDING' : 'ALL'} recipients from database for campaign ${campaignId}`);

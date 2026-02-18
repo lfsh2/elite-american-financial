@@ -7,6 +7,9 @@ import { initializeWorkers } from "./workers";
 import { redisService, CACHE_TTL, STALE_TTL } from "./services/redisService";
 import { twilioAnalyticsService } from "./twilioAnalytics";
 import { dataService } from "./services/dataService";
+import { db } from "./db";
+import { smsCampaigns } from "@shared/schema";
+import { eq } from "drizzle-orm";
 
 const app = express();
 app.use(express.json({ limit: '50mb' }));
@@ -75,6 +78,9 @@ app.use((req, res, next) => {
     
     // Start the auto-refill service
     autoRefillService.start();
+    
+    // Auto-recover stuck campaigns (mark 'sending' as 'paused' so they can be resumed properly)
+    recoverStuckCampaigns();
     
     // Initialize background workers after a short delay to allow Redis to connect
     setTimeout(async () => {
@@ -186,5 +192,36 @@ async function warmCache() {
     
   } catch (error) {
     console.error('[CacheWarm] Failed to warm cache:', error);
+  }
+}
+
+/**
+ * Auto-recover campaigns stuck in 'sending' status after server restart.
+ * Marks them as 'paused' so they can be properly resumed (only sending to pending recipients).
+ */
+async function recoverStuckCampaigns() {
+  try {
+    // Find all campaigns stuck in 'sending' status
+    const stuckCampaigns = await db
+      .select({ id: smsCampaigns.id, name: smsCampaigns.name, sentCount: smsCampaigns.sentCount, failedCount: smsCampaigns.failedCount })
+      .from(smsCampaigns)
+      .where(eq(smsCampaigns.status, 'sending'));
+    
+    if (stuckCampaigns.length === 0) {
+      log('[Recovery] No stuck campaigns found');
+      return;
+    }
+    
+    // Mark them as 'paused' so resume logic will only send to pending recipients
+    for (const campaign of stuckCampaigns) {
+      await db.update(smsCampaigns)
+        .set({ status: 'paused', updatedAt: new Date() })
+        .where(eq(smsCampaigns.id, campaign.id));
+      log(`[Recovery] Campaign "${campaign.name}" (ID: ${campaign.id}) marked as paused - sent: ${campaign.sentCount}, failed: ${campaign.failedCount}`);
+    }
+    
+    log(`[Recovery] ✅ Recovered ${stuckCampaigns.length} stuck campaign(s) - they can be resumed from the UI`);
+  } catch (error) {
+    console.error('[Recovery] Failed to recover stuck campaigns:', error);
   }
 }
