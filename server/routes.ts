@@ -72,6 +72,52 @@ export async function registerRoutes(app: Express): Promise<Server> {
     console.error(error);
     return res.status(500).json({ message: "Internal server error" });
   }
+
+  /**
+   * Send a single test SMS (used by campaign creation UI)
+   * Expects: { to, from, message }
+   * Finds the owning account for the fromNumber and sends via its provider.
+   */
+  app.post('/api/sms/send', async (req, res) => {
+    try {
+      const { to, from, message } = req.body;
+
+      if (!to || !from || !message) {
+        return res.status(400).json({ error: 'to, from, and message are required' });
+      }
+
+      const fromNumber = String(from).trim();
+      const { accountPhoneNumbers } = await import('../shared/schema');
+
+      // Find account owning this fromNumber
+      const match = await db
+        .select({ accountId: accountPhoneNumbers.accountId, capabilities: accountPhoneNumbers.capabilities })
+        .from(accountPhoneNumbers)
+        .where(eq(accountPhoneNumbers.phoneNumber, fromNumber))
+        .limit(1);
+
+      if (match.length === 0) {
+        return res.status(400).json({ error: 'From number is not linked to any account' });
+      }
+
+      const accountId = match[0].accountId;
+      const provider = await accountService.getProviderForAccount(accountId);
+      if (!provider) {
+        return res.status(400).json({ error: 'Provider credentials are not configured for this number' });
+      }
+
+      const result = await provider.sendMessage({ to, from: fromNumber, body: message });
+
+      if (result.success) {
+        return res.json({ success: true, messageSid: result.sid, fromNumber, accountId, provider: provider.code });
+      }
+
+      return res.status(400).json({ error: result.error || 'Failed to send SMS', fromNumber, provider: provider.code });
+    } catch (error: any) {
+      console.error('[Test SMS] Error:', error);
+      res.status(500).json({ error: error.message || 'Failed to send SMS' });
+    }
+  });
   
   // Auth endpoints
   app.post("/api/auth/login", async (req, res) => {
@@ -1581,16 +1627,20 @@ export async function registerRoutes(app: Express): Promise<Server> {
         messagesPerMinute,
       });
 
+      // Limit validNumbers in response to first 5 to avoid huge payloads
+      const displayNumbers = phoneNumberConfigs.slice(0, 5).map(p => p.phoneNumber);
+      const moreCount = phoneNumberConfigs.length - 5;
+
       return res.status(200).json({
         success: true,
         jobId,
         total,
         numbersUsed: phoneNumberConfigs.length,
         numbersRequested: phoneNumbers.length,
-        validNumbers: phoneNumberConfigs.map(p => p.phoneNumber),
+        validNumbers: displayNumbers,
         message: phoneNumberConfigs.length < phoneNumbers.length 
-          ? `Warning: Only ${phoneNumberConfigs.length} of ${phoneNumbers.length} selected numbers have valid credentials. Messages distributed across: ${phoneNumberConfigs.map(p => p.phoneNumber).join(', ')}`
-          : 'Batch send started. Poll /api/sms/batch/progress/:jobId or /api/campaigns/sms-campaigns/:id/progress for updates.',
+          ? `Warning: Only ${phoneNumberConfigs.length} of ${phoneNumbers.length} selected numbers have valid credentials.`
+          : `Batch send started with ${phoneNumberConfigs.length} numbers.`,
       });
     } catch (error) {
       console.error('[BatchSMS API] Error:', error);
@@ -6892,7 +6942,6 @@ export async function registerRoutes(app: Express): Promise<Server> {
     try {
       const campaignId = parseInt(req.params.campaignId);
       const { testPhoneNumber } = req.body;
-      const userId = (req as any).user?.id || 1;
 
       if (!testPhoneNumber) {
         return res.status(400).json({ error: "testPhoneNumber is required" });
@@ -6908,6 +6957,10 @@ export async function registerRoutes(app: Express): Promise<Server> {
         return res.status(404).json({ error: "Campaign not found" });
       }
 
+      if (!campaign.accountId) {
+        return res.status(400).json({ error: "Campaign account is not set" });
+      }
+
       // Apply sample merge tags for test
       let testMessage = campaign.messageTemplate
         .replace(/\{first_name\}/g, 'John')
@@ -6921,44 +6974,50 @@ export async function registerRoutes(app: Express): Promise<Server> {
         testMessage += '\n' + campaign.optOutMessageText;
       }
 
-      // Get the from number and send via provider
-      const fromNumber = campaign.fromNumber.split(',')[0].trim();
-      
-      // Use the batch SMS service infrastructure to send a single message
-      const { accounts: userAccounts } = await accountService.getAccountsForUser(userId);
-      let sent = false;
+      // Pick a from-number from the campaign account's phone pool (prefer SMS-capable), fallback to campaign's configured fromNumber
+      const { accountPhoneNumbers } = await import('../shared/schema');
+      const numbers = await db
+        .select()
+        .from(accountPhoneNumbers)
+        .where(eq(accountPhoneNumbers.accountId, campaign.accountId));
 
-      for (const account of userAccounts) {
-        try {
-          const accountIdNum = parseInt(account.id.replace('acc_', ''));
-          const creds = await accountService.getAccountCredentials(accountIdNum);
-          const provider = await accountService.getProviderForAccount(accountIdNum);
-          
-          if (provider) {
-            const result = await provider.sendMessage({
-              to: testPhoneNumber,
-              from: fromNumber,
-              body: testMessage,
-            });
-            
-            if (result.success) {
-              sent = true;
-              return res.json({ 
-                success: true, 
-                message: 'Test message sent successfully',
-                preview: testMessage,
-                messageSid: result.sid,
-              });
-            }
-          }
-        } catch (e) {
-          continue;
-        }
+      const smsCapable = numbers.find(n => (n.capabilities as any)?.sms === true);
+      const selectedFrom = smsCapable?.phoneNumber || numbers[0]?.phoneNumber || '';
+
+      const fromNumber = selectedFrom || (campaign.fromNumber || '').split(',')[0].trim();
+      if (!fromNumber) {
+        return res.status(400).json({ error: "No phone number available for this account" });
       }
 
-      if (!sent) {
-        return res.status(400).json({ error: "Could not send test message. Check phone number credentials." });
+      // Use only the campaign's own account/provider
+      const provider = await accountService.getProviderForAccount(campaign.accountId);
+      if (!provider) {
+        return res.status(400).json({ error: "Campaign provider credentials are not configured" });
       }
+
+      const result = await provider.sendMessage({
+        to: testPhoneNumber,
+        from: fromNumber,
+        body: testMessage,
+      });
+
+      if (result.success) {
+        return res.json({
+          success: true,
+          message: 'Test message sent successfully',
+          preview: testMessage,
+          messageSid: result.sid,
+          fromNumber,
+          accountId: campaign.accountId,
+          provider: provider.code,
+        });
+      }
+
+      return res.status(400).json({
+        error: "Could not send test message. Check credentials or from number.",
+        provider: provider.code,
+        fromNumber,
+      });
     } catch (error: any) {
       console.error("Error sending test message:", error);
       res.status(500).json({ error: error.message || "Failed to send test message" });

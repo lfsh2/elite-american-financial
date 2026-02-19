@@ -1501,16 +1501,18 @@ export default function SmsCampaigns() {
         
         // Show warning if not all numbers have valid credentials
         if (result.numbersUsed < result.numbersRequested) {
+          const displayNumbers = result.validNumbers?.slice(0, 3) || [];
+          const moreCount = (result.validNumbers?.length || 0) - 3;
           toast({
             title: '⚠️ Warning: Limited Phone Numbers',
-            description: `Only ${result.numbersUsed} of ${result.numbersRequested} selected numbers have valid credentials. All ${result.total} messages will be sent through: ${result.validNumbers?.join(', ')}`,
+            description: `Only ${result.numbersUsed} of ${result.numbersRequested} selected numbers have valid credentials.${moreCount > 0 ? ` Using ${displayNumbers.join(', ')} and ${moreCount} more.` : ` Using: ${displayNumbers.join(', ')}`}`,
             variant: 'destructive',
             duration: 10000,
           });
         } else {
           toast({
             title: 'Campaign Started',
-            description: `Sending ${result.total} messages across ${result.numbersUsed} phone numbers...`,
+            description: `Sending ${result.total.toLocaleString()} messages across ${result.numbersUsed} phone numbers...`,
           });
         }
         
