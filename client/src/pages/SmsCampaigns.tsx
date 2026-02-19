@@ -1536,7 +1536,33 @@ export default function SmsCampaigns() {
     }
   };
 
-  // Pause campaign
+  // Cancel campaign (immediate stop - use this for actively sending campaigns)
+  const handleCancelCampaign = async (campaignId: number) => {
+    try {
+      const res = await fetch(`/api/campaigns/sms-campaigns/${campaignId}/cancel`, {
+        method: 'POST',
+        credentials: 'include',
+      });
+
+      if (!res.ok) throw new Error('Failed to cancel campaign');
+
+      toast({
+        title: 'Campaign Cancelled',
+        description: 'Campaign will stop within seconds',
+      });
+
+      fetchData();
+    } catch (error: any) {
+      console.error('Error cancelling campaign:', error);
+      toast({
+        title: 'Error',
+        description: error.message || 'Failed to cancel campaign',
+        variant: 'destructive'
+      });
+    }
+  };
+
+  // Pause campaign (soft pause - for non-sending campaigns)
   const handlePauseCampaign = async (campaignId: number) => {
     try {
       const res = await fetch(`/api/campaigns/sms-campaigns/${campaignId}/pause`, {
@@ -3227,9 +3253,10 @@ export default function SmsCampaigns() {
                                 <Button 
                                   variant="ghost" 
                                   size="sm"
-                                  onClick={() => handlePauseCampaign(campaign.id)}
+                                  onClick={() => handleCancelCampaign(campaign.id)}
+                                  title="Cancel campaign (immediate stop)"
                                 >
-                                  <Pause className="h-4 w-4 text-yellow-600" />
+                                  <Pause className="h-4 w-4 text-red-600" />
                                 </Button>
                               )}
                               {campaign.status === 'paused' && (

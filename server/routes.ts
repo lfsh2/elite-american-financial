@@ -40,6 +40,8 @@ import {
   voiceCalls,
   accounts,
   messageTemplates,
+  accountPhoneNumbers,
+  providers,
 } from "@shared/schema";
 import { db } from "./db";
 import { eq, and, sql, desc, or } from "drizzle-orm";
@@ -6531,7 +6533,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
   });
 
   /**
-   * Pause SMS campaign
+   * Pause SMS campaign (soft pause - campaign may continue current batch)
    */
   app.post("/api/campaigns/sms-campaigns/:campaignId/pause", async (req, res) => {
     try {
@@ -6541,6 +6543,81 @@ export async function registerRoutes(app: Express): Promise<Server> {
     } catch (error: any) {
       console.error("Error pausing SMS campaign:", error);
       res.status(500).json({ error: error.message || "Failed to pause SMS campaign" });
+    }
+  });
+
+  /**
+   * Auto-resume ALL paused campaigns - continues sending remaining recipients
+   */
+  app.post("/api/campaigns/resume-all-paused", async (req, res) => {
+    try {
+      // Find all paused campaigns
+      const pausedCampaigns = await db.select()
+        .from(smsCampaigns)
+        .where(eq(smsCampaigns.status, 'paused'));
+      
+      if (pausedCampaigns.length === 0) {
+        return res.json({ success: true, message: 'No paused campaigns found', resumed: 0 });
+      }
+
+      const results: Array<{ id: number; name: string; status: string; pendingCount?: number }> = [];
+
+      for (const campaign of pausedCampaigns) {
+        // Count pending recipients
+        const [pendingResult] = await db.select({ count: sql<number>`count(*)` })
+          .from(campaignRecipients)
+          .where(and(
+            eq(campaignRecipients.smsCampaignId, campaign.id),
+            eq(campaignRecipients.status, 'pending')
+          ));
+        
+        const pendingCount = Number(pendingResult?.count || 0);
+        
+        if (pendingCount === 0) {
+          // No pending recipients - mark as completed
+          await db.update(smsCampaigns)
+            .set({ status: 'completed', completedAt: new Date(), updatedAt: new Date() })
+            .where(eq(smsCampaigns.id, campaign.id));
+          results.push({ id: campaign.id, name: campaign.name, status: 'completed (no pending)' });
+        } else {
+          // Has pending recipients - set to sending so it can be resumed
+          await db.update(smsCampaigns)
+            .set({ status: 'draft', updatedAt: new Date() })
+            .where(eq(smsCampaigns.id, campaign.id));
+          results.push({ id: campaign.id, name: campaign.name, status: 'ready to resume', pendingCount });
+        }
+      }
+
+      res.json({ 
+        success: true, 
+        message: `Processed ${pausedCampaigns.length} paused campaigns`,
+        campaigns: results,
+      });
+    } catch (error: any) {
+      console.error("Error resuming paused campaigns:", error);
+      res.status(500).json({ error: error.message || "Failed to resume campaigns" });
+    }
+  });
+
+  /**
+   * Cancel SMS campaign (immediate stop - checked during sending)
+   */
+  app.post("/api/campaigns/sms-campaigns/:campaignId/cancel", async (req, res) => {
+    try {
+      const campaignId = parseInt(req.params.campaignId);
+      
+      await db.update(smsCampaigns)
+        .set({ 
+          status: 'cancelled',
+          updatedAt: new Date(),
+        })
+        .where(eq(smsCampaigns.id, campaignId));
+      
+      console.log(`[Campaign] Campaign ${campaignId} CANCELLED by user`);
+      res.json({ success: true, message: 'Campaign cancelled - will stop within seconds' });
+    } catch (error: any) {
+      console.error("Error cancelling SMS campaign:", error);
+      res.status(500).json({ error: error.message || "Failed to cancel SMS campaign" });
     }
   });
 

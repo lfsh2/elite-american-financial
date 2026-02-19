@@ -8,8 +8,8 @@ import { redisService, CACHE_TTL, STALE_TTL } from "./services/redisService";
 import { twilioAnalyticsService } from "./twilioAnalytics";
 import { dataService } from "./services/dataService";
 import { db } from "./db";
-import { smsCampaigns } from "@shared/schema";
-import { eq } from "drizzle-orm";
+import { smsCampaigns, campaignRecipients } from "@shared/schema";
+import { eq, and, sql } from "drizzle-orm";
 
 const app = express();
 app.use(express.json({ limit: '50mb' }));
@@ -79,8 +79,13 @@ app.use((req, res, next) => {
     // Start the auto-refill service
     autoRefillService.start();
     
-    // Auto-recover stuck campaigns (mark 'sending' as 'paused' so they can be resumed properly)
+    // Auto-recover stuck campaigns (mark as paused so they can be resumed)
     recoverStuckCampaigns();
+    
+    // Auto-resume paused campaigns after 10 seconds (let server fully start first)
+    setTimeout(() => {
+      autoResumePausedCampaigns();
+    }, 10000);
     
     // Initialize background workers after a short delay to allow Redis to connect
     setTimeout(async () => {
@@ -196,7 +201,7 @@ async function warmCache() {
 }
 
 /**
- * Auto-recover campaigns stuck in 'sending' status after server restart.
+ * Recover campaigns that were stuck in 'sending' status when the server restarted.
  * Marks them as 'paused' so they can be properly resumed (only sending to pending recipients).
  */
 async function recoverStuckCampaigns() {
@@ -223,5 +228,73 @@ async function recoverStuckCampaigns() {
     log(`[Recovery] ✅ Recovered ${stuckCampaigns.length} stuck campaign(s) - they can be resumed from the UI`);
   } catch (error) {
     console.error('[Recovery] Failed to recover stuck campaigns:', error);
+  }
+}
+
+/**
+ * Auto-resume all paused/sending campaigns by triggering the batch send for each.
+ * This ensures campaigns continue and complete even after server crash/restart.
+ */
+async function autoResumePausedCampaigns() {
+  try {
+    // Find campaigns that need to be resumed (paused or stuck in sending)
+    const campaignsToResume = await db.select()
+      .from(smsCampaigns)
+      .where(sql`${smsCampaigns.status} IN ('paused', 'sending')`);
+    
+    if (campaignsToResume.length === 0) {
+      log('[AutoResume] No campaigns to resume');
+      return;
+    }
+    
+    log(`[AutoResume] Found ${campaignsToResume.length} campaign(s) to resume`);
+    
+    for (const campaign of campaignsToResume) {
+      // Count pending recipients
+      const pendingResult = await db.select({ count: sql<number>`count(*)` })
+        .from(campaignRecipients)
+        .where(and(
+          eq(campaignRecipients.smsCampaignId, campaign.id),
+          eq(campaignRecipients.status, 'pending')
+        ));
+      
+      const pendingCount = Number(pendingResult[0]?.count || 0);
+      
+      if (pendingCount === 0) {
+        // No pending - mark as completed
+        await db.update(smsCampaigns)
+          .set({ status: 'completed', completedAt: new Date(), updatedAt: new Date() })
+          .where(eq(smsCampaigns.id, campaign.id));
+        log(`[AutoResume] Campaign "${campaign.name}" (ID: ${campaign.id}) - no pending, marked COMPLETED`);
+      } else {
+        // Has pending - trigger auto-resume via internal HTTP call
+        log(`[AutoResume] Campaign "${campaign.name}" (ID: ${campaign.id}) - ${pendingCount} pending, auto-resuming...`);
+        
+        // Make internal API call to resume the campaign
+        try {
+          const response = await fetch(`http://localhost:${process.env.PORT || 3000}/api/sms/batch`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ campaignId: campaign.id }),
+          });
+          
+          if (response.ok) {
+            log(`[AutoResume] ✅ Campaign "${campaign.name}" (ID: ${campaign.id}) resumed successfully`);
+          } else {
+            const error = await response.text();
+            log(`[AutoResume] ⚠️ Campaign "${campaign.name}" resume failed: ${error}`);
+          }
+        } catch (fetchErr: any) {
+          log(`[AutoResume] ⚠️ Campaign "${campaign.name}" resume error: ${fetchErr.message}`);
+        }
+        
+        // Small delay between campaign resumes to avoid overwhelming
+        await new Promise(resolve => setTimeout(resolve, 2000));
+      }
+    }
+    
+    log(`[AutoResume] ✅ Processed ${campaignsToResume.length} campaign(s)`);
+  } catch (error) {
+    console.error('[AutoResume] Failed to auto-resume campaigns:', error);
   }
 }
