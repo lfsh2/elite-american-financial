@@ -553,7 +553,11 @@ export async function registerRoutes(app: Express): Promise<Server> {
       }
       
       // Format database phone numbers with assignment status
-      const formattedPhones = phoneNumbersWithAccounts.map(phone => ({
+      // Filter out released numbers - they no longer exist on the provider
+      const activePhoneNumbers = phoneNumbersWithAccounts.filter(phone => phone.status !== 'released');
+      console.log(`[PhoneNumbers] ${phoneNumbersWithAccounts.length} total, ${activePhoneNumbers.length} active (${phoneNumbersWithAccounts.length - activePhoneNumbers.length} released filtered out)`);
+      
+      const formattedPhones = activePhoneNumbers.map(phone => ({
         id: phone.id,
         phoneNumber: phone.phoneNumber,
         friendlyName: phone.friendlyName || phone.phoneNumber,
@@ -561,6 +565,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
         accountName: phone.accountName || 'Unknown Account',
         provider: phone.providerCode || 'twilio',
         capabilities: phone.capabilities,
+        status: phone.status,
         isAssigned: assignedPhoneIds.has(phone.id),
       }));
       
@@ -3654,6 +3659,69 @@ export async function registerRoutes(app: Express): Promise<Server> {
     } catch (error) {
       console.error("Error syncing account:", error);
       res.status(500).json({ error: "Failed to sync account" });
+    }
+  });
+
+  // Sync ALL accounts and validate phone numbers against live APIs
+  // This marks released numbers and updates the database
+  app.post("/api/accounts/sync-all-phone-numbers", async (req, res) => {
+    try {
+      const userId = (req as any).user?.id || 1;
+      const { accounts: userAccounts } = await accountService.getAccountsForUser(userId);
+      
+      const results: Array<{ accountId: number; accountName: string; liveNumbers: number; releasedNumbers: number; error?: string }> = [];
+      
+      for (const account of userAccounts) {
+        const accountId = parseInt(account.id.replace('acc_', ''));
+        if (isNaN(accountId)) continue;
+        
+        try {
+          // Get current DB numbers before sync
+          const beforeSync = await db.select()
+            .from(accountPhoneNumbers)
+            .where(eq(accountPhoneNumbers.accountId, accountId));
+          const beforeCount = beforeSync.filter(n => n.status !== 'released').length;
+          
+          // Sync from provider
+          await accountService.syncAccountData(accountId);
+          
+          // Get updated counts
+          const afterSync = await db.select()
+            .from(accountPhoneNumbers)
+            .where(eq(accountPhoneNumbers.accountId, accountId));
+          const activeCount = afterSync.filter(n => n.status !== 'released').length;
+          const releasedCount = afterSync.filter(n => n.status === 'released').length;
+          
+          results.push({
+            accountId,
+            accountName: account.name,
+            liveNumbers: activeCount,
+            releasedNumbers: releasedCount,
+          });
+          
+          console.log(`[SyncAll] Account ${account.name}: ${activeCount} active, ${releasedCount} released`);
+        } catch (err: any) {
+          results.push({
+            accountId,
+            accountName: account.name,
+            liveNumbers: 0,
+            releasedNumbers: 0,
+            error: err.message,
+          });
+        }
+      }
+      
+      const totalActive = results.reduce((sum, r) => sum + r.liveNumbers, 0);
+      const totalReleased = results.reduce((sum, r) => sum + r.releasedNumbers, 0);
+      
+      res.json({
+        success: true,
+        message: `Synced ${userAccounts.length} accounts: ${totalActive} active numbers, ${totalReleased} released`,
+        accounts: results,
+      });
+    } catch (error: any) {
+      console.error("Error syncing all accounts:", error);
+      res.status(500).json({ error: error.message || "Failed to sync accounts" });
     }
   });
 

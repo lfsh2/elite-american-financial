@@ -307,7 +307,27 @@ class AccountService {
         })
         .where(eq(accounts.id, accountId));
 
-      // Sync phone numbers
+      // Sync phone numbers - add new, update existing, mark released
+      const livePhoneNumbers = new Set(analytics.phoneNumbers.map(pn => pn.phoneNumber));
+      
+      // Get all current DB numbers for this account
+      const dbNumbers = await db.select()
+        .from(accountPhoneNumbers)
+        .where(eq(accountPhoneNumbers.accountId, accountId));
+      
+      // Mark numbers not found on provider as 'released'
+      let releasedCount = 0;
+      for (const dbNum of dbNumbers) {
+        if (!livePhoneNumbers.has(dbNum.phoneNumber) && dbNum.status !== 'released') {
+          await db.update(accountPhoneNumbers)
+            .set({ status: 'released' })
+            .where(eq(accountPhoneNumbers.id, dbNum.id));
+          releasedCount++;
+          console.log(`[Sync] Marked ${dbNum.phoneNumber} as released (not found on provider)`);
+        }
+      }
+      
+      // Add new and update existing numbers
       for (const pn of analytics.phoneNumbers) {
         const existing = await db.select()
           .from(accountPhoneNumbers)
@@ -323,22 +343,22 @@ class AccountService {
             friendlyName: pn.friendlyName,
             capabilities: pn.capabilities,
             providerSid: pn.sid,
-            status: pn.status,
+            status: pn.status || 'active',
             monthlyCost: pn.monthlyCost,
           });
         } else {
-          // Update existing
+          // Update existing - also reactivate if it was marked released but is back
           await db.update(accountPhoneNumbers)
             .set({
               friendlyName: pn.friendlyName,
               capabilities: pn.capabilities,
-              status: pn.status,
+              status: pn.status || 'active',
             })
             .where(eq(accountPhoneNumbers.id, existing[0].id));
         }
       }
 
-      console.log(`Synced account ${accountId} (${providerInstance.name}): ${analytics.phoneNumbers.length} numbers, $${analytics.metrics.totalSpendThisMonth.toFixed(2)} spend`);
+      console.log(`Synced account ${accountId} (${providerInstance.name}): ${analytics.phoneNumbers.length} live numbers, ${releasedCount} marked released, $${analytics.metrics.totalSpendThisMonth.toFixed(2)} spend`);
     } catch (error) {
       console.error(`Error syncing account ${accountId}:`, error);
     }

@@ -1881,9 +1881,40 @@ export default function SmsCampaigns() {
                     </div>
                     {/* From Number - Multi-select like Twilio */}
                     <div className="space-y-2">
-                      <Label>From Numbers * (Twilio & Commio Only)</Label>
+                      <div className="flex items-center justify-between">
+                        <Label>From Numbers * (Twilio & Commio Only)</Label>
+                        <button
+                          type="button"
+                          onClick={async () => {
+                            try {
+                              toast({ title: 'Syncing...', description: 'Validating phone numbers against provider APIs' });
+                              const res = await fetch('/api/accounts/sync-all-phone-numbers', {
+                                method: 'POST',
+                                credentials: 'include'
+                              });
+                              const data = await res.json();
+                              if (data.success) {
+                                toast({ 
+                                  title: 'Sync Complete', 
+                                  description: `${data.accounts?.length || 0} accounts synced. ${data.message}` 
+                                });
+                                // Refresh phone numbers
+                                fetchData();
+                              } else {
+                                toast({ title: 'Sync Failed', description: data.error || 'Unknown error', variant: 'destructive' });
+                              }
+                            } catch (err: any) {
+                              toast({ title: 'Sync Failed', description: err.message, variant: 'destructive' });
+                            }
+                          }}
+                          className="text-xs text-blue-600 hover:text-blue-700 hover:underline flex items-center gap-1"
+                        >
+                          <RefreshCw className="h-3 w-3" />
+                          Sync Numbers
+                        </button>
+                      </div>
                       <p className="text-xs text-muted-foreground">
-                        Only Twilio and Commio numbers can send SMS messages
+                        Only Twilio and Commio numbers can send SMS messages. Click "Sync Numbers" to refresh from provider.
                       </p>
                       
                       {/* Provider Filter */}
