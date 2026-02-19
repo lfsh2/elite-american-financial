@@ -2566,33 +2566,50 @@ export default function SmsCampaigns() {
                       );
                     })()}
                     
-                    <div className="bg-gray-50 rounded-lg p-4">
-                      <Label className="text-sm font-medium">Preview</Label>
-                      <div className="mt-2 p-3 bg-white rounded border text-sm">
-                        {(() => {
-                          let preview = newCampaign.messageTemplate
-                            .replace(/\{\{firstName\}\}/g, 'John')
-                            .replace(/\{first_name\}/g, 'John')
-                            .replace(/\{\{lastName\}\}/g, 'Doe')
-                            .replace(/\{last_name\}/g, 'Doe')
-                            .replace(/\{\{phoneNumber\}\}/g, '+1234567890')
-                            .replace(/\{phone_number\}/g, '+1234567890')
-                            .replace(/\{phone\}/g, '+1234567890');
-                          
-                          // Replace custom variables with their default values
-                          // Supports both {variable} and ${variable} formats
-                          Object.entries(newCampaign.customVariables).forEach(([key, value]) => {
-                            if (value) {
-                              preview = preview.replace(new RegExp(`\\$?\\{${key}\\}`, 'g'), value);
-                            }
-                          });
-                          
-                          return preview || 'Your message preview will appear here...';
-                        })()}
+                    {/* Live Preview - Styled like a phone message */}
+                    <div className="bg-gradient-to-br from-gray-100 to-gray-50 rounded-xl p-4 border">
+                      <div className="flex items-center justify-between mb-3">
+                        <Label className="text-sm font-semibold text-gray-700">Live Preview</Label>
+                        <span className="text-xs text-gray-500">
+                          Characters: <span className={newCampaign.messageTemplate.length > 160 ? 'text-amber-600 font-medium' : ''}>{newCampaign.messageTemplate.length}</span> &nbsp;|&nbsp; 
+                          Segments: <span className={Math.ceil(newCampaign.messageTemplate.length / 160) > 1 ? 'text-amber-600 font-medium' : ''}>{Math.ceil(newCampaign.messageTemplate.length / 160) || 0}</span> / 8
+                        </span>
                       </div>
-                      <p className="text-xs text-muted-foreground mt-2">
-                        Characters: {newCampaign.messageTemplate.length} &nbsp; Segments: {Math.ceil(newCampaign.messageTemplate.length / 160) || 0} / 8
-                      </p>
+                      <div className="bg-white rounded-2xl shadow-sm border p-4 relative">
+                        {/* Phone message bubble styling */}
+                        <div className="bg-blue-500 text-white rounded-2xl rounded-br-sm p-3 max-w-[90%] ml-auto">
+                          <p className="text-sm whitespace-pre-wrap">
+                            {(() => {
+                              let preview = newCampaign.messageTemplate
+                                .replace(/\{\{firstName\}\}/g, 'John')
+                                .replace(/\{first_name\}/g, 'John')
+                                .replace(/\{\{lastName\}\}/g, 'Doe')
+                                .replace(/\{last_name\}/g, 'Doe')
+                                .replace(/\{\{phoneNumber\}\}/g, '+1234567890')
+                                .replace(/\{phone_number\}/g, '+1234567890')
+                                .replace(/\{phone\}/g, '+1234567890')
+                                .replace(/\{name\}/g, 'John Doe');
+                              
+                              // Replace custom variables with their default values or sample data
+                              Object.entries(newCampaign.customVariables).forEach(([key, value]) => {
+                                if (value) {
+                                  preview = preview.replace(new RegExp(`\\$?\\{${key}\\}`, 'g'), value);
+                                }
+                              });
+                              
+                              // Add opt-out message if enabled
+                              if (optOutMessageEnabled && optOutMessageText) {
+                                preview += '\n' + optOutMessageText;
+                              }
+                              
+                              return preview || 'Your message preview will appear here...';
+                            })()}
+                          </p>
+                        </div>
+                        <p className="text-[10px] text-gray-400 text-right mt-1">
+                          From: {newCampaign.fromNumber?.split(',')[0]?.trim() || 'Select a number'}
+                        </p>
+                      </div>
                     </div>
 
                     {/* Opt-out Message */}
@@ -2622,42 +2639,58 @@ export default function SmsCampaigns() {
                       />
                     )}
 
-                    {/* Live Preview with opt-out */}
-                    {optOutMessageEnabled && newCampaign.messageTemplate && (
-                      <div className="bg-gray-50 rounded-lg p-3">
-                        <Label className="text-xs font-medium text-gray-600">Live Preview</Label>
-                        <p className="text-sm mt-1 text-gray-800">
-                          {newCampaign.messageTemplate
-                            .replace(/\{first_name\}/g, 'John')
-                            .replace(/\{last_name\}/g, 'Doe')
-                            .replace(/\{phone\}/g, '+1234567890')}
-                          {'\n' + optOutMessageText}
-                        </p>
-                      </div>
-                    )}
-
                     {/* Test Your Message */}
-                    <div className="border-t pt-3 space-y-2">
-                      <Label className="text-sm font-medium">Test Your Message</Label>
+                    <div className="bg-gradient-to-br from-emerald-50 to-teal-50 rounded-xl p-4 border border-emerald-200">
+                      <div className="flex items-center gap-2 mb-3">
+                        <Send className="h-4 w-4 text-emerald-600" />
+                        <Label className="text-sm font-semibold text-emerald-800">Test Your Message</Label>
+                      </div>
+                      <p className="text-xs text-emerald-700 mb-3">Send a test message to verify your campaign before launching.</p>
                       <div className="flex gap-2">
-                        <Input
-                          placeholder="Enter phone number to test"
-                          value={testPhoneNumber}
-                          onChange={(e) => setTestPhoneNumber(e.target.value)}
-                          className="flex-1"
-                        />
+                        <div className="flex-1 relative">
+                          <Input
+                            placeholder="Enter phone number (e.g., +18571234567)"
+                            value={testPhoneNumber}
+                            onChange={(e) => setTestPhoneNumber(e.target.value)}
+                            className="pr-10 border-emerald-300 focus:border-emerald-500"
+                          />
+                          {/* Quick select from user's numbers */}
+                          {phoneNumbers.length > 0 && (
+                            <Select onValueChange={(val) => setTestPhoneNumber(val)}>
+                              <SelectTrigger className="absolute right-1 top-1 h-7 w-7 p-0 border-0 bg-transparent hover:bg-emerald-100 rounded">
+                                <Phone className="h-4 w-4 text-emerald-600" />
+                              </SelectTrigger>
+                              <SelectContent>
+                                <div className="px-2 py-1 text-xs text-gray-500 border-b">Quick select a number</div>
+                                {phoneNumbers.slice(0, 10).map(pn => (
+                                  <SelectItem key={pn.phoneNumber} value={pn.phoneNumber}>
+                                    {pn.phoneNumber}
+                                  </SelectItem>
+                                ))}
+                              </SelectContent>
+                            </Select>
+                          )}
+                        </div>
                         <Button
                           variant="default"
-                          size="sm"
-                          disabled={!testPhoneNumber || !newCampaign.messageTemplate || isSendingTest}
+                          className="bg-emerald-600 hover:bg-emerald-700"
+                          disabled={!testPhoneNumber || !newCampaign.messageTemplate || !newCampaign.fromNumber || isSendingTest}
                           onClick={async () => {
                             setIsSendingTest(true);
                             try {
-                              // First create a temp campaign or use existing
-                              const preview = newCampaign.messageTemplate
-                                .replace(/\{first_name\}/g, 'John')
-                                .replace(/\{last_name\}/g, 'Doe')
+                              // Build preview with merge tags replaced
+                              let preview = newCampaign.messageTemplate
+                                .replace(/\{first_name\}/g, 'Test')
+                                .replace(/\{last_name\}/g, 'User')
+                                .replace(/\{name\}/g, 'Test User')
                                 .replace(/\{phone\}/g, testPhoneNumber);
+                              
+                              // Replace custom variables
+                              Object.entries(newCampaign.customVariables).forEach(([key, value]) => {
+                                if (value) {
+                                  preview = preview.replace(new RegExp(`\\$?\\{${key}\\}`, 'g'), value);
+                                }
+                              });
                               
                               setTestMessagePreview(preview);
                               
@@ -2674,7 +2707,7 @@ export default function SmsCampaigns() {
                               });
                               
                               if (testRes.ok) {
-                                toast({ title: 'Test Sent', description: `Test message sent to ${testPhoneNumber}` });
+                                toast({ title: '✅ Test Sent!', description: `Test message sent to ${testPhoneNumber}` });
                               } else {
                                 const err = await testRes.json();
                                 toast({ title: 'Test Failed', description: err.error || 'Failed to send test', variant: 'destructive' });
@@ -2686,9 +2719,12 @@ export default function SmsCampaigns() {
                             }
                           }}
                         >
-                          {isSendingTest ? <Loader2 className="h-4 w-4 animate-spin" /> : 'Send'}
+                          {isSendingTest ? <Loader2 className="h-4 w-4 animate-spin" /> : <><Send className="h-4 w-4 mr-1" /> Send</>}
                         </Button>
                       </div>
+                      {!newCampaign.fromNumber && (
+                        <p className="text-xs text-amber-600 mt-2">⚠️ Select a "From" number in Step 1 to enable test sending.</p>
+                      )}
                     </div>
 
                     {/* Automated Response */}

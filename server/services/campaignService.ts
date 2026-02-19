@@ -964,6 +964,9 @@ export async function addRecipientsFromContactList(
 export async function startSmsCampaign(
   smsCampaignId: number
 ): Promise<{ success: boolean; message: string }> {
+  // Re-sync campaign counts from recipients before starting/resuming to avoid drift
+  await reconcileCampaignCounts(smsCampaignId);
+
   const [campaign] = await db
     .select()
     .from(smsCampaigns)
@@ -973,7 +976,8 @@ export async function startSmsCampaign(
     return { success: false, message: 'Campaign not found' };
   }
 
-  if (campaign.status !== 'draft' && campaign.status !== 'scheduled') {
+  // Allow resume from paused state; keep original startedAt when resuming
+  if (!['draft', 'scheduled', 'paused'].includes(campaign.status)) {
     return { success: false, message: `Cannot start campaign in ${campaign.status} status` };
   }
 
@@ -1001,7 +1005,7 @@ export async function startSmsCampaign(
     .update(smsCampaigns)
     .set({
       status: 'sending',
-      startedAt: new Date(),
+      startedAt: campaign.startedAt || new Date(),
       updatedAt: new Date(),
     })
     .where(eq(smsCampaigns.id, smsCampaignId));
@@ -1027,6 +1031,9 @@ async function sendCampaignMessages(
   account: any,
   providerCode: ProviderCode
 ): Promise<void> {
+  // Ensure counts are synchronized before sending loop
+  await reconcileCampaignCounts(smsCampaignId);
+
   // Create provider instance
   const providerInstance = providerFactory.create({
     code: providerCode,
@@ -1039,10 +1046,8 @@ async function sendCampaignMessages(
 
   // Get pending recipients in batches
   const batchSize = 100;
-  let offset = 0;
-  let hasMore = true;
 
-  while (hasMore) {
+  while (true) {
     // Check if campaign is still in sending status
     const [currentCampaign] = await db
       .select()
@@ -1062,11 +1067,10 @@ async function sendCampaignMessages(
         eq(campaignRecipients.smsCampaignId, smsCampaignId),
         eq(campaignRecipients.status, 'pending')
       ))
-      .limit(batchSize)
-      .offset(offset);
+      .orderBy(campaignRecipients.id)
+      .limit(batchSize);
 
     if (recipients.length === 0) {
-      hasMore = false;
       break;
     }
 
@@ -1141,20 +1145,50 @@ async function sendCampaignMessages(
       }
     }
 
-    offset += batchSize;
   }
 
   // Mark campaign as completed
-  await db
-    .update(smsCampaigns)
-    .set({
-      status: 'completed',
-      completedAt: new Date(),
-      updatedAt: new Date(),
-    })
-    .where(eq(smsCampaigns.id, smsCampaignId));
+  await reconcileCampaignCounts(smsCampaignId, { status: 'completed', completedAt: new Date() });
 
   console.log(`Campaign ${smsCampaignId} completed`);
+}
+
+/**
+ * Recalculate sent/failed/total counts from campaign_recipients to prevent drift.
+ * Optionally apply extra fields (e.g., status) in the same update.
+ */
+async function reconcileCampaignCounts(
+  smsCampaignId: number,
+  extraFields: Partial<SmsCampaign> = {}
+): Promise<void> {
+  try {
+    const countsResult = await db.execute(sql`
+      SELECT
+        COUNT(*) FILTER (WHERE status IN ('sent', 'delivered')) AS sent_count,
+        COUNT(*) FILTER (WHERE status = 'failed') AS failed_count,
+        COUNT(*) AS total_count
+      FROM campaign_recipients
+      WHERE sms_campaign_id = ${smsCampaignId}
+    `);
+
+    const row = (countsResult as any).rows?.[0] || (countsResult as any)[0] || {};
+    const sentCount = Number(row.sent_count || 0);
+    const failedCount = Number(row.failed_count || 0);
+    const totalCount = Number(row.total_count || 0);
+
+    await db
+      .update(smsCampaigns)
+      .set({
+        sentCount,
+        failedCount,
+        recipientCount: totalCount,
+        updatedAt: new Date(),
+        ...extraFields,
+      })
+      .where(eq(smsCampaigns.id, smsCampaignId));
+  } catch (err) {
+    console.error(`[Campaign] Failed to reconcile counts for campaign ${smsCampaignId}:`, err);
+  }
 }
 
 /**
