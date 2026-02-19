@@ -3263,6 +3263,35 @@ export default function SmsCampaigns() {
                                     <RefreshCw className="mr-2 h-4 w-4" />
                                     Sync Metrics
                                   </DropdownMenuItem>
+                                  {campaign.status === 'paused' && (
+                                    <DropdownMenuItem onClick={async () => {
+                                      try {
+                                        const res = await fetch(`/api/campaigns/sms-campaigns/${campaign.id}/diagnose`, {
+                                          credentials: 'include',
+                                        });
+                                        const data = await res.json();
+                                        if (data.canResume) {
+                                          toast({
+                                            title: '✅ Can Resume',
+                                            description: `${data.pendingRecipients} pending, ${data.phoneNumbers.valid.length} valid numbers`,
+                                          });
+                                        } else {
+                                          toast({
+                                            title: '⚠️ Cannot Resume',
+                                            description: data.resumeMessage,
+                                            variant: 'destructive',
+                                            duration: 10000,
+                                          });
+                                        }
+                                        console.log('[Diagnose]', data);
+                                      } catch (err: any) {
+                                        toast({ title: 'Error', description: err.message, variant: 'destructive' });
+                                      }
+                                    }}>
+                                      <AlertCircle className="mr-2 h-4 w-4" />
+                                      Diagnose Issue
+                                    </DropdownMenuItem>
+                                  )}
                                   {campaign.status === 'completed' && (
                                     <>
                                       <DropdownMenuSeparator />

@@ -561,4 +561,66 @@ export class TwilioProvider implements ICommunicationProvider {
     const analytics = await this.getAnalytics();
     return analytics.metrics;
   }
+
+  /**
+   * Configure webhook URLs for a phone number
+   * Sets the SMS webhook URL so inbound messages are routed to your server
+   */
+  async configureWebhooks(phoneNumber: string, baseUrl: string): Promise<{ success: boolean; error?: string }> {
+    try {
+      // Find the phone number SID
+      const numbers = await this.client.incomingPhoneNumbers.list({
+        phoneNumber,
+        limit: 1,
+      });
+
+      if (numbers.length === 0) {
+        return { success: false, error: `Phone number ${phoneNumber} not found in this account` };
+      }
+
+      const numberSid = numbers[0].sid;
+      
+      // Configure webhook URLs
+      await this.client.incomingPhoneNumbers(numberSid).update({
+        smsUrl: `${baseUrl}/api/webhooks/twilio/inbound-message`,
+        smsMethod: 'POST',
+        statusCallback: `${baseUrl}/api/webhooks/twilio/message-status`,
+        statusCallbackMethod: 'POST',
+      });
+
+      console.log(`[Twilio] Configured webhooks for ${phoneNumber}: ${baseUrl}/api/webhooks/twilio/inbound-message`);
+      return { success: true };
+    } catch (error: any) {
+      console.error(`[Twilio] Failed to configure webhooks for ${phoneNumber}:`, error);
+      return { success: false, error: error.message };
+    }
+  }
+
+  /**
+   * Configure webhooks for ALL phone numbers in the account
+   */
+  async configureAllWebhooks(baseUrl: string): Promise<{ configured: number; failed: number; errors: string[] }> {
+    const numbers = await this.client.incomingPhoneNumbers.list({ limit: 100 });
+    let configured = 0;
+    let failed = 0;
+    const errors: string[] = [];
+
+    for (const num of numbers) {
+      try {
+        await this.client.incomingPhoneNumbers(num.sid).update({
+          smsUrl: `${baseUrl}/api/webhooks/twilio/inbound-message`,
+          smsMethod: 'POST',
+          statusCallback: `${baseUrl}/api/webhooks/twilio/message-status`,
+          statusCallbackMethod: 'POST',
+        });
+        configured++;
+        console.log(`[Twilio] Configured webhooks for ${num.phoneNumber}`);
+      } catch (err: any) {
+        failed++;
+        errors.push(`${num.phoneNumber}: ${err.message}`);
+      }
+    }
+
+    return { configured, failed, errors };
+  }
 }

@@ -1613,7 +1613,13 @@ export async function registerRoutes(app: Express): Promise<Server> {
       console.log(`[BatchSMS] Starting batch: ${recipients.length} recipients, ${phoneNumberConfigs.length} numbers, dripMode=${dripMode}`);
 
       // Update campaign status to 'sending' immediately
+      // Also get total recipient count for proper completion detection
+      let totalCampaignRecipients = recipients.length;
       if (campaignId) {
+        const [campaignData] = await db.select({ recipientCount: smsCampaigns.recipientCount })
+          .from(smsCampaigns).where(eq(smsCampaigns.id, campaignId));
+        totalCampaignRecipients = campaignData?.recipientCount || recipients.length;
+        
         await db.update(smsCampaigns)
           .set({ status: 'sending' })
           .where(eq(smsCampaigns.id, campaignId));
@@ -1630,6 +1636,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
         concurrentPerNumber,
         dripMode,
         messagesPerMinute,
+        totalCampaignRecipients, // Pass total for proper completion detection on resume
       });
 
       // Limit validNumbers in response to first 5 to avoid huge payloads
@@ -1650,6 +1657,101 @@ export async function registerRoutes(app: Express): Promise<Server> {
     } catch (error) {
       console.error('[BatchSMS API] Error:', error);
       return res.status(500).json({ message: "Internal server error" });
+    }
+  });
+
+  // Diagnostic endpoint to check why a campaign is stuck and get resume info
+  app.get("/api/campaigns/sms-campaigns/:campaignId/diagnose", async (req, res) => {
+    try {
+      const campaignId = parseInt(req.params.campaignId);
+      if (isNaN(campaignId)) {
+        return res.status(400).json({ error: "Invalid campaign ID" });
+      }
+
+      // Get campaign details
+      const [campaign] = await db.select().from(smsCampaigns).where(eq(smsCampaigns.id, campaignId));
+      if (!campaign) {
+        return res.status(404).json({ error: "Campaign not found" });
+      }
+
+      // Get recipient counts by status
+      const recipientStats = await db.execute(sql`
+        SELECT status, COUNT(*) as count 
+        FROM campaign_recipients 
+        WHERE sms_campaign_id = ${campaignId} 
+        GROUP BY status
+      `);
+
+      // Parse phone numbers from campaign
+      const campaignNumbers = (campaign.fromNumber || '').split(',').map((n: string) => n.trim()).filter((n: string) => n);
+
+      // Check which numbers are still valid
+      const userId = (req as any).user?.id || 1;
+      const { accounts: userAccounts } = await accountService.getAccountsForUser(userId);
+      
+      const validNumbers: string[] = [];
+      const invalidNumbers: string[] = [];
+      
+      for (const num of campaignNumbers) {
+        let found = false;
+        for (const account of userAccounts) {
+          const accountId = parseInt(account.id.replace('acc_', ''));
+          if (isNaN(accountId)) continue;
+          
+          const [phoneRecord] = await db.select()
+            .from(accountPhoneNumbers)
+            .where(and(
+              eq(accountPhoneNumbers.accountId, accountId),
+              eq(accountPhoneNumbers.phoneNumber, num)
+            ));
+          
+          if (phoneRecord && phoneRecord.status !== 'released') {
+            validNumbers.push(num);
+            found = true;
+            break;
+          }
+        }
+        if (!found) {
+          invalidNumbers.push(num);
+        }
+      }
+
+      // Get pending recipient count
+      const [pendingCount] = await db.select({ count: sql<number>`count(*)` })
+        .from(campaignRecipients)
+        .where(and(
+          eq(campaignRecipients.smsCampaignId, campaignId),
+          eq(campaignRecipients.status, 'pending')
+        ));
+
+      const canResume = validNumbers.length > 0 && (pendingCount?.count || 0) > 0;
+
+      res.json({
+        campaign: {
+          id: campaign.id,
+          name: campaign.name,
+          status: campaign.status,
+          sentCount: campaign.sentCount,
+          failedCount: campaign.failedCount,
+          recipientCount: campaign.recipientCount,
+        },
+        recipientStats: recipientStats.rows,
+        pendingRecipients: pendingCount?.count || 0,
+        phoneNumbers: {
+          total: campaignNumbers.length,
+          valid: validNumbers,
+          invalid: invalidNumbers,
+        },
+        canResume,
+        resumeMessage: canResume 
+          ? `Campaign can be resumed with ${validNumbers.length} valid numbers and ${pendingCount?.count} pending recipients`
+          : invalidNumbers.length > 0 
+            ? `Cannot resume: ${invalidNumbers.length} phone numbers are no longer valid (released or not found)`
+            : `Cannot resume: No pending recipients`,
+      });
+    } catch (error: any) {
+      console.error("Error diagnosing campaign:", error);
+      res.status(500).json({ error: error.message || "Failed to diagnose campaign" });
     }
   });
 
@@ -3722,6 +3824,113 @@ export async function registerRoutes(app: Express): Promise<Server> {
     } catch (error: any) {
       console.error("Error syncing all accounts:", error);
       res.status(500).json({ error: error.message || "Failed to sync accounts" });
+    }
+  });
+
+  // Configure Twilio webhook URLs for all phone numbers in an account
+  // This sets up inbound SMS and status callback URLs
+  app.post("/api/accounts/:id/configure-webhooks", async (req, res) => {
+    try {
+      const { id } = req.params;
+      const { baseUrl } = req.body;
+      
+      // Determine the base URL - use provided or detect from request
+      const webhookBaseUrl = baseUrl || `${req.protocol}://${req.get('host')}`;
+      
+      const accountId = parseInt(id.replace('acc_', ''));
+      if (isNaN(accountId)) {
+        return res.status(400).json({ error: "Invalid account ID" });
+      }
+
+      // Get the account and check if it's Twilio
+      const account = await accountService.getAccountById(accountId);
+      if (!account) {
+        return res.status(404).json({ error: "Account not found" });
+      }
+
+      const [provider] = await db.select().from(providers).where(eq(providers.id, account.providerId));
+      if (provider?.code !== 'twilio') {
+        return res.status(400).json({ error: "Webhook configuration is only supported for Twilio accounts" });
+      }
+
+      // Get Twilio provider instance
+      const twilioProvider = await accountService.getProviderForAccount(accountId);
+      if (!twilioProvider || twilioProvider.code !== 'twilio') {
+        return res.status(400).json({ error: "Could not get Twilio provider for this account" });
+      }
+
+      // Configure webhooks for all numbers
+      const result = await (twilioProvider as any).configureAllWebhooks(webhookBaseUrl);
+
+      res.json({
+        success: true,
+        message: `Configured webhooks for ${result.configured} phone numbers`,
+        configured: result.configured,
+        failed: result.failed,
+        errors: result.errors,
+        webhookUrl: `${webhookBaseUrl}/api/webhooks/twilio/inbound-message`,
+      });
+    } catch (error: any) {
+      console.error("Error configuring webhooks:", error);
+      res.status(500).json({ error: error.message || "Failed to configure webhooks" });
+    }
+  });
+
+  // Configure webhooks for ALL Twilio accounts at once
+  app.post("/api/twilio/configure-all-webhooks", async (req, res) => {
+    try {
+      const { baseUrl } = req.body;
+      const webhookBaseUrl = baseUrl || `${req.protocol}://${req.get('host')}`;
+      const userId = (req as any).user?.id || 1;
+
+      const { accounts: userAccounts } = await accountService.getAccountsForUser(userId);
+      const twilioAccounts = userAccounts.filter(acc => acc.provider === 'twilio');
+
+      if (twilioAccounts.length === 0) {
+        return res.status(400).json({ error: "No Twilio accounts found" });
+      }
+
+      let totalConfigured = 0;
+      let totalFailed = 0;
+      const allErrors: string[] = [];
+      const accountResults: Array<{ accountId: number; accountName: string; configured: number; failed: number }> = [];
+
+      for (const account of twilioAccounts) {
+        const accountId = parseInt(account.id.replace('acc_', ''));
+        if (isNaN(accountId)) continue;
+
+        try {
+          const twilioProvider = await accountService.getProviderForAccount(accountId);
+          if (!twilioProvider || twilioProvider.code !== 'twilio') continue;
+
+          const result = await (twilioProvider as any).configureAllWebhooks(webhookBaseUrl);
+          totalConfigured += result.configured;
+          totalFailed += result.failed;
+          allErrors.push(...result.errors);
+          
+          accountResults.push({
+            accountId,
+            accountName: account.name,
+            configured: result.configured,
+            failed: result.failed,
+          });
+        } catch (err: any) {
+          allErrors.push(`Account ${account.name}: ${err.message}`);
+        }
+      }
+
+      res.json({
+        success: true,
+        message: `Configured webhooks for ${totalConfigured} phone numbers across ${twilioAccounts.length} Twilio accounts`,
+        totalConfigured,
+        totalFailed,
+        accounts: accountResults,
+        errors: allErrors.slice(0, 10), // Limit errors in response
+        webhookUrl: `${webhookBaseUrl}/api/webhooks/twilio/inbound-message`,
+      });
+    } catch (error: any) {
+      console.error("Error configuring all webhooks:", error);
+      res.status(500).json({ error: error.message || "Failed to configure webhooks" });
     }
   });
 

@@ -37,6 +37,9 @@ interface BatchSendOptions {
   messagesPerMinute?: number; // Rate limit per number (default 30 = safe)
   startTime?: Date; // When to start sending (for scheduled campaigns)
   spreadOverHours?: number; // Spread messages over X hours
+  
+  // For resume: total campaign recipients (not just pending)
+  totalCampaignRecipients?: number;
 }
 
 interface BatchProgress {
@@ -156,11 +159,18 @@ class BatchSmsService {
     body: string
   ): Promise<{ success: boolean; messageSid?: string; error?: string }> {
     try {
-      const message = await client.messages.create({
+      // Add timeout to prevent hanging - 30 second timeout
+      const timeoutPromise = new Promise<never>((_, reject) => 
+        setTimeout(() => reject(new Error('Twilio API timeout (30s)')), 30000)
+      );
+      
+      const messagePromise = client.messages.create({
         from,
         to,
         body,
       });
+      
+      const message = await Promise.race([messagePromise, timeoutPromise]);
       return { success: true, messageSid: message.sid };
     } catch (error: any) {
       return { success: false, error: error.message || 'Twilio send failed' };
@@ -181,6 +191,10 @@ class BatchSmsService {
       const thinqAccountId = accountId || apiKey;
       const url = `https://api.thinq.com/account/${thinqAccountId}/product/origination/sms/send`;
       
+      // Add AbortController for 30-second timeout to prevent hanging
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 30000);
+      
       console.log(`[BatchSMS] Commio request: URL account=${thinqAccountId}, auth user=${apiKey}`);
       
       const response = await fetch(url, {
@@ -194,7 +208,10 @@ class BatchSmsService {
           to_did: to.replace(/[^\d]/g, ''),
           message: body,
         }),
+        signal: controller.signal,
       });
+      
+      clearTimeout(timeoutId);
 
       const responseText = await response.text();
       console.log(`[BatchSMS] Commio response: ${response.status} - ${responseText.substring(0, 200)}`);
@@ -210,6 +227,10 @@ class BatchSmsService {
         return { success: false, error: `Commio error (${response.status}): ${responseText}` };
       }
     } catch (error: any) {
+      // Handle abort/timeout specifically
+      if (error.name === 'AbortError') {
+        return { success: false, error: 'Commio API timeout (30s)' };
+      }
       return { success: false, error: error.message || 'Commio send failed' };
     }
   }
@@ -297,9 +318,10 @@ class BatchSmsService {
       if (options.campaignId) {
         try {
           // Check if all recipients have been processed (sent + failed >= total)
-          // If so, mark as completed regardless of current status
+          // Use totalCampaignRecipients if provided (for resume), otherwise use recipients.length
+          const totalCampaignRecipients = options.totalCampaignRecipients || options.recipients.length;
           const totalProcessed = baselineSent + result.sent + baselineFailed + result.failed;
-          const isFullyComplete = totalProcessed >= options.recipients.length;
+          const isFullyComplete = totalProcessed >= totalCampaignRecipients;
           
           // Update counts using baseline + batch (periodic updates already wrote baseline + partial)
           // Final update sets the definitive total
@@ -311,7 +333,7 @@ class BatchSmsService {
               completedAt: isFullyComplete ? new Date() : undefined,
             })
             .where(eq(smsCampaigns.id, options.campaignId));
-          console.log(`[BatchSMS] Campaign ${options.campaignId} ${isFullyComplete ? 'COMPLETED' : 'paused'}: ${baselineSent + result.sent} total sent, ${baselineFailed + result.failed} total failed (this batch: +${result.sent}/+${result.failed}, total processed: ${totalProcessed}/${options.recipients.length})`);
+          console.log(`[BatchSMS] Campaign ${options.campaignId} ${isFullyComplete ? 'COMPLETED' : 'paused'}: ${baselineSent + result.sent} total sent, ${baselineFailed + result.failed} total failed (this batch: +${result.sent}/+${result.failed}, total processed: ${totalProcessed}/${totalCampaignRecipients})`);
 
           // After 30s, recount delivered messages from DB (webhooks may have updated statuses)
           const campaignId = options.campaignId;
@@ -354,18 +376,48 @@ class BatchSmsService {
       // Clean up job after 5 minutes
       setTimeout(() => activeBatchJobs.delete(jobId), 5 * 60 * 1000);
     }).catch(async (err) => {
-      console.error('[BatchSMS] Batch job failed:', err);
+      console.error('[BatchSMS] Batch job error caught:', err);
+      console.error('[BatchSMS] Error stack:', err.stack);
       
-      // On error, set campaign to paused (not failed) so user can resume
+      // Get current progress to see how far we got
+      const currentProgress = activeBatchJobs.get(jobId);
+      const sentSoFar = baselineSent + (currentProgress?.sent || 0);
+      const failedSoFar = baselineFailed + (currentProgress?.failed || 0);
+      const totalProcessed = sentSoFar + failedSoFar;
+      const totalCampaignRecipients = options.totalCampaignRecipients || options.recipients.length;
+      
+      console.error(`[BatchSMS] Progress at error: sent=${sentSoFar}, failed=${failedSoFar}, total processed=${totalProcessed}/${totalCampaignRecipients}`);
+      
+      // BULLETPROOF: Check if we actually completed despite the error
+      // This can happen if the error occurred in cleanup/logging code after all messages were sent
+      const isActuallyComplete = totalProcessed >= totalCampaignRecipients;
+      
       if (options.campaignId) {
         try {
-          await db.update(smsCampaigns)
-            .set({ 
-              status: 'paused',
-              updatedAt: new Date(),
-            })
-            .where(eq(smsCampaigns.id, options.campaignId));
-          console.log(`[BatchSMS] Campaign ${options.campaignId} set to paused due to error: ${err.message}`);
+          if (isActuallyComplete) {
+            // Campaign actually finished - mark as completed, not paused!
+            await db.update(smsCampaigns)
+              .set({ 
+                status: 'completed',
+                sentCount: sentSoFar,
+                failedCount: failedSoFar,
+                completedAt: new Date(),
+                updatedAt: new Date(),
+              })
+              .where(eq(smsCampaigns.id, options.campaignId));
+            console.log(`[BatchSMS] Campaign ${options.campaignId} COMPLETED despite error (all ${totalProcessed} recipients processed)`);
+          } else {
+            // Campaign didn't finish - save progress and pause for resume
+            await db.update(smsCampaigns)
+              .set({ 
+                status: 'paused',
+                sentCount: sentSoFar,
+                failedCount: failedSoFar,
+                updatedAt: new Date(),
+              })
+              .where(eq(smsCampaigns.id, options.campaignId));
+            console.log(`[BatchSMS] Campaign ${options.campaignId} paused due to error: ${err.message} (progress: ${totalProcessed}/${totalCampaignRecipients})`);
+          }
         } catch (dbErr) {
           console.error('[BatchSMS] Failed to update campaign status on error:', dbErr);
         }
@@ -607,6 +659,13 @@ class BatchSmsService {
       // Send sequentially with per-number delay enforcement
       for (let i = 0; i < allMessages.length; i++) {
         // Check if campaign is paused every 50 messages (reduced frequency to avoid DB overhead)
+        // Also log heartbeat every 100 messages to help diagnose stalls
+        if (i % 100 === 0) {
+          const elapsed = Math.round((Date.now() - startTime) / 1000);
+          const rate = i > 0 ? Math.round((i / elapsed) * 60) : 0;
+          console.log(`[BatchSMS] Heartbeat: ${i}/${allMessages.length} (${Math.round(i/allMessages.length*100)}%) - ${progress.sent} sent, ${progress.failed} failed - ${elapsed}s elapsed, ~${rate} msgs/min`);
+        }
+        
         if (campaignId && i % 50 === 0) {
           try {
             const [campaign] = await db
