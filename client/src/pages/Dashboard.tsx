@@ -205,62 +205,62 @@ export default function Dashboard() {
   }, [analytics, liveStats]);
 
   // Chart data for the weekly view - uses server dailyChartData (includes campaigns + sms_messages)
+  // Use the last 7 days from server data directly
   const weeklyChartData = useMemo(() => {
     const daily = accountData?.dailyChartData || [];
-    const now = new Date();
     
-    return Array.from({ length: 7 }, (_, i) => {
-      const date = new Date(now);
-      date.setDate(now.getDate() - (6 - i));
-      const dateStr = date.toISOString().split('T')[0];
-      
-      const dayData = daily.find((d: any) => String(d.date).startsWith(dateStr));
+    // Get last 7 days from server data (already in correct order)
+    const last7Days = daily.slice(-7);
+    
+    return last7Days.map((d: any) => {
+      // Parse date and display in user's local timezone
+      const date = new Date(d.date);
       return {
         name: `${date.toLocaleDateString('en-US', { weekday: 'short' })} ${date.getMonth() + 1}/${date.getDate()}`,
-        messages: dayData ? dayData.outbound + dayData.inbound : 0,
+        messages: (d.outbound || 0) + (d.inbound || 0),
         calls: 0
       };
     });
   }, [accountData]);
   
-  // Monthly trend data - aggregates dailyChartData by month
+  // Monthly trend data - aggregates dailyChartData by month (using UTC)
   const sixMonthTrendData = useMemo(() => {
     const daily = accountData?.dailyChartData || [];
     const now = new Date();
+    const currentYear = now.getUTCFullYear();
+    const currentMonth = now.getUTCMonth();
     
     return Array.from({ length: 6 }, (_, i) => {
-      const monthDate = new Date(now.getFullYear(), now.getMonth() - (5 - i), 1);
-      const nextMonth = new Date(now.getFullYear(), now.getMonth() - (4 - i), 1);
+      const monthDate = new Date(Date.UTC(currentYear, currentMonth - (5 - i), 1));
+      const nextMonth = new Date(Date.UTC(currentYear, currentMonth - (4 - i), 1));
       
       const monthTotal = daily
         .filter((d: any) => {
-          const dd = new Date(d.date);
+          const dd = new Date(d.date + 'T00:00:00Z');
           return dd >= monthDate && dd < nextMonth;
         })
         .reduce((sum: number, d: any) => sum + (d.outbound || 0) + (d.inbound || 0), 0);
       
       return {
-        name: monthDate.toLocaleDateString('en-US', { month: 'short' }),
+        name: monthDate.toLocaleDateString('en-US', { month: 'short', timeZone: 'UTC' }),
         messages: monthTotal,
         calls: 0
       };
     });
   }, [accountData]);
 
-  // Bar chart data - uses server dailyChartData for last 14 days
+  // Bar chart data - uses server dailyChartData for last 14 days (UTC)
   const barChartData = useMemo(() => {
     const daily = accountData?.dailyChartData || [];
-    const now = new Date();
     
-    return Array.from({ length: 14 }, (_, i) => {
-      const date = new Date(now);
-      date.setDate(now.getDate() - (13 - i));
-      const dateStr = date.toISOString().split('T')[0];
-      
-      const dayData = daily.find((d: any) => String(d.date).startsWith(dateStr));
+    // Get last 14 days from server data directly
+    const last14Days = daily.slice(-14);
+    
+    return last14Days.map((d: any) => {
+      const date = new Date(d.date + 'T00:00:00Z');
       return {
-        name: date.getDate().toString(),
-        value: dayData ? dayData.outbound + dayData.inbound : 0
+        name: date.getUTCDate().toString(),
+        value: (d.outbound || 0) + (d.inbound || 0)
       };
     });
   }, [accountData]);

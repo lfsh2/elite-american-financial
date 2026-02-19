@@ -357,22 +357,30 @@ class DataService {
       const counts = (dbMetrics as any).rows?.[0] || (dbMetrics as any)[0] || {};
       const toNum = (v: any) => parseInt(String(v || '0'), 10);
 
-      // ── Step 1b: Get campaign sent/failed counts (messages tracked in sms_campaigns but NOT in sms_messages) ──
+      // ── Step 1b: Get campaign sent/failed counts for today, week, and month ──
+      // Use created_at as the date when campaign was actually run
       const campaignMetrics = await db.execute(sql`
         SELECT
-          COALESCE(SUM(sent_count), 0) AS campaign_sent_today,
-          COALESCE(SUM(failed_count), 0) AS campaign_failed_today,
-          COALESCE(SUM(sent_count + failed_count), 0) AS campaign_total_today
+          COALESCE(SUM(sent_count) FILTER (WHERE created_at >= CURRENT_DATE), 0) AS campaign_sent_today,
+          COALESCE(SUM(failed_count) FILTER (WHERE created_at >= CURRENT_DATE), 0) AS campaign_failed_today,
+          COALESCE(SUM(sent_count) FILTER (WHERE created_at >= date_trunc('week', CURRENT_DATE)), 0) AS campaign_sent_week,
+          COALESCE(SUM(failed_count) FILTER (WHERE created_at >= date_trunc('week', CURRENT_DATE)), 0) AS campaign_failed_week,
+          COALESCE(SUM(sent_count) FILTER (WHERE created_at >= date_trunc('month', CURRENT_DATE)), 0) AS campaign_sent_month,
+          COALESCE(SUM(failed_count) FILTER (WHERE created_at >= date_trunc('month', CURRENT_DATE)), 0) AS campaign_failed_month
         FROM sms_campaigns
         WHERE status IN ('sending', 'completed', 'paused')
-          AND (started_at >= CURRENT_DATE OR updated_at >= CURRENT_DATE)
           AND sent_count > 0
       `);
       const campaignCounts = (campaignMetrics as any).rows?.[0] || (campaignMetrics as any)[0] || {};
       const campaignSentToday = toNum(campaignCounts.campaign_sent_today);
       const campaignFailedToday = toNum(campaignCounts.campaign_failed_today);
+      const campaignSentWeek = toNum(campaignCounts.campaign_sent_week);
+      const campaignFailedWeek = toNum(campaignCounts.campaign_failed_week);
+      const campaignSentMonth = toNum(campaignCounts.campaign_sent_month);
+      const campaignFailedMonth = toNum(campaignCounts.campaign_failed_month);
 
       // ── Step 1c: Get daily message breakdown for charts (sms_messages + campaigns) ──
+      // Use created_at for campaigns (when they were actually run)
       const dailyBreakdown = await db.execute(sql`
         SELECT d::date AS day,
           COALESCE(msg.outbound, 0) AS msg_outbound,
@@ -391,10 +399,7 @@ class DataService {
           FROM sms_campaigns
           WHERE status IN ('sending', 'completed', 'paused')
             AND sent_count > 0
-            AND (
-              (started_at >= d::date AND started_at < d::date + INTERVAL '1 day')
-              OR (started_at IS NULL AND updated_at >= d::date AND updated_at < d::date + INTERVAL '1 day')
-            )
+            AND created_at >= d::date AND created_at < d::date + INTERVAL '1 day'
         ) camp ON true
         ORDER BY d
       `);
@@ -455,27 +460,26 @@ class DataService {
       // Return accurate DB counts to be applied AFTER aggregation (avoids double-counting)
       // Include campaign sent_count for messages tracked in sms_campaigns but not in sms_messages
       // Campaign sent_count = accepted by provider (treat as "sent"), failed_count = provider rejected
-      const campaignTotal = campaignSentToday + campaignFailedToday;
       const dbCounts: Record<string, number> = {
         outbound_today: toNum(counts.outbound_today) + campaignSentToday,
         inbound_today: toNum(counts.inbound_today),
         outbound_yesterday: toNum(counts.outbound_yesterday),
         inbound_yesterday: toNum(counts.inbound_yesterday),
-        outbound_week: toNum(counts.outbound_week) + campaignSentToday,
+        outbound_week: toNum(counts.outbound_week) + campaignSentWeek,
         outbound_last_week: toNum(counts.outbound_last_week),
-        outbound_month: toNum(counts.outbound_month) + campaignSentToday,
+        outbound_month: toNum(counts.outbound_month) + campaignSentMonth,
         outbound_last_month: toNum(counts.outbound_last_month),
         // For delivery rate: campaign sent_count = "sent to provider" (same as sms_messages "sent" status)
         // campaign failed_count = "provider rejected" (same as sms_messages "failed" status)
-        delivered_month: toNum(counts.delivered_month) + campaignSentToday,
-        failed_month: toNum(counts.failed_month) + campaignFailedToday,
-        total_today: toNum(counts.total_today) + campaignTotal,
+        delivered_month: toNum(counts.delivered_month) + campaignSentMonth,
+        failed_month: toNum(counts.failed_month) + campaignFailedMonth,
+        total_today: toNum(counts.total_today) + campaignSentToday + campaignFailedToday,
         total_yesterday: toNum(counts.total_yesterday),
-        total_week: toNum(counts.total_week) + campaignTotal,
-        total_month: toNum(counts.total_month) + campaignTotal,
-        total_all: toNum(counts.total_all) + campaignTotal,
+        total_week: toNum(counts.total_week) + campaignSentWeek + campaignFailedWeek,
+        total_month: toNum(counts.total_month) + campaignSentMonth + campaignFailedMonth,
+        total_all: toNum(counts.total_all) + campaignSentMonth + campaignFailedMonth,
       };
-      console.log(`[DataService] DB counts: sentToday=${dbCounts.outbound_today} (msgs=${toNum(counts.outbound_today)}, campaigns=${campaignSentToday}), sentMonth=${dbCounts.outbound_month}, deliveredMonth=${dbCounts.delivered_month}, failedMonth=${dbCounts.failed_month}`);
+      console.log(`[DataService] DB counts: sentToday=${dbCounts.outbound_today}, sentWeek=${dbCounts.outbound_week} (campaigns=${campaignSentWeek}), sentMonth=${dbCounts.outbound_month} (campaigns=${campaignSentMonth})`);
 
       // ── Step 5: Supplement phone numbers from imported numbers (for Commio accounts) ──
       for (const accAnalytics of accountAnalytics) {
