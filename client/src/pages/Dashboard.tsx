@@ -47,6 +47,7 @@ import {
   TableRow,
 } from '@/components/ui/table';
 import { AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, BarChart, Bar, LineChart, Line } from 'recharts';
+import USStateHeatmap from '@/components/USStateHeatmap';
 
 // Mini sparkline component
 const MiniSparkline = ({ data, color, trend }: { data: number[], color: string, trend: 'up' | 'down' }) => {
@@ -81,6 +82,9 @@ export default function Dashboard() {
   // Live sending stats from in-memory active batch jobs (polls every 5 seconds)
   const [liveStats, setLiveStats] = useState<{ totalSent: number; totalFailed: number; totalInProgress: number; activeCampaigns: number } | null>(null);
   
+  // Heatmap data - geographic distribution of messages by state
+  const [heatmapData, setHeatmapData] = useState<{ state: string; count: number }[]>([]);
+  
   useEffect(() => {
     const fetchLiveStats = async () => {
       try {
@@ -94,6 +98,20 @@ export default function Dashboard() {
     fetchLiveStats();
     const interval = setInterval(fetchLiveStats, 5000);
     return () => clearInterval(interval);
+  }, []);
+
+  // Fetch heatmap data
+  useEffect(() => {
+    const fetchHeatmap = async () => {
+      try {
+        const res = await fetch('/api/dashboard/heatmap');
+        if (res.ok) {
+          const data = await res.json();
+          setHeatmapData(data.data || []);
+        }
+      } catch { /* ignore */ }
+    };
+    fetchHeatmap();
   }, []);
 
   // Transform account data to analytics format for compatibility
@@ -527,9 +545,9 @@ export default function Dashboard() {
 
           {/* Main Content Row */}
           <div className="grid gap-6 lg:grid-cols-3">
-            {/* Large Area Chart */}
-            <Card className="lg:col-span-2 bg-white">
-              <CardHeader className="flex flex-row items-center justify-between">
+            {/* Large Area Chart - stretches to match sidebar height */}
+            <Card className="lg:col-span-2 bg-white flex flex-col">
+              <CardHeader className="flex flex-row items-center justify-between flex-shrink-0">
                 <div>
                   <CardTitle className="text-base font-medium">
                     Communication Activity - {chartTimeRange === 'weekly' ? 'Weekly' : 'Monthly'}
@@ -557,13 +575,13 @@ export default function Dashboard() {
                   </Button>
                 </div>
               </CardHeader>
-              <CardContent>
+              <CardContent className="flex-1 min-h-0">
                 {loading ? (
-                  <div className="h-[300px] flex items-center justify-center">
+                  <div className="h-full min-h-[300px] flex items-center justify-center">
                     <RefreshCw className="w-8 h-8 animate-spin text-gray-400" />
                   </div>
                 ) : (
-                  <div className="h-[300px]">
+                  <div className="h-full min-h-[300px]">
                     <ResponsiveContainer width="100%" height="100%">
                       <AreaChart data={chartTimeRange === 'weekly' ? weeklyChartData : sixMonthTrendData} margin={{ top: 10, right: 10, left: 0, bottom: 0 }}>
                         <defs>
@@ -590,16 +608,16 @@ export default function Dashboard() {
             </Card>
 
             {/* Side Cards */}
-            <div className="space-y-6">
+            <div className="space-y-3">
               {/* Subscriptions / Messages Card */}
               <Card className="bg-white">
-                <CardContent className="p-6">
+                <CardContent className="p-4">
                   <div className="text-sm text-muted-foreground">Outbound Today</div>
-                  <p className="text-3xl font-bold mt-1">{formatNumber(stats.messagesToday)}</p>
+                  <p className="text-2xl font-bold mt-1">{formatNumber(stats.messagesToday)}</p>
                   <p className="text-xs text-green-600 mt-1">
                     {stats.messageGrowth >= 0 ? '+' : ''}{stats.messageGrowth}% vs yesterday
                   </p>
-                  <div className="mt-4 h-24">
+                  <div className="mt-2 h-16">
                     <ResponsiveContainer width="100%" height="100%">
                       <BarChart data={barChartData}>
                         <Bar dataKey="value" fill="#f97316" radius={[2, 2, 0, 0]} />
@@ -611,13 +629,13 @@ export default function Dashboard() {
 
               {/* Voice Calls Card */}
               <Card className="bg-white">
-                <CardContent className="p-6">
+                <CardContent className="p-4">
                   <div className="text-sm text-muted-foreground">Voice Calls Today</div>
-                  <p className="text-3xl font-bold mt-1">{formatNumber(stats.totalCallsToday)}</p>
+                  <p className="text-2xl font-bold mt-1">{formatNumber(stats.totalCallsToday)}</p>
                   <p className="text-xs text-green-600 mt-1">
                     {stats.callGrowth >= 0 ? '+' : ''}{stats.callGrowth}% vs yesterday
                   </p>
-                  <div className="mt-4 h-24">
+                  <div className="mt-2 h-16">
                     <ResponsiveContainer width="100%" height="100%">
                       <BarChart data={barChartData.slice(0, 8)}>
                         <Bar dataKey="value" fill="#14b8a6" radius={[2, 2, 0, 0]} />
@@ -627,6 +645,51 @@ export default function Dashboard() {
                 </CardContent>
               </Card>
             </div>
+          </div>
+
+          {/* Message Heatmap - Compact Row */}
+          <div className="grid gap-6 lg:grid-cols-2">
+            <Card className="bg-white">
+              <CardContent className="p-4">
+                <USStateHeatmap 
+                  data={heatmapData}
+                  title="Message Heatmap"
+                  subtitle="Geographic distribution across states"
+                />
+              </CardContent>
+            </Card>
+            
+            {/* Delivery Stats Card */}
+            <Card className="bg-white">
+              <CardHeader className="pb-2">
+                <CardTitle className="text-base font-medium">Top Sending States</CardTitle>
+                <CardDescription>Message volume by state</CardDescription>
+              </CardHeader>
+              <CardContent>
+                <div className="space-y-3">
+                  {heatmapData
+                    .sort((a, b) => b.count - a.count)
+                    .slice(0, 8)
+                    .map((item, i) => (
+                      <div key={item.state} className="flex items-center justify-between">
+                        <div className="flex items-center gap-3">
+                          <span className="text-sm font-medium w-6">{i + 1}.</span>
+                          <span className="text-sm font-bold text-red-600">{item.state}</span>
+                        </div>
+                        <div className="flex items-center gap-2">
+                          <div className="w-24 h-2 bg-gray-100 rounded-full overflow-hidden">
+                            <div 
+                              className="h-full bg-red-500 rounded-full" 
+                              style={{ width: `${(item.count / (heatmapData[0]?.count || 1)) * 100}%` }}
+                            />
+                          </div>
+                          <span className="text-sm text-muted-foreground w-16 text-right">{item.count.toLocaleString()}</span>
+                        </div>
+                      </div>
+                    ))}
+                </div>
+              </CardContent>
+            </Card>
           </div>
 
           {/* Bottom Row */}
