@@ -108,6 +108,7 @@ interface SmsCampaign {
   fromNumber: string;
   status: string;
   recipientCount: number;
+  recipientLimit?: number;
   sentCount: number;
   deliveredCount: number;
   failedCount: number;
@@ -2462,7 +2463,7 @@ export default function SmsCampaigns() {
                       </div>
                       <Textarea
                         id="messageTemplate"
-                        placeholder="Hi {first_name}, quick update - we finalized details on an option around ${dollar_amount}. Please call me back here as soon as you can. (857) 800-8971"
+                        placeholder="Hi {first_name}, quick update - we finalized details on an option around {{debt_loads}}. Please call me back here as soon as you can. 562-606-5539"
                         className="min-h-[150px]"
                         value={newCampaign.messageTemplate}
                         onChange={(e) => setNewCampaign(prev => ({ ...prev, messageTemplate: e.target.value }))}
@@ -2481,6 +2482,15 @@ export default function SmsCampaigns() {
                               {tag}
                             </button>
                           ))}
+                          {/* Debt loads with automatic $ formatting */}
+                          <button
+                            type="button"
+                            className="bg-green-50 px-2 py-1 rounded text-green-700 text-xs border border-green-300 hover:bg-green-100 transition-colors font-medium"
+                            onClick={() => setNewCampaign(prev => ({ ...prev, messageTemplate: prev.messageTemplate + '{{debt_loads}}' }))}
+                            title="Automatically formats with $ sign"
+                          >
+                            {'{{debt_loads}}'} 💰
+                          </button>
                         </div>
                         
                         {/* Custom fields from uploaded contacts OR selected contact list */}
