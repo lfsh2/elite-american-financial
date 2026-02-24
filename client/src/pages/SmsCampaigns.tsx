@@ -1538,27 +1538,27 @@ export default function SmsCampaigns() {
     }
   };
 
-  // Cancel campaign (immediate stop - use this for actively sending campaigns)
+  // Pause campaign (stops sending but can be resumed)
   const handleCancelCampaign = async (campaignId: number) => {
     try {
-      const res = await fetch(`/api/campaigns/sms-campaigns/${campaignId}/cancel`, {
+      const res = await fetch(`/api/campaigns/sms-campaigns/${campaignId}/pause`, {
         method: 'POST',
         credentials: 'include',
       });
 
-      if (!res.ok) throw new Error('Failed to cancel campaign');
+      if (!res.ok) throw new Error('Failed to pause campaign');
 
       toast({
-        title: 'Campaign Cancelled',
-        description: 'Campaign will stop within seconds',
+        title: 'Campaign Paused',
+        description: 'Campaign paused - you can resume it anytime',
       });
 
       fetchData();
     } catch (error: any) {
-      console.error('Error cancelling campaign:', error);
+      console.error('Error pausing campaign:', error);
       toast({
         title: 'Error',
-        description: error.message || 'Failed to cancel campaign',
+        description: error.message || 'Failed to pause campaign',
         variant: 'destructive'
       });
     }
@@ -2492,6 +2492,15 @@ export default function SmsCampaigns() {
                           >
                             {'{{debt_loads}}'} 💰
                           </button>
+                          {/* Total Debt Amount with automatic $ formatting */}
+                          <button
+                            type="button"
+                            className="bg-green-50 px-2 py-1 rounded text-green-700 text-xs border border-green-300 hover:bg-green-100 transition-colors font-medium"
+                            onClick={() => setNewCampaign(prev => ({ ...prev, messageTemplate: prev.messageTemplate + '{{Total_Debt_Amount}}' }))}
+                            title="Automatically formats with $ sign"
+                          >
+                            {'{{Total_Debt_Amount}}'} 💰
+                          </button>
                         </div>
                         
                         {/* Custom fields from uploaded contacts OR selected contact list */}
@@ -3272,9 +3281,9 @@ export default function SmsCampaigns() {
                                   variant="ghost" 
                                   size="sm"
                                   onClick={() => handleCancelCampaign(campaign.id)}
-                                  title="Cancel campaign (immediate stop)"
+                                  title="Pause campaign (can be resumed later)"
                                 >
-                                  <Pause className="h-4 w-4 text-red-600" />
+                                  <Pause className="h-4 w-4 text-yellow-600" />
                                 </Button>
                               )}
                               {campaign.status === 'paused' && (
@@ -3713,6 +3722,18 @@ export default function SmsCampaigns() {
                     title="Automatically formats with $ sign"
                   >
                     {'{{debt_loads}}'} 💰
+                  </button>
+                  {/* Total Debt Amount with automatic $ formatting */}
+                  <button
+                    type="button"
+                    className="bg-green-50 px-2 py-1 rounded text-green-700 text-xs border border-green-300 hover:bg-green-100 transition-colors font-medium"
+                    onClick={() => {
+                      const content = newTemplate.content || newCampaign.messageTemplate || '';
+                      setNewTemplate(prev => ({ ...prev, content: content + '{{Total_Debt_Amount}}' }));
+                    }}
+                    title="Automatically formats with $ sign"
+                  >
+                    {'{{Total_Debt_Amount}}'} 💰
                   </button>
                 </div>
                 

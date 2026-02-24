@@ -1427,14 +1427,14 @@ function normalizePhoneNumber(phone: string): string {
 
 /**
  * Apply merge tags to message template
- * Supports special formatting for debt_loads (adds $ prefix)
+ * Supports special formatting for debt_loads and Total_Debt_Amount (adds $ prefix)
  */
 function applyMergeTags(template: string, data: Record<string, any>): string {
   return template.replace(/\{\{(\w+)\}\}/g, (match, key) => {
     if (data[key] === undefined) return match;
     
-    // Special formatting for debt_loads - add dollar sign
-    if (key === 'debt_loads' || key === 'debt_load') {
+    // Special formatting for debt fields - add dollar sign
+    if (key === 'debt_loads' || key === 'debt_load' || key === 'Total_Debt_Amount') {
       const value = String(data[key]).replace(/[,$]/g, ''); // Remove existing $ and commas
       const numValue = parseFloat(value);
       if (!isNaN(numValue)) {
