@@ -92,6 +92,71 @@ app.use((req, res, next) => {
       recoverStuckCampaigns();
     }, 5 * 60 * 1000); // Every 5 minutes
     
+    // Stuck campaign detection: Check for campaigns that haven't updated in 2 minutes
+    setInterval(async () => {
+      try {
+        const TWO_MINUTES_AGO = new Date(Date.now() - 2 * 60 * 1000);
+        
+        // Find campaigns in "sending" status that haven't updated in 2 minutes
+        const stuckCampaigns = await db.select()
+          .from(smsCampaigns)
+          .where(and(
+            eq(smsCampaigns.status, 'sending'),
+            sql`${smsCampaigns.updatedAt} < ${TWO_MINUTES_AGO}`
+          ));
+        
+        if (stuckCampaigns.length > 0) {
+          log(`[StuckDetection] Found ${stuckCampaigns.length} stuck campaign(s)`);
+          
+          for (const campaign of stuckCampaigns) {
+            // Check if there are pending recipients
+            const pendingResult = await db.select({ count: sql<number>`count(*)` })
+              .from(campaignRecipients)
+              .where(and(
+                eq(campaignRecipients.smsCampaignId, campaign.id),
+                eq(campaignRecipients.status, 'pending')
+              ));
+            
+            const pendingCount = Number(pendingResult[0]?.count || 0);
+            
+            if (pendingCount > 0) {
+              log(`[StuckDetection] Campaign ${campaign.id} "${campaign.name}" stuck with ${pendingCount} pending - restarting...`);
+              
+              // Reset to draft so it can be restarted
+              await db.update(smsCampaigns)
+                .set({ status: 'draft', updatedAt: new Date() })
+                .where(eq(smsCampaigns.id, campaign.id));
+              
+              // Auto-restart via internal API call
+              try {
+                const response = await fetch(`http://localhost:${process.env.PORT || 3000}/api/campaigns/sms-campaigns/${campaign.id}/start`, {
+                  method: 'POST',
+                  headers: { 'Content-Type': 'application/json' },
+                });
+                
+                if (response.ok) {
+                  log(`[StuckDetection] ✅ Campaign ${campaign.id} auto-restarted successfully`);
+                } else {
+                  const error = await response.text();
+                  log(`[StuckDetection] ⚠️ Campaign ${campaign.id} restart failed: ${error}`);
+                }
+              } catch (fetchErr: any) {
+                log(`[StuckDetection] ⚠️ Campaign ${campaign.id} restart error: ${fetchErr.message}`);
+              }
+            } else {
+              // No pending recipients - mark as completed
+              await db.update(smsCampaigns)
+                .set({ status: 'completed', completedAt: new Date(), updatedAt: new Date() })
+                .where(eq(smsCampaigns.id, campaign.id));
+              log(`[StuckDetection] Campaign ${campaign.id} "${campaign.name}" - no pending, marked COMPLETED`);
+            }
+          }
+        }
+      } catch (error) {
+        console.error('[StuckDetection] Error detecting stuck campaigns:', error);
+      }
+    }, 2 * 60 * 1000); // Check every 2 minutes
+    
     // Initialize background workers after a short delay to allow Redis to connect
     setTimeout(async () => {
       if (redisService.isAvailable()) {

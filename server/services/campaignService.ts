@@ -1035,6 +1035,10 @@ export async function startSmsCampaign(
     return { success: false, message: 'Provider not found' };
   }
 
+  // CRITICAL: Reset counts to match actual recipient statuses before starting
+  // This prevents count drift from previous runs
+  await reconcileCampaignCounts(smsCampaignId);
+
   // Update campaign status
   await db
     .update(smsCampaigns)
@@ -1090,8 +1094,21 @@ async function sendCampaignMessages(
 
   // Get pending recipients in batches
   const batchSize = 100;
+  
+  // Track progress for stuck detection
+  let messagesSinceLastReconcile = 0;
+  let totalProcessed = 0;
+  const startTime = Date.now();
+  const MAX_RUNTIME_MS = 4 * 60 * 60 * 1000; // 4 hours max
 
   while (true) {
+    // Check timeout to prevent infinite runs
+    if (Date.now() - startTime > MAX_RUNTIME_MS) {
+      console.log(`Campaign ${smsCampaignId} reached max runtime (4 hours) - completing`);
+      await reconcileCampaignCounts(smsCampaignId, { status: 'completed', completedAt: new Date() });
+      return;
+    }
+
     // Check if campaign is still in sending status
     const [currentCampaign] = await db
       .select()
@@ -1102,16 +1119,22 @@ async function sendCampaignMessages(
       console.log(`Campaign ${smsCampaignId} stopped (status: ${currentCampaign?.status})`);
       return;
     }
+    
+    // Periodic reconciliation to keep counts accurate and update UI
+    if (messagesSinceLastReconcile >= 100) {
+      await reconcileCampaignCounts(smsCampaignId);
+      messagesSinceLastReconcile = 0;
+      const elapsed = Math.round((Date.now() - startTime) / 1000);
+      const rate = totalProcessed > 0 ? Math.round((totalProcessed / elapsed) * 60) : 0;
+      console.log(`[Campaign ${smsCampaignId}] Progress: ${totalProcessed} processed, ~${rate} msgs/min`);
+    }
 
     // Check if recipient limit has been reached
     if (currentCampaign.recipientLimit !== null && currentCampaign.recipientLimit !== undefined) {
       const sentCount = currentCampaign.sentCount || 0;
       if (sentCount >= currentCampaign.recipientLimit) {
         console.log(`Campaign ${smsCampaignId} reached recipient limit: ${currentCampaign.recipientLimit}`);
-        await db
-          .update(smsCampaigns)
-          .set({ status: 'completed', completedAt: new Date(), updatedAt: new Date() })
-          .where(eq(smsCampaigns.id, smsCampaignId));
+        await reconcileCampaignCounts(smsCampaignId, { status: 'completed', completedAt: new Date() });
         return;
       }
     }
@@ -1124,10 +1147,7 @@ async function sendCampaignMessages(
       effectiveBatchSize = Math.min(batchSize, remainingSlots);
       if (effectiveBatchSize <= 0) {
         console.log(`Campaign ${smsCampaignId} reached recipient limit during batch processing`);
-        await db
-          .update(smsCampaigns)
-          .set({ status: 'completed', completedAt: new Date(), updatedAt: new Date() })
-          .where(eq(smsCampaigns.id, smsCampaignId));
+        await reconcileCampaignCounts(smsCampaignId, { status: 'completed', completedAt: new Date() });
         return;
       }
     }
@@ -1175,11 +1195,6 @@ async function sendCampaignMessages(
               sentAt: new Date(),
             })
             .where(eq(campaignRecipients.id, recipient.id));
-
-          await db
-            .update(smsCampaigns)
-            .set({ sentCount: sql`${smsCampaigns.sentCount} + 1` })
-            .where(eq(smsCampaigns.id, smsCampaignId));
         } else {
           await db
             .update(campaignRecipients)
@@ -1189,12 +1204,11 @@ async function sendCampaignMessages(
               errorMessage: result.error,
             })
             .where(eq(campaignRecipients.id, recipient.id));
-
-          await db
-            .update(smsCampaigns)
-            .set({ failedCount: sql`${smsCampaigns.failedCount} + 1` })
-            .where(eq(smsCampaigns.id, smsCampaignId));
         }
+
+        // Track progress
+        messagesSinceLastReconcile++;
+        totalProcessed++;
 
         // Rate limiting
         const sendingRate = campaign.sendingRate || 1;
@@ -1210,11 +1224,10 @@ async function sendCampaignMessages(
             errorMessage: error.message,
           })
           .where(eq(campaignRecipients.id, recipient.id));
-
-        await db
-          .update(smsCampaigns)
-          .set({ failedCount: sql`${smsCampaigns.failedCount} + 1` })
-          .where(eq(smsCampaigns.id, smsCampaignId));
+        
+        // Track progress even on failure
+        messagesSinceLastReconcile++;
+        totalProcessed++;
       }
     }
 
@@ -1283,13 +1296,8 @@ export async function pauseSmsCampaign(
   
   console.log(`[Campaign] Pausing campaign ${smsCampaignId} (${campaign.name}) - current status: ${campaign.status}`);
   
-  await db
-    .update(smsCampaigns)
-    .set({
-      status: 'paused',
-      updatedAt: new Date(),
-    })
-    .where(eq(smsCampaigns.id, smsCampaignId));
+  // Reconcile counts to ensure accuracy when pausing
+  await reconcileCampaignCounts(smsCampaignId, { status: 'paused' });
 
   console.log(`[Campaign] ✓ Campaign ${smsCampaignId} (${campaign.name}) is now PAUSED - sending will stop within 10 messages`);
   
@@ -1428,22 +1436,35 @@ function normalizePhoneNumber(phone: string): string {
 /**
  * Apply merge tags to message template
  * Supports special formatting for debt_loads and Total_Debt_Amount (adds $ prefix)
+ * Case-insensitive matching to handle CSV headers stored in lowercase
  */
 function applyMergeTags(template: string, data: Record<string, any>): string {
+  // Create a lowercase key map for case-insensitive lookup
+  const lowerKeyMap: Record<string, string> = {};
+  Object.keys(data).forEach(key => {
+    lowerKeyMap[key.toLowerCase()] = key;
+  });
+  
   return template.replace(/\{\{(\w+)\}\}/g, (match, key) => {
-    if (data[key] === undefined) return match;
+    // Try exact match first, then case-insensitive match
+    const actualKey = data[key] !== undefined ? key : lowerKeyMap[key.toLowerCase()];
+    
+    if (!actualKey || data[actualKey] === undefined) return match;
+    
+    const value = data[actualKey];
+    const lowerKey = key.toLowerCase();
     
     // Special formatting for debt fields - add dollar sign
-    if (key === 'debt_loads' || key === 'debt_load' || key === 'Total_Debt_Amount') {
-      const value = String(data[key]).replace(/[,$]/g, ''); // Remove existing $ and commas
-      const numValue = parseFloat(value);
+    if (lowerKey === 'debt_loads' || lowerKey === 'debt_load' || lowerKey === 'total_debt_amount') {
+      const valueStr = String(value).replace(/[,$]/g, ''); // Remove existing $ and commas
+      const numValue = parseFloat(valueStr);
       if (!isNaN(numValue)) {
         return '$' + numValue.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
       }
-      return '$' + value;
+      return '$' + valueStr;
     }
     
-    return String(data[key]);
+    return String(value);
   });
 }
 

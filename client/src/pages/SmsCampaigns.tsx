@@ -1164,8 +1164,12 @@ export default function SmsCampaigns() {
         return;
       }
       
-      // Build CSV content
-      const headers = ['Phone Number', 'First Name', 'Last Name', 'Email', 'Debt Loads'];
+      // Build CSV content - dynamically include custom fields
+      const customFieldKeys = contacts.length > 0 && contacts[0].customFields 
+        ? Object.keys(contacts[0].customFields) 
+        : [];
+      
+      const headers = ['Phone Number', 'First Name', 'Last Name', 'Email', ...customFieldKeys.map(k => k.replace(/_/g, ' ').replace(/\b\w/g, l => l.toUpperCase()))];
       const csvRows = [headers.join(',')];
       
       contacts.forEach((contact: any) => {
@@ -1174,7 +1178,7 @@ export default function SmsCampaigns() {
           contact.firstName || '',
           contact.lastName || '',
           contact.email || '',
-          contact.customFields?.debt_loads || contact.debt_loads || ''
+          ...customFieldKeys.map(key => contact.customFields?.[key] || '')
         ].map(field => `"${String(field).replace(/"/g, '""')}"`);
         csvRows.push(row.join(','));
       });
@@ -1801,7 +1805,14 @@ export default function SmsCampaigns() {
                             <TableHead>First Name</TableHead>
                             <TableHead>Last Name</TableHead>
                             <TableHead>Email</TableHead>
-                            <TableHead>Debt Loads</TableHead>
+                            {/* Dynamically show custom field headers */}
+                            {uploadedContacts.length > 0 && uploadedContacts[0].customFields && 
+                              Object.keys(uploadedContacts[0].customFields).slice(0, 3).map(fieldName => (
+                                <TableHead key={fieldName} className="capitalize">
+                                  {fieldName.replace(/_/g, ' ')}
+                                </TableHead>
+                              ))
+                            }
                           </TableRow>
                         </TableHeader>
                         <TableBody>
@@ -1817,12 +1828,19 @@ export default function SmsCampaigns() {
                               <TableCell>{contact.firstName || '-'}</TableCell>
                               <TableCell>{contact.lastName || '-'}</TableCell>
                               <TableCell>{contact.email || '-'}</TableCell>
-                              <TableCell>{contact.customFields?.debt_loads || contact.debt_loads || '-'}</TableCell>
+                              {/* Dynamically show custom field values */}
+                              {uploadedContacts.length > 0 && uploadedContacts[0].customFields && 
+                                Object.keys(uploadedContacts[0].customFields).slice(0, 3).map(fieldName => (
+                                  <TableCell key={fieldName}>
+                                    {contact.customFields?.[fieldName] || '-'}
+                                  </TableCell>
+                                ))
+                              }
                             </TableRow>
                           ))}
                           {uploadedContacts.length > 100 && (
                             <TableRow>
-                              <TableCell colSpan={6} className="text-center text-sm text-muted-foreground py-4">
+                              <TableCell colSpan={5 + (uploadedContacts[0]?.customFields ? Math.min(Object.keys(uploadedContacts[0].customFields).length, 3) : 0)} className="text-center text-sm text-muted-foreground py-4">
                                 Showing first 100 of {uploadedContacts.length} contacts. All contacts will be imported.
                               </TableCell>
                             </TableRow>
@@ -3901,17 +3919,31 @@ export default function SmsCampaigns() {
                   <TableHead>First Name</TableHead>
                   <TableHead>Last Name</TableHead>
                   <TableHead>Email</TableHead>
-                  <TableHead>Debt Loads</TableHead>
+                  {/* Dynamically show custom field headers */}
+                  {viewingList?.contacts && viewingList.contacts.length > 0 && viewingList.contacts[0].customFields && 
+                    Object.keys(viewingList.contacts[0].customFields).slice(0, 3).map(fieldName => (
+                      <TableHead key={fieldName} className="capitalize">
+                        {fieldName.replace(/_/g, ' ')}
+                      </TableHead>
+                    ))
+                  }
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {viewingList?.contacts.slice(0, 100).map((contact, index) => (
+                {(viewingList?.contacts || []).slice(0, 100).map((contact, index) => (
                   <TableRow key={index}>
                     <TableCell className="font-mono">{contact.phoneNumber}</TableCell>
                     <TableCell>{contact.firstName || '-'}</TableCell>
                     <TableCell>{contact.lastName || '-'}</TableCell>
                     <TableCell>{contact.email || '-'}</TableCell>
-                    <TableCell>{contact.customFields?.debt_loads || '-'}</TableCell>
+                    {/* Dynamically show custom field values */}
+                    {viewingList?.contacts && viewingList.contacts.length > 0 && viewingList.contacts[0].customFields && 
+                      Object.keys(viewingList.contacts[0].customFields).slice(0, 3).map(fieldName => (
+                        <TableCell key={fieldName}>
+                          {contact.customFields?.[fieldName] || '-'}
+                        </TableCell>
+                      ))
+                    }
                   </TableRow>
                 ))}
                 {(viewingList?.contacts.length || 0) > 100 && (
