@@ -323,16 +323,16 @@ class BatchSmsService {
           const totalProcessed = baselineSent + result.sent + baselineFailed + result.failed;
           const isFullyComplete = totalProcessed >= totalCampaignRecipients;
           
-          // Mark as completed if all recipients processed, otherwise paused for resume
+          // Always mark as completed when batch finishes - no auto-pause
           await db.update(smsCampaigns)
             .set({
-              status: isFullyComplete ? 'completed' : 'paused',
+              status: 'completed',
               sentCount: baselineSent + result.sent,
               failedCount: baselineFailed + result.failed,
-              completedAt: isFullyComplete ? new Date() : undefined,
+              completedAt: new Date(),
             })
             .where(eq(smsCampaigns.id, options.campaignId));
-          console.log(`[BatchSMS] Campaign ${options.campaignId} ${isFullyComplete ? 'COMPLETED' : 'PAUSED'}: ${baselineSent + result.sent} total sent, ${baselineFailed + result.failed} total failed (this batch: +${result.sent}/+${result.failed}, total processed: ${totalProcessed}/${totalCampaignRecipients})`);
+          console.log(`[BatchSMS] Campaign ${options.campaignId} COMPLETED: ${baselineSent + result.sent} total sent, ${baselineFailed + result.failed} total failed (this batch: +${result.sent}/+${result.failed}, total processed: ${totalProcessed}/${totalCampaignRecipients})`);
 
           // After 30s, recount delivered messages from DB (webhooks may have updated statuses)
           const campaignId = options.campaignId;
@@ -387,14 +387,15 @@ class BatchSmsService {
       
       console.error(`[BatchSMS] Progress at error: sent=${sentSoFar}, failed=${failedSoFar}, total processed=${totalProcessed}/${totalCampaignRecipients}`);
       
-      // Save progress and pause for resume - user can click Play to continue
+      // Save progress and mark as completed - don't auto-pause on errors
       if (options.campaignId) {
         try {
           await db.update(smsCampaigns)
             .set({ 
-              status: 'paused',
+              status: 'completed',
               sentCount: sentSoFar,
               failedCount: failedSoFar,
+              completedAt: new Date(),
               updatedAt: new Date(),
             })
             .where(eq(smsCampaigns.id, options.campaignId));

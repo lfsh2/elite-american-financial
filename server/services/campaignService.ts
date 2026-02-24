@@ -1048,10 +1048,19 @@ export async function startSmsCampaign(
   // Start sending in background
   sendCampaignMessages(smsCampaignId, campaign, account, provider.code as ProviderCode)
     .catch(error => {
-      console.error(`Campaign ${smsCampaignId} sending failed:`, error);
-      db.update(smsCampaigns)
-        .set({ status: 'paused', updatedAt: new Date() })
-        .where(eq(smsCampaigns.id, smsCampaignId));
+      console.error(`Campaign ${smsCampaignId} sending failed with critical error:`, error);
+      // Only pause on critical errors (e.g., provider authentication failure)
+      // Individual message failures are handled within the loop and don't stop the campaign
+      if (error.message?.includes('authentication') || error.message?.includes('credentials')) {
+        db.update(smsCampaigns)
+          .set({ status: 'paused', updatedAt: new Date() })
+          .where(eq(smsCampaigns.id, smsCampaignId));
+      } else {
+        // For other errors, mark as completed so it can be reviewed
+        db.update(smsCampaigns)
+          .set({ status: 'completed', completedAt: new Date(), updatedAt: new Date() })
+          .where(eq(smsCampaigns.id, smsCampaignId));
+      }
     });
 
   return { success: true, message: 'Campaign started' };
