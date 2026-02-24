@@ -3220,7 +3220,14 @@ export default function SmsCampaigns() {
                       </TableRow>
                     </TableHeader>
                     <TableBody>
-                      {campaigns.map((campaign) => (
+                      {campaigns.map((campaign) => {
+                        // Use progress map for live updates if available, otherwise use campaign data
+                        const progress = activeProgressMap[campaign.id];
+                        const displayStatus = progress?.status || campaign.status;
+                        const displaySent = progress?.sent ?? campaign.sentCount ?? 0;
+                        const displayFailed = progress?.failed ?? campaign.failedCount ?? 0;
+                        
+                        return (
                         <TableRow key={campaign.id}>
                           <TableCell>
                             <div>
@@ -3240,10 +3247,10 @@ export default function SmsCampaigns() {
                               )}
                             </div>
                           </TableCell>
-                          <TableCell>{getStatusBadge(campaign.status)}</TableCell>
+                          <TableCell>{getStatusBadge(displayStatus)}</TableCell>
                           <TableCell>{campaign.recipientCount?.toLocaleString() || 0}</TableCell>
-                          <TableCell className="text-green-600 font-medium">{campaign.sentCount?.toLocaleString() || 0}</TableCell>
-                          <TableCell className="text-red-600">{campaign.failedCount?.toLocaleString() || 0}</TableCell>
+                          <TableCell className="text-green-600 font-medium">{displaySent.toLocaleString()}</TableCell>
+                          <TableCell className="text-red-600">{displayFailed.toLocaleString()}</TableCell>
                           <TableCell className="text-sm text-muted-foreground">
                             {new Date(campaign.createdAt).toLocaleDateString()}
                           </TableCell>
@@ -3387,7 +3394,8 @@ export default function SmsCampaigns() {
                             </div>
                           </TableCell>
                         </TableRow>
-                      ))}
+                        );
+                      })}
                     </TableBody>
                   </Table>
                 </div>
