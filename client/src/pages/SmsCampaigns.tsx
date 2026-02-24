@@ -3693,6 +3693,18 @@ export default function SmsCampaigns() {
                       {tag}
                     </button>
                   ))}
+                  {/* Debt loads with automatic $ formatting */}
+                  <button
+                    type="button"
+                    className="bg-green-50 px-2 py-1 rounded text-green-700 text-xs border border-green-300 hover:bg-green-100 transition-colors font-medium"
+                    onClick={() => {
+                      const content = newTemplate.content || newCampaign.messageTemplate || '';
+                      setNewTemplate(prev => ({ ...prev, content: content + '{{debt_loads}}' }));
+                    }}
+                    title="Automatically formats with $ sign"
+                  >
+                    {'{{debt_loads}}'} 💰
+                  </button>
                 </div>
                 
                 {/* Custom fields from uploaded contacts */}
