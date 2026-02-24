@@ -293,16 +293,14 @@ export default function SmsCampaigns() {
 
           if (isFinished) {
             pollingCampaignsRef.current.delete(campaignId);
-            // Only refresh campaign list, not full page data
-            // Remove from progress map after 5 seconds
+            // Remove from progress map after 5 seconds (no auto-refresh)
             setTimeout(() => {
               setActiveProgressMap(prev => {
                 const next = { ...prev };
                 delete next[campaignId];
                 return next;
               });
-              // Refresh data after progress is removed to update final status
-              fetchData();
+              // No fetchData() - user can manually refresh if needed
             }, 5000);
             return;
           }
@@ -332,6 +330,7 @@ export default function SmsCampaigns() {
 
   // Auto-clear completed campaigns from progress map
   // Immediately remove campaigns over 100%, short delay for exactly 100%
+  // NO AUTO-REFRESH - let user manually refresh if needed
   useEffect(() => {
     const immediateRemoveIds: number[] = [];
     const delayedRemoveIds: number[] = [];
@@ -347,7 +346,7 @@ export default function SmsCampaigns() {
       }
     }
     
-    // Immediately remove over-100% campaigns
+    // Immediately remove over-100% campaigns (no refresh)
     if (immediateRemoveIds.length > 0) {
       setActiveProgressMap(prev => {
         const next = { ...prev };
@@ -356,10 +355,10 @@ export default function SmsCampaigns() {
         }
         return next;
       });
-      fetchData();
+      // Removed fetchData() - no auto-refresh
     }
     
-    // Delayed removal for exactly 100% campaigns
+    // Delayed removal for exactly 100% campaigns (no refresh)
     if (delayedRemoveIds.length > 0) {
       const timer = setTimeout(() => {
         setActiveProgressMap(prev => {
@@ -375,7 +374,7 @@ export default function SmsCampaigns() {
           }
           return next;
         });
-        fetchData();
+        // Removed fetchData() - no auto-refresh
       }, 2000);
       
       return () => clearTimeout(timer);
