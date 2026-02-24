@@ -836,7 +836,7 @@ export async function createSmsCampaign(
 export async function addRecipientsFromContactList(
   smsCampaignId: number,
   contactListId: number
-): Promise<{ added: number; skipped: number }> {
+): Promise<{ added: number; skipped: number; limitReached?: boolean; limit?: number }> {
   console.log('[Campaign] Adding recipients - campaignId:', smsCampaignId, 'contactListId:', contactListId);
   
   // Get campaign
@@ -850,6 +850,11 @@ export async function addRecipientsFromContactList(
   }
 
   console.log('[Campaign] Found campaign:', campaign.name);
+
+  // Check recipient limit
+  if (campaign.recipientLimit !== null && campaign.recipientLimit !== undefined) {
+    console.log('[Campaign] Recipient limit:', campaign.recipientLimit);
+  }
 
   // Get contacts from list
   const listContacts = await db
@@ -892,8 +897,27 @@ export async function addRecipientsFromContactList(
   }> = [];
 
   let skipped = 0;
+  let limitReached = false;
+  const currentRecipientCount = existingNumbers.size;
+  const recipientLimit = campaign.recipientLimit;
+  let processedCount = 0;
 
   for (const { contact } of listContacts) {
+    processedCount++;
+    
+    // Check recipient limit before adding more
+    if (recipientLimit !== null && recipientLimit !== undefined) {
+      const totalAfterAdd = currentRecipientCount + recipientsToAdd.length;
+      if (totalAfterAdd >= recipientLimit) {
+        console.log(`[Campaign] Recipient limit reached: ${recipientLimit}. Stopping at ${totalAfterAdd} recipients.`);
+        const remainingContacts = listContacts.length - processedCount + 1;
+        skipped += remainingContacts;
+        limitReached = true;
+        console.log(`[Campaign] Skipped ${remainingContacts} contacts due to recipient limit`);
+        break;
+      }
+    }
+
     if (!contact.phoneNumber) {
       skipped++;
       continue;
@@ -955,7 +979,18 @@ export async function addRecipientsFromContactList(
     .where(eq(smsCampaigns.id, smsCampaignId));
 
   console.log('[Campaign] Successfully added recipients to campaign');
-  return { added, skipped };
+  
+  const result: { added: number; skipped: number; limitReached?: boolean; limit?: number } = { 
+    added, 
+    skipped 
+  };
+  
+  if (limitReached && recipientLimit !== null && recipientLimit !== undefined) {
+    result.limitReached = true;
+    result.limit = recipientLimit;
+  }
+  
+  return result;
 }
 
 /**
@@ -1059,6 +1094,35 @@ async function sendCampaignMessages(
       return;
     }
 
+    // Check if recipient limit has been reached
+    if (currentCampaign.recipientLimit !== null && currentCampaign.recipientLimit !== undefined) {
+      const sentCount = currentCampaign.sentCount || 0;
+      if (sentCount >= currentCampaign.recipientLimit) {
+        console.log(`Campaign ${smsCampaignId} reached recipient limit: ${currentCampaign.recipientLimit}`);
+        await db
+          .update(smsCampaigns)
+          .set({ status: 'completed', completedAt: new Date(), updatedAt: new Date() })
+          .where(eq(smsCampaigns.id, smsCampaignId));
+        return;
+      }
+    }
+
+    // Calculate how many more we can send based on limit
+    let effectiveBatchSize = batchSize;
+    if (currentCampaign.recipientLimit !== null && currentCampaign.recipientLimit !== undefined) {
+      const sentCount = currentCampaign.sentCount || 0;
+      const remainingSlots = currentCampaign.recipientLimit - sentCount;
+      effectiveBatchSize = Math.min(batchSize, remainingSlots);
+      if (effectiveBatchSize <= 0) {
+        console.log(`Campaign ${smsCampaignId} reached recipient limit during batch processing`);
+        await db
+          .update(smsCampaigns)
+          .set({ status: 'completed', completedAt: new Date(), updatedAt: new Date() })
+          .where(eq(smsCampaigns.id, smsCampaignId));
+        return;
+      }
+    }
+
     // Get batch of recipients
     const recipients = await db
       .select()
@@ -1068,7 +1132,7 @@ async function sendCampaignMessages(
         eq(campaignRecipients.status, 'pending')
       ))
       .orderBy(campaignRecipients.id)
-      .limit(batchSize);
+      .limit(effectiveBatchSize);
 
     if (recipients.length === 0) {
       break;
@@ -1354,10 +1418,23 @@ function normalizePhoneNumber(phone: string): string {
 
 /**
  * Apply merge tags to message template
+ * Supports special formatting for debt_loads (adds $ prefix)
  */
 function applyMergeTags(template: string, data: Record<string, any>): string {
   return template.replace(/\{\{(\w+)\}\}/g, (match, key) => {
-    return data[key] !== undefined ? String(data[key]) : match;
+    if (data[key] === undefined) return match;
+    
+    // Special formatting for debt_loads - add dollar sign
+    if (key === 'debt_loads' || key === 'debt_load') {
+      const value = String(data[key]).replace(/[,$]/g, ''); // Remove existing $ and commas
+      const numValue = parseFloat(value);
+      if (!isNaN(numValue)) {
+        return '$' + numValue.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+      }
+      return '$' + value;
+    }
+    
+    return String(data[key]);
   });
 }
 

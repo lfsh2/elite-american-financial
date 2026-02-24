@@ -582,6 +582,7 @@ export const smsCampaigns = pgTable("sms_campaigns", {
   // Recipients
   contactListId: integer("contact_list_id").references(() => contactLists.id),
   recipientCount: integer("recipient_count").default(0),
+  recipientLimit: integer("recipient_limit"), // Maximum allowed recipients (null = no limit)
   
   // Scheduling
   status: text("status").notNull().default("draft"), // draft, scheduled, sending, paused, completed, cancelled
