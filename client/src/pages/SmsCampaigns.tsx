@@ -293,7 +293,7 @@ export default function SmsCampaigns() {
 
           if (isFinished) {
             pollingCampaignsRef.current.delete(campaignId);
-            fetchData();
+            // Only refresh campaign list, not full page data
             // Remove from progress map after 5 seconds
             setTimeout(() => {
               setActiveProgressMap(prev => {
@@ -301,16 +301,18 @@ export default function SmsCampaigns() {
                 delete next[campaignId];
                 return next;
               });
+              // Refresh data after progress is removed to update final status
+              fetchData();
             }, 5000);
             return;
           }
-          setTimeout(pollProgress, 2000);
+          setTimeout(pollProgress, 5000); // Poll every 5 seconds instead of 2
         } else {
-          setTimeout(pollProgress, 3000);
+          setTimeout(pollProgress, 5000);
         }
       } catch (err) {
         console.error(`Error polling progress for campaign ${campaignId}:`, err);
-        setTimeout(pollProgress, 3000);
+        setTimeout(pollProgress, 5000);
       }
     };
     pollProgress();
