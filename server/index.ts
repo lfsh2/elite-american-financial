@@ -79,13 +79,18 @@ app.use((req, res, next) => {
     // Start the auto-refill service
     autoRefillService.start();
     
-    // Auto-recover stuck campaigns (mark as paused so they can be resumed)
+    // Auto-recover stuck campaigns immediately on startup
     recoverStuckCampaigns();
     
     // Auto-resume paused campaigns after 10 seconds (let server fully start first)
     setTimeout(() => {
       autoResumePausedCampaigns();
     }, 10000);
+    
+    // Periodic auto-recovery: Check for stuck campaigns every 5 minutes and auto-resume them
+    setInterval(() => {
+      recoverStuckCampaigns();
+    }, 5 * 60 * 1000); // Every 5 minutes
     
     // Initialize background workers after a short delay to allow Redis to connect
     setTimeout(async () => {
@@ -202,7 +207,7 @@ async function warmCache() {
 
 /**
  * Recover campaigns that were stuck in 'sending' status when the server restarted.
- * Marks them as 'paused' so they can be properly resumed (only sending to pending recipients).
+ * Automatically resumes them without pausing - they continue sending immediately.
  */
 async function recoverStuckCampaigns() {
   try {
@@ -217,15 +222,52 @@ async function recoverStuckCampaigns() {
       return;
     }
     
-    // Mark them as 'paused' so resume logic will only send to pending recipients
+    log(`[Recovery] Found ${stuckCampaigns.length} stuck campaign(s) - auto-resuming...`);
+    
+    // Auto-resume each stuck campaign immediately
     for (const campaign of stuckCampaigns) {
-      await db.update(smsCampaigns)
-        .set({ status: 'paused', updatedAt: new Date() })
-        .where(eq(smsCampaigns.id, campaign.id));
-      log(`[Recovery] Campaign "${campaign.name}" (ID: ${campaign.id}) marked as paused - sent: ${campaign.sentCount}, failed: ${campaign.failedCount}`);
+      // Count pending recipients
+      const pendingResult = await db.select({ count: sql<number>`count(*)` })
+        .from(campaignRecipients)
+        .where(and(
+          eq(campaignRecipients.smsCampaignId, campaign.id),
+          eq(campaignRecipients.status, 'pending')
+        ));
+      
+      const pendingCount = Number(pendingResult[0]?.count || 0);
+      
+      if (pendingCount === 0) {
+        // No pending - mark as completed
+        await db.update(smsCampaigns)
+          .set({ status: 'completed', completedAt: new Date(), updatedAt: new Date() })
+          .where(eq(smsCampaigns.id, campaign.id));
+        log(`[Recovery] Campaign "${campaign.name}" (ID: ${campaign.id}) - no pending, marked COMPLETED`);
+      } else {
+        // Has pending - auto-resume via internal HTTP call
+        log(`[Recovery] Campaign "${campaign.name}" (ID: ${campaign.id}) - ${pendingCount} pending, resuming...`);
+        
+        try {
+          const response = await fetch(`http://localhost:${process.env.PORT || 3000}/api/sms/batch`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ campaignId: campaign.id }),
+          });
+          
+          if (response.ok) {
+            log(`[Recovery] ✅ Campaign "${campaign.name}" (ID: ${campaign.id}) resumed successfully`);
+          } else {
+            const error = await response.text();
+            log(`[Recovery] ⚠️ Campaign "${campaign.name}" resume failed: ${error}`);
+          }
+        } catch (fetchErr: any) {
+          log(`[Recovery] ⚠️ Campaign "${campaign.name}" resume error: ${fetchErr.message}`);
+        }
+        
+        await new Promise(resolve => setTimeout(resolve, 2000));
+      }
     }
     
-    log(`[Recovery] ✅ Recovered ${stuckCampaigns.length} stuck campaign(s) - they can be resumed from the UI`);
+    log(`[Recovery] ✅ Processed ${stuckCampaigns.length} stuck campaign(s)`);
   } catch (error) {
     console.error('[Recovery] Failed to recover stuck campaigns:', error);
   }
