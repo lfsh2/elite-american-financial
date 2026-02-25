@@ -1163,8 +1163,11 @@ async function sendCampaignMessages(
       .orderBy(campaignRecipients.id)
       .limit(effectiveBatchSize);
 
+    // If no pending recipients, mark campaign as completed
     if (recipients.length === 0) {
-      break;
+      console.log(`Campaign ${smsCampaignId} has no more pending recipients - marking as completed`);
+      await reconcileCampaignCounts(smsCampaignId, { status: 'completed', completedAt: new Date() });
+      return;
     }
 
     // Send to each recipient
@@ -1302,6 +1305,35 @@ export async function pauseSmsCampaign(
   console.log(`[Campaign] ✓ Campaign ${smsCampaignId} (${campaign.name}) is now PAUSED - sending will stop within 10 messages`);
   
   return { success: true, message: 'Campaign paused - sending will stop shortly' };
+}
+
+/**
+ * Complete an SMS campaign manually
+ */
+export async function completeSmsCampaign(
+  smsCampaignId: number
+): Promise<{ success: boolean; message: string }> {
+  const [campaign] = await db
+    .select({ status: smsCampaigns.status, name: smsCampaigns.name })
+    .from(smsCampaigns)
+    .where(eq(smsCampaigns.id, smsCampaignId));
+  
+  if (!campaign) {
+    console.log(`[Campaign] Complete failed: Campaign ${smsCampaignId} not found`);
+    return { success: false, message: 'Campaign not found' };
+  }
+  
+  console.log(`[Campaign] Completing campaign ${smsCampaignId} (${campaign.name}) - current status: ${campaign.status}`);
+  
+  // Reconcile counts and mark as completed
+  await reconcileCampaignCounts(smsCampaignId, { 
+    status: 'completed', 
+    completedAt: new Date() 
+  });
+
+  console.log(`[Campaign] ✓ Campaign ${smsCampaignId} (${campaign.name}) is now COMPLETED`);
+  
+  return { success: true, message: 'Campaign marked as completed' };
 }
 
 /**
@@ -1495,6 +1527,7 @@ export const campaignService = {
   addRecipientsFromContactList,
   startSmsCampaign,
   pauseSmsCampaign,
+  completeSmsCampaign,
   getCampaignStats,
   
   // Opt-out

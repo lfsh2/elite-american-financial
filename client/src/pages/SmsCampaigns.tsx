@@ -1594,6 +1594,32 @@ export default function SmsCampaigns() {
     }
   };
 
+  // Complete campaign manually
+  const handleCompleteCampaign = async (campaignId: number) => {
+    try {
+      const res = await fetch(`/api/campaigns/sms-campaigns/${campaignId}/complete`, {
+        method: 'POST',
+        credentials: 'include',
+      });
+
+      if (!res.ok) throw new Error('Failed to complete campaign');
+
+      toast({
+        title: 'Campaign Completed',
+        description: 'Campaign has been marked as completed',
+      });
+
+      fetchData();
+    } catch (error: any) {
+      console.error('Error completing campaign:', error);
+      toast({
+        title: 'Error',
+        description: error.message || 'Failed to complete campaign',
+        variant: 'destructive'
+      });
+    }
+  };
+
   // Toggle contact selection
   const toggleContactSelection = (index: number) => {
     setUploadedContacts(prev => 

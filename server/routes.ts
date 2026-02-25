@@ -6643,6 +6643,20 @@ export async function registerRoutes(app: Express): Promise<Server> {
   });
 
   /**
+   * Complete SMS campaign manually
+   */
+  app.post("/api/campaigns/sms-campaigns/:campaignId/complete", async (req, res) => {
+    try {
+      const campaignId = parseInt(req.params.campaignId);
+      const result = await campaignService.completeSmsCampaign(campaignId);
+      res.json(result);
+    } catch (error: any) {
+      console.error("Error completing SMS campaign:", error);
+      res.status(500).json({ error: error.message || "Failed to complete SMS campaign" });
+    }
+  });
+
+  /**
    * Auto-resume ALL paused campaigns - continues sending remaining recipients
    */
   app.post("/api/campaigns/resume-all-paused", async (req, res) => {
