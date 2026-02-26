@@ -81,6 +81,7 @@ import {
 import { useToast } from '../components/ui/use-toast';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Separator } from '@/components/ui/separator';
+import ContactImportMapper from '@/components/ContactImportMapper';
 
 interface Contact {
   id?: number;
@@ -1209,7 +1210,103 @@ export default function SmsCampaigns() {
     }
   };
 
-  // Create contact list and import contacts
+  // Handle contact import from ContactImportMapper
+  const handleContactImportComplete = async (contacts: any[]) => {
+    if (!newListName) {
+      toast({
+        title: 'Missing List Name',
+        description: 'Please provide a list name before importing',
+        variant: 'destructive'
+      });
+      return;
+    }
+
+    try {
+      const accountId = currentAccount?.id ? parseInt(String(currentAccount.id).replace('acc_', '')) : undefined;
+      
+      // Create contact list
+      const listRes = await fetch('/api/campaigns/contact-lists', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        body: JSON.stringify({
+          accountId,
+          name: newListName,
+          description: newListDescription,
+        }),
+      });
+
+      if (!listRes.ok) throw new Error('Failed to create contact list');
+      const listData = await listRes.json();
+
+      // Transform contacts to separate standard fields from custom fields
+      const transformedContacts = contacts.map(contact => {
+        const standardFields = ['phoneNumber', 'firstName', 'lastName', 'email', 'birthday', 'address', 'city', 'state', 'zipCode', 'country', 'source'];
+        const customFields: Record<string, any> = {};
+        
+        // Separate custom fields from standard fields
+        Object.keys(contact).forEach(key => {
+          if (!standardFields.includes(key) && contact[key]) {
+            customFields[key] = contact[key];
+          }
+        });
+        
+        return {
+          phoneNumber: contact.phoneNumber,
+          firstName: contact.firstName || null,
+          lastName: contact.lastName || null,
+          email: contact.email || null,
+          customFields: Object.keys(customFields).length > 0 ? customFields : undefined,
+        };
+      });
+
+      // Import contacts in chunks
+      const chunkSize = 1000;
+      let totalImported = 0;
+
+      for (let i = 0; i < transformedContacts.length; i += chunkSize) {
+        const chunk = transformedContacts.slice(i, i + chunkSize);
+        
+        const importRes = await fetch('/api/campaigns/contacts/import', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          credentials: 'include',
+          body: JSON.stringify({
+            accountId,
+            contactListId: listData.id,
+            contacts: chunk,
+          }),
+        });
+
+        if (!importRes.ok) {
+          throw new Error(`Failed to import contacts chunk ${Math.floor(i / chunkSize) + 1}`);
+        }
+        
+        const importData = await importRes.json();
+        totalImported += importData.imported || 0;
+      }
+      
+      toast({
+        title: 'Success',
+        description: `Created list "${newListName}" with ${totalImported} contact${totalImported !== 1 ? 's' : ''}`,
+      });
+
+      // Reset and refresh
+      setShowNewList(false);
+      setNewListName('');
+      setNewListDescription('');
+      fetchData();
+    } catch (error: any) {
+      console.error('[Import] Error:', error);
+      toast({
+        title: 'Import Failed',
+        description: error.message || 'Failed to import contacts',
+        variant: 'destructive'
+      });
+    }
+  };
+
+  // Create contact list and import contacts (legacy - keeping for backward compatibility)
   const handleCreateListAndImport = async () => {
     console.log('[Import] Starting import - newListName:', newListName, 'uploadedContacts:', uploadedContacts.length);
     
@@ -1738,16 +1835,16 @@ export default function SmsCampaigns() {
                 Import Contacts
               </Button>
             </DialogTrigger>
-            <DialogContent className="max-w-4xl max-h-[90vh]">
+            <DialogContent className="max-w-7xl max-h-[90vh] overflow-y-auto">
               <DialogHeader>
                 <DialogTitle>Import Contacts</DialogTitle>
                 <DialogDescription>
-                  Upload a CSV file with your contacts to create a new contact list
+                  Upload a CSV file and map your columns to contact fields
                 </DialogDescription>
               </DialogHeader>
               
-              <div className="space-y-6 py-4">
-                {/* List Name */}
+              <div className="space-y-4 py-4">
+                {/* List Name Input */}
                 <div className="grid grid-cols-2 gap-4">
                   <div className="space-y-2">
                     <Label htmlFor="listName">List Name *</Label>
@@ -1769,127 +1866,12 @@ export default function SmsCampaigns() {
                   </div>
                 </div>
 
-                {/* File Upload */}
-                <div className="space-y-2">
-                  <Label>Upload CSV File</Label>
-                  <div className="border-2 border-dashed rounded-lg p-8 text-center hover:border-blue-400 transition-colors">
-                    <input
-                      type="file"
-                      accept=".csv"
-                      onChange={handleFileUpload}
-                      className="hidden"
-                      id="csv-upload"
-                    />
-                    <label htmlFor="csv-upload" className="cursor-pointer">
-                      <FileSpreadsheet className="h-12 w-12 mx-auto text-muted-foreground mb-4" />
-                      <p className="text-sm font-medium">
-                        {isUploading ? 'Processing...' : 'Click to upload or drag and drop'}
-                      </p>
-                      <p className="text-xs text-muted-foreground mt-1">
-                        CSV file with columns: Phone, First Name, Last Name, Email
-                      </p>
-                    </label>
-                    {isUploading && (
-                      <Progress value={uploadProgress} className="mt-4 w-48 mx-auto" />
-                    )}
-                  </div>
-                </div>
-
-                {/* Preview Table */}
-                {uploadedContacts.length > 0 && (
-                  <div className="space-y-2">
-                    <div className="flex items-center justify-between">
-                      <Label>Preview ({uploadedContacts.filter(c => c.selected).length} of {uploadedContacts.length} selected)</Label>
-                      <div className="flex items-center space-x-2">
-                        <Button 
-                          variant="ghost" 
-                          size="sm"
-                          onClick={() => selectAllContacts(true)}
-                        >
-                          Select All
-                        </Button>
-                        <Button 
-                          variant="ghost" 
-                          size="sm"
-                          onClick={() => selectAllContacts(false)}
-                        >
-                          Deselect All
-                        </Button>
-                      </div>
-                    </div>
-                    <ScrollArea className="h-[300px] rounded-md border">
-                      <Table>
-                        <TableHeader>
-                          <TableRow>
-                            <TableHead className="w-[50px]">
-                              <Checkbox 
-                                checked={uploadedContacts.every(c => c.selected)}
-                                onCheckedChange={(checked) => selectAllContacts(!!checked)}
-                              />
-                            </TableHead>
-                            <TableHead>Phone Number</TableHead>
-                            <TableHead>First Name</TableHead>
-                            <TableHead>Last Name</TableHead>
-                            <TableHead>Email</TableHead>
-                            {/* Dynamically show custom field headers */}
-                            {uploadedContacts.length > 0 && uploadedContacts[0].customFields && 
-                              Object.keys(uploadedContacts[0].customFields).slice(0, 3).map(fieldName => (
-                                <TableHead key={fieldName} className="capitalize">
-                                  {fieldName.replace(/_/g, ' ')}
-                                </TableHead>
-                              ))
-                            }
-                          </TableRow>
-                        </TableHeader>
-                        <TableBody>
-                          {uploadedContacts.slice(0, 100).map((contact, index) => (
-                            <TableRow key={index} className={!contact.selected ? 'opacity-50' : ''}>
-                              <TableCell>
-                                <Checkbox 
-                                  checked={contact.selected}
-                                  onCheckedChange={() => toggleContactSelection(index)}
-                                />
-                              </TableCell>
-                              <TableCell className="font-mono">{contact.phoneNumber}</TableCell>
-                              <TableCell>{contact.firstName || '-'}</TableCell>
-                              <TableCell>{contact.lastName || '-'}</TableCell>
-                              <TableCell>{contact.email || '-'}</TableCell>
-                              {/* Dynamically show custom field values */}
-                              {uploadedContacts.length > 0 && uploadedContacts[0].customFields && 
-                                Object.keys(uploadedContacts[0].customFields).slice(0, 3).map(fieldName => (
-                                  <TableCell key={fieldName}>
-                                    {contact.customFields?.[fieldName] || '-'}
-                                  </TableCell>
-                                ))
-                              }
-                            </TableRow>
-                          ))}
-                          {uploadedContacts.length > 100 && (
-                            <TableRow>
-                              <TableCell colSpan={5 + (uploadedContacts[0]?.customFields ? Math.min(Object.keys(uploadedContacts[0].customFields).length, 3) : 0)} className="text-center text-sm text-muted-foreground py-4">
-                                Showing first 100 of {uploadedContacts.length} contacts. All contacts will be imported.
-                              </TableCell>
-                            </TableRow>
-                          )}
-                        </TableBody>
-                      </Table>
-                    </ScrollArea>
-                  </div>
-                )}
+                {/* Contact Import Mapper */}
+                <ContactImportMapper 
+                  onImportComplete={handleContactImportComplete}
+                  onCancel={() => setShowNewList(false)}
+                />
               </div>
-
-              <DialogFooter>
-                <Button variant="outline" onClick={() => setShowNewList(false)}>
-                  Cancel
-                </Button>
-                <Button 
-                  onClick={handleCreateListAndImport}
-                  disabled={!newListName || uploadedContacts.filter(c => c.selected).length === 0}
-                >
-                  <Users className="mr-2 h-4 w-4" />
-                  Create List ({uploadedContacts.filter(c => c.selected).length} contacts)
-                </Button>
-              </DialogFooter>
             </DialogContent>
           </Dialog>
           

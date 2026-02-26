@@ -44,6 +44,7 @@ import {
 } from '@/components/ui/select';
 import { useToast } from '../components/ui/use-toast';
 import { ScrollArea } from '@/components/ui/scroll-area';
+import ContactImportMapper from '@/components/ContactImportMapper';
 
 interface Contact {
   id: number;
@@ -87,6 +88,7 @@ export default function Contacts() {
   const [showEditDialog, setShowEditDialog] = useState(false);
   const [showImportDialog, setShowImportDialog] = useState(false);
   const [showConversationsDialog, setShowConversationsDialog] = useState(false);
+  const [showCSVImportDialog, setShowCSVImportDialog] = useState(false);
   
   // Form state
   const [editingContact, setEditingContact] = useState<Contact | null>(null);
@@ -330,6 +332,62 @@ export default function Contacts() {
     fetchContacts();
   };
 
+  const handleCSVImportComplete = async (contacts: any[]) => {
+    let imported = 0;
+    let failed = 0;
+
+    for (const contact of contacts) {
+      try {
+        const standardFields = ['phoneNumber', 'firstName', 'lastName', 'email', 'birthday', 'address', 'city', 'state', 'zipCode', 'country', 'source'];
+        const customFields: Record<string, any> = {};
+        
+        // Separate custom fields from standard fields
+        Object.keys(contact).forEach(key => {
+          if (!standardFields.includes(key) && contact[key]) {
+            customFields[key] = contact[key];
+          }
+        });
+        
+        const res = await fetch('/api/contacts', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          credentials: 'include',
+          body: JSON.stringify({
+            userId: 1,
+            firstName: contact.firstName || null,
+            lastName: contact.lastName || null,
+            phoneNumber: contact.phoneNumber || null,
+            email: contact.email || null,
+            birthday: contact.birthday || null,
+            address: contact.address || null,
+            city: contact.city || null,
+            state: contact.state || null,
+            zipCode: contact.zipCode || null,
+            country: contact.country || null,
+            tags: [contact.source || 'csv-import'],
+            customFields: Object.keys(customFields).length > 0 ? customFields : undefined,
+          }),
+        });
+
+        if (res.ok) {
+          imported++;
+        } else {
+          failed++;
+        }
+      } catch (e) {
+        failed++;
+      }
+    }
+
+    toast({
+      title: 'Import Complete',
+      description: `Successfully imported ${imported} contact${imported !== 1 ? 's' : ''}${failed > 0 ? `, ${failed} failed` : ''}`,
+    });
+
+    setShowCSVImportDialog(false);
+    fetchContacts();
+  };
+
   const formatPhoneDisplay = (phone: string | null): string => {
     if (!phone) return '-';
     if (phone.startsWith('+1') && phone.length === 12) {
@@ -396,6 +454,13 @@ export default function Contacts() {
           <p className="text-gray-500">Manage your contacts and import from conversations</p>
         </div>
         <div className="flex items-center gap-2">
+          <Button 
+            variant="outline" 
+            onClick={() => setShowCSVImportDialog(true)}
+          >
+            <Upload className="h-4 w-4 mr-2" />
+            Import CSV
+          </Button>
           <Button 
             variant="outline" 
             onClick={() => {
@@ -785,6 +850,22 @@ export default function Contacts() {
             <Button variant="outline" onClick={() => setShowEditDialog(false)}>Cancel</Button>
             <Button onClick={handleUpdateContact}>Save Changes</Button>
           </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* CSV Import Dialog */}
+      <Dialog open={showCSVImportDialog} onOpenChange={setShowCSVImportDialog}>
+        <DialogContent className="max-w-7xl max-h-[90vh] overflow-y-auto">
+          <DialogHeader>
+            <DialogTitle>Import Contacts from CSV</DialogTitle>
+            <DialogDescription>
+              Upload a CSV file and map your columns to contact fields
+            </DialogDescription>
+          </DialogHeader>
+          <ContactImportMapper 
+            onImportComplete={handleCSVImportComplete}
+            onCancel={() => setShowCSVImportDialog(false)}
+          />
         </DialogContent>
       </Dialog>
 
