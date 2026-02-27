@@ -2609,9 +2609,23 @@ export default function SmsCampaigns() {
                                     key={field}
                                     type="button"
                                     className="bg-green-100 px-2 py-1 rounded text-green-700 text-xs border border-green-300 hover:bg-green-200 transition-colors"
-                                    onClick={() => setNewCampaign(prev => ({ ...prev, messageTemplate: prev.messageTemplate + `{${field}}` }))}
+                                    onClick={() => {
+                                      const textarea = messageTemplateRef.current;
+                                      const tag = `{{${field}}}`;
+                                      if (textarea) {
+                                        const start = textarea.selectionStart;
+                                        const end = textarea.selectionEnd;
+                                        const text = newCampaign.messageTemplate;
+                                        const newText = text.substring(0, start) + tag + text.substring(end);
+                                        setNewCampaign(prev => ({ ...prev, messageTemplate: newText }));
+                                        setTimeout(() => {
+                                          textarea.focus();
+                                          textarea.setSelectionRange(start + tag.length, start + tag.length);
+                                        }, 0);
+                                      }
+                                    }}
                                   >
-                                    {`{${field}}`}
+                                    {`{{${field}}}`}
                                   </button>
                                 ))}
                               </div>
@@ -2738,10 +2752,25 @@ export default function SmsCampaigns() {
                                 .replace(/\{\{phoneNumber\}\}/g, '+1234567890')
                                 .replace(/\{phone_number\}/g, '+1234567890')
                                 .replace(/\{phone\}/g, '+1234567890')
-                                .replace(/\{name\}/g, 'John Doe')
-                                .replace(/\{\{Total_Debt_Amount\}\}/gi, '$25,000.00')
-                                .replace(/\{\{debt_loads\}\}/gi, '$25,000.00')
-                                .replace(/\{\{debt_load\}\}/gi, '$25,000.00');
+                                .replace(/\{name\}/g, 'John Doe');
+                              
+                              // Replace debt-related fields with formatted currency
+                              preview = preview.replace(/\{\{(Total_Debt_Amount|total_debt_amount|debt_loads|debt_load)\}\}/gi, '$42,658');
+                              
+                              // Replace all custom field tags from uploaded contacts
+                              const customFieldSamples: Record<string, string> = {
+                                'Total_Debt_Amount': '$42,658',
+                                'total_debt_amount': '$42,658',
+                                'debt_loads': '$42,658',
+                                'debt_load': '$42,658',
+                                'total_balance_of_open_bankcard_trades_updated_in_the_past_12_months': '$15,234',
+                              };
+                              
+                              // Replace custom field tags
+                              Object.entries(customFieldSamples).forEach(([field, value]) => {
+                                const regex = new RegExp(`\\{\\{${field.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\}\\}`, 'gi');
+                                preview = preview.replace(regex, value);
+                              });
                               
                               // Replace custom variables with their default values or sample data
                               Object.entries(newCampaign.customVariables).forEach(([key, value]) => {
@@ -2840,10 +2869,25 @@ export default function SmsCampaigns() {
                                 .replace(/\{\{phoneNumber\}\}/g, testPhoneNumber)
                                 .replace(/\{phone_number\}/g, testPhoneNumber)
                                 .replace(/\{phone\}/g, testPhoneNumber)
-                                .replace(/\{name\}/g, 'John Doe')
-                                .replace(/\{\{Total_Debt_Amount\}\}/gi, '$25,000.00')
-                                .replace(/\{\{debt_loads\}\}/gi, '$25,000.00')
-                                .replace(/\{\{debt_load\}\}/gi, '$25,000.00');
+                                .replace(/\{name\}/g, 'John Doe');
+                              
+                              // Replace debt-related fields with formatted currency
+                              preview = preview.replace(/\{\{(Total_Debt_Amount|total_debt_amount|debt_loads|debt_load)\}\}/gi, '$42,658');
+                              
+                              // Replace all custom field tags from uploaded contacts
+                              const customFieldSamples: Record<string, string> = {
+                                'Total_Debt_Amount': '$42,658',
+                                'total_debt_amount': '$42,658',
+                                'debt_loads': '$42,658',
+                                'debt_load': '$42,658',
+                                'total_balance_of_open_bankcard_trades_updated_in_the_past_12_months': '$15,234',
+                              };
+                              
+                              // Replace custom field tags
+                              Object.entries(customFieldSamples).forEach(([field, value]) => {
+                                const regex = new RegExp(`\\{\\{${field.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\}\\}`, 'gi');
+                                preview = preview.replace(regex, value);
+                              });
                               
                               // Replace custom variables with their default values or sample data
                               Object.entries(newCampaign.customVariables).forEach(([key, value]) => {

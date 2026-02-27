@@ -1174,12 +1174,19 @@ async function sendCampaignMessages(
     for (const recipient of recipients) {
       try {
         // Apply merge tags
-        const personalizedMessage = applyMergeTags(campaign.messageTemplate, {
+        const mergeData = {
           firstName: recipient.firstName,
           lastName: recipient.lastName,
           phoneNumber: recipient.phoneNumber,
           ...((recipient.customFields as Record<string, any>) || {}),
-        });
+        };
+        
+        console.log('[Campaign] Merge data for recipient:', JSON.stringify(mergeData, null, 2));
+        console.log('[Campaign] Template:', campaign.messageTemplate);
+        
+        const personalizedMessage = applyMergeTags(campaign.messageTemplate, mergeData);
+        
+        console.log('[Campaign] Personalized message:', personalizedMessage);
 
         // Send message
         const result = await providerInstance.sendMessage({
@@ -1477,27 +1484,52 @@ function applyMergeTags(template: string, data: Record<string, any>): string {
     lowerKeyMap[key.toLowerCase()] = key;
   });
   
-  return template.replace(/\{\{(\w+)\}\}/g, (match, key) => {
-    // Try exact match first, then case-insensitive match
-    const actualKey = data[key] !== undefined ? key : lowerKeyMap[key.toLowerCase()];
+  console.log('[applyMergeTags] Template:', template);
+  console.log('[applyMergeTags] Data keys:', Object.keys(data));
+  console.log('[applyMergeTags] Data values:', JSON.stringify(data, null, 2));
+  
+  const result = template.replace(/\{\{([^}]+)\}\}/g, (match, key) => {
+    const trimmedKey = key.trim();
     
-    if (!actualKey || data[actualKey] === undefined) return match;
+    // Try exact match first, then case-insensitive match
+    const actualKey = data[trimmedKey] !== undefined ? trimmedKey : lowerKeyMap[trimmedKey.toLowerCase()];
+    
+    console.log('[applyMergeTags] Processing tag:', match, 'key:', trimmedKey, 'actualKey:', actualKey);
+    
+    if (!actualKey || data[actualKey] === undefined) {
+      console.log('[applyMergeTags] No value found for:', trimmedKey);
+      return match;
+    }
     
     const value = data[actualKey];
-    const lowerKey = key.toLowerCase();
+    const lowerKey = trimmedKey.toLowerCase();
     
-    // Special formatting for debt fields - add dollar sign
-    if (lowerKey === 'debt_loads' || lowerKey === 'debt_load' || lowerKey === 'total_debt_amount') {
-      const valueStr = String(value).replace(/[,$]/g, ''); // Remove existing $ and commas
-      const numValue = parseFloat(valueStr);
-      if (!isNaN(numValue)) {
-        return '$' + numValue.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
-      }
-      return '$' + valueStr;
+    console.log('[applyMergeTags] Value for', actualKey, ':', value, 'type:', typeof value);
+    
+    // Check if this looks like a currency/numeric value
+    const valueStr = String(value);
+    const cleanedValue = valueStr.replace(/[,$()]/g, '').trim();
+    const numValue = parseFloat(cleanedValue);
+    
+    // Special formatting for debt/amount/balance fields OR any numeric value with parentheses/commas
+    const isCurrencyField = lowerKey.includes('debt') || 
+                           lowerKey.includes('amount') || 
+                           lowerKey.includes('balance') ||
+                           lowerKey.includes('total') ||
+                           /^\([0-9,]+\)$/.test(valueStr) || // Matches (39235)
+                           /^[0-9,]+$/.test(valueStr); // Matches 39235 or 39,235
+    
+    if (isCurrencyField && !isNaN(numValue) && numValue > 0) {
+      const formatted = '$' + numValue.toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 0 });
+      console.log('[applyMergeTags] Formatted currency:', valueStr, '->', formatted);
+      return formatted;
     }
     
     return String(value);
   });
+  
+  console.log('[applyMergeTags] Result:', result);
+  return result;
 }
 
 /**
