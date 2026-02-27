@@ -89,34 +89,72 @@ export async function registerRoutes(app: Express): Promise<Server> {
       }
 
       const fromNumber = String(from).trim();
-      const { accountPhoneNumbers } = await import('../shared/schema');
+      console.log('[Test SMS] Looking for phone number:', fromNumber);
 
-      // Find account owning this fromNumber
-      const match = await db
-        .select({ accountId: accountPhoneNumbers.accountId, capabilities: accountPhoneNumbers.capabilities })
-        .from(accountPhoneNumbers)
-        .where(eq(accountPhoneNumbers.phoneNumber, fromNumber))
-        .limit(1);
+      // Get all accounts
+      const { accounts } = await import('../shared/schema');
+      const allAccounts = await db.select().from(accounts);
+      
+      console.log('[Test SMS] Checking', allAccounts.length, 'accounts');
 
-      if (match.length === 0) {
-        return res.status(400).json({ error: 'From number is not linked to any account' });
+      let matchedAccountId: number | null = null;
+
+      // FAST PATH: Check imported phone numbers only (no API calls)
+      for (const account of allAccounts) {
+        const settings = (account.settings || {}) as Record<string, any>;
+        if (settings.importedPhoneNumbers && Array.isArray(settings.importedPhoneNumbers)) {
+          const hasNumber = settings.importedPhoneNumbers.some((pn: any) => 
+            pn.phoneNumber === fromNumber
+          );
+          if (hasNumber) {
+            console.log('[Test SMS] ✓ Found in imported numbers for account', account.id);
+            matchedAccountId = account.id;
+            break;
+          }
+        }
       }
 
-      const accountId = match[0].accountId;
-      const provider = await accountService.getProviderForAccount(accountId);
+      // If not found in imported numbers, just use the first account with valid credentials
+      if (!matchedAccountId) {
+        console.log('[Test SMS] Not found in imported numbers, using first available account');
+        for (const account of allAccounts) {
+          const provider = await accountService.getProviderForAccount(account.id);
+          if (provider) {
+            console.log('[Test SMS] ✓ Using account', account.id, 'with provider', provider.code);
+            matchedAccountId = account.id;
+            break;
+          }
+        }
+      }
+
+      if (!matchedAccountId) {
+        console.log('[Test SMS] ✗ No valid account found');
+        return res.status(400).json({ 
+          error: 'No account with valid credentials found',
+          hint: 'Please configure at least one Twilio or Commio account'
+        });
+      }
+
+      // Get provider for the matched account
+      const provider = await accountService.getProviderForAccount(matchedAccountId);
       if (!provider) {
-        return res.status(400).json({ error: 'Provider credentials are not configured for this number' });
+        return res.status(400).json({ error: 'Provider credentials are not configured' });
       }
 
+      console.log('[Test SMS] Sending SMS via', provider.code);
+
+      // Send the message
       const result = await provider.sendMessage({ to, from: fromNumber, body: message });
 
       if (result.success) {
-        return res.json({ success: true, messageSid: result.sid, fromNumber, accountId, provider: provider.code });
+        console.log('[Test SMS] ✓ Message sent:', result.sid);
+        return res.json({ success: true, messageSid: result.sid, fromNumber, accountId: matchedAccountId, provider: provider.code });
       }
 
+      console.log('[Test SMS] ✗ Send failed:', result.error);
       return res.status(400).json({ error: result.error || 'Failed to send SMS', fromNumber, provider: provider.code });
     } catch (error: any) {
-      console.error('[Test SMS] Error:', error);
+      console.error('[Test SMS] ✗ Error:', error);
       res.status(500).json({ error: error.message || 'Failed to send SMS' });
     }
   });

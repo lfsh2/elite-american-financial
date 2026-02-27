@@ -244,6 +244,9 @@ export default function SmsCampaigns() {
   const [isSending, setIsSending] = useState(false);
   const [selectedCampaign, setSelectedCampaign] = useState<SmsCampaign | null>(null);
   
+  // Message template textarea ref for cursor position
+  const messageTemplateRef = React.useRef<HTMLTextAreaElement>(null);
+  
   // Message templates
   const [messageTemplates, setMessageTemplates] = useState<MessageTemplate[]>([]);
   const [showTemplateDialog, setShowTemplateDialog] = useState(false);
@@ -2489,6 +2492,7 @@ export default function SmsCampaigns() {
                         )}
                       </div>
                       <Textarea
+                        ref={messageTemplateRef}
                         id="messageTemplate"
                         placeholder="Hi {first_name}, quick update - we finalized details on an option around {{debt_loads}}. Please call me back here as soon as you can. 562-606-5539"
                         className="min-h-[150px]"
@@ -2504,7 +2508,20 @@ export default function SmsCampaigns() {
                               key={tag}
                               type="button"
                               className="bg-white px-2 py-1 rounded text-blue-700 text-xs border border-blue-200 hover:bg-blue-100 transition-colors"
-                              onClick={() => setNewCampaign(prev => ({ ...prev, messageTemplate: prev.messageTemplate + tag }))}
+                              onClick={() => {
+                                const textarea = messageTemplateRef.current;
+                                if (textarea) {
+                                  const start = textarea.selectionStart;
+                                  const end = textarea.selectionEnd;
+                                  const text = newCampaign.messageTemplate;
+                                  const newText = text.substring(0, start) + tag + text.substring(end);
+                                  setNewCampaign(prev => ({ ...prev, messageTemplate: newText }));
+                                  setTimeout(() => {
+                                    textarea.focus();
+                                    textarea.setSelectionRange(start + tag.length, start + tag.length);
+                                  }, 0);
+                                }
+                              }}
                             >
                               {tag}
                             </button>
@@ -2513,7 +2530,21 @@ export default function SmsCampaigns() {
                           <button
                             type="button"
                             className="bg-green-50 px-2 py-1 rounded text-green-700 text-xs border border-green-300 hover:bg-green-100 transition-colors font-medium"
-                            onClick={() => setNewCampaign(prev => ({ ...prev, messageTemplate: prev.messageTemplate + '{{debt_loads}}' }))}
+                            onClick={() => {
+                              const textarea = messageTemplateRef.current;
+                              const tag = '{{debt_loads}}';
+                              if (textarea) {
+                                const start = textarea.selectionStart;
+                                const end = textarea.selectionEnd;
+                                const text = newCampaign.messageTemplate;
+                                const newText = text.substring(0, start) + tag + text.substring(end);
+                                setNewCampaign(prev => ({ ...prev, messageTemplate: newText }));
+                                setTimeout(() => {
+                                  textarea.focus();
+                                  textarea.setSelectionRange(start + tag.length, start + tag.length);
+                                }, 0);
+                              }
+                            }}
                             title="Automatically formats with $ sign"
                           >
                             {'{{debt_loads}}'} 💰
@@ -2522,7 +2553,21 @@ export default function SmsCampaigns() {
                           <button
                             type="button"
                             className="bg-green-50 px-2 py-1 rounded text-green-700 text-xs border border-green-300 hover:bg-green-100 transition-colors font-medium"
-                            onClick={() => setNewCampaign(prev => ({ ...prev, messageTemplate: prev.messageTemplate + '{{Total_Debt_Amount}}' }))}
+                            onClick={() => {
+                              const textarea = messageTemplateRef.current;
+                              const tag = '{{Total_Debt_Amount}}';
+                              if (textarea) {
+                                const start = textarea.selectionStart;
+                                const end = textarea.selectionEnd;
+                                const text = newCampaign.messageTemplate;
+                                const newText = text.substring(0, start) + tag + text.substring(end);
+                                setNewCampaign(prev => ({ ...prev, messageTemplate: newText }));
+                                setTimeout(() => {
+                                  textarea.focus();
+                                  textarea.setSelectionRange(start + tag.length, start + tag.length);
+                                }, 0);
+                              }
+                            }}
                             title="Automatically formats with $ sign"
                           >
                             {'{{Total_Debt_Amount}}'} 💰
@@ -2693,7 +2738,10 @@ export default function SmsCampaigns() {
                                 .replace(/\{\{phoneNumber\}\}/g, '+1234567890')
                                 .replace(/\{phone_number\}/g, '+1234567890')
                                 .replace(/\{phone\}/g, '+1234567890')
-                                .replace(/\{name\}/g, 'John Doe');
+                                .replace(/\{name\}/g, 'John Doe')
+                                .replace(/\{\{Total_Debt_Amount\}\}/gi, '$25,000.00')
+                                .replace(/\{\{debt_loads\}\}/gi, '$25,000.00')
+                                .replace(/\{\{debt_load\}\}/gi, '$25,000.00');
                               
                               // Replace custom variables with their default values or sample data
                               Object.entries(newCampaign.customVariables).forEach(([key, value]) => {
@@ -2779,18 +2827,25 @@ export default function SmsCampaigns() {
                         <Button
                           variant="default"
                           className="bg-emerald-600 hover:bg-emerald-700"
-                          disabled={!testPhoneNumber || !newCampaign.messageTemplate || !newCampaign.fromNumber || isSendingTest}
+                          disabled={!testPhoneNumber || !newCampaign.messageTemplate || isSendingTest}
                           onClick={async () => {
                             setIsSendingTest(true);
                             try {
-                              // Build preview with merge tags replaced
+                              // Build preview with merge tags replaced - SAME AS LIVE PREVIEW
                               let preview = newCampaign.messageTemplate
-                                .replace(/\{first_name\}/g, 'Test')
-                                .replace(/\{last_name\}/g, 'User')
-                                .replace(/\{name\}/g, 'Test User')
-                                .replace(/\{phone\}/g, testPhoneNumber);
+                                .replace(/\{\{firstName\}\}/g, 'John')
+                                .replace(/\{first_name\}/g, 'John')
+                                .replace(/\{\{lastName\}\}/g, 'Doe')
+                                .replace(/\{last_name\}/g, 'Doe')
+                                .replace(/\{\{phoneNumber\}\}/g, testPhoneNumber)
+                                .replace(/\{phone_number\}/g, testPhoneNumber)
+                                .replace(/\{phone\}/g, testPhoneNumber)
+                                .replace(/\{name\}/g, 'John Doe')
+                                .replace(/\{\{Total_Debt_Amount\}\}/gi, '$25,000.00')
+                                .replace(/\{\{debt_loads\}\}/gi, '$25,000.00')
+                                .replace(/\{\{debt_load\}\}/gi, '$25,000.00');
                               
-                              // Replace custom variables
+                              // Replace custom variables with their default values or sample data
                               Object.entries(newCampaign.customVariables).forEach(([key, value]) => {
                                 if (value) {
                                   preview = preview.replace(new RegExp(`\\$?\\{${key}\\}`, 'g'), value);
@@ -2799,6 +2854,41 @@ export default function SmsCampaigns() {
                               
                               setTestMessagePreview(preview);
                               
+                              // Add opt-out message if enabled
+                              const finalMessage = preview + (optOutMessageEnabled ? '\n' + optOutMessageText : '');
+                              
+                              // Auto-select from number if not specified (pick first available)
+                              let fromNumber = newCampaign.fromNumber?.split(',')[0]?.trim();
+                              
+                              console.log('[Test Message] Initial fromNumber:', fromNumber);
+                              console.log('[Test Message] phoneNumbers available:', phoneNumbers.length);
+                              console.log('[Test Message] phoneNumbers:', phoneNumbers);
+                              
+                              if (!fromNumber && phoneNumbers.length > 0) {
+                                // Pick first SMS-capable number
+                                const smsNumber = phoneNumbers.find(pn => pn.capabilities?.sms !== false);
+                                if (smsNumber) {
+                                  fromNumber = smsNumber.phoneNumber;
+                                  console.log('[Test Message] Auto-selected number:', fromNumber);
+                                } else {
+                                  fromNumber = phoneNumbers[0].phoneNumber;
+                                  console.log('[Test Message] Using first number (no SMS capability check):', fromNumber);
+                                }
+                              }
+                              
+                              // Validate from number exists
+                              if (!fromNumber) {
+                                toast({ 
+                                  title: 'No Sender Number', 
+                                  description: 'Please add a phone number in Settings or select one in Step 1', 
+                                  variant: 'destructive' 
+                                });
+                                setIsSendingTest(false);
+                                return;
+                              }
+                              
+                              console.log('[Test Message] Final fromNumber to use:', fromNumber);
+                              
                               // Send test via the provider directly
                               const testRes = await fetch('/api/sms/send', {
                                 method: 'POST',
@@ -2806,8 +2896,8 @@ export default function SmsCampaigns() {
                                 credentials: 'include',
                                 body: JSON.stringify({
                                   to: testPhoneNumber,
-                                  message: preview + (optOutMessageEnabled ? '\n' + optOutMessageText : ''),
-                                  from: newCampaign.fromNumber?.split(',')[0]?.trim(),
+                                  message: finalMessage,
+                                  from: fromNumber,
                                 }),
                               });
                               
@@ -2827,8 +2917,11 @@ export default function SmsCampaigns() {
                           {isSendingTest ? <Loader2 className="h-4 w-4 animate-spin" /> : <><Send className="h-4 w-4 mr-1" /> Send</>}
                         </Button>
                       </div>
-                      {!newCampaign.fromNumber && (
-                        <p className="text-xs text-amber-600 mt-2">⚠️ Select a "From" number in Step 1 to enable test sending.</p>
+                      {!newCampaign.fromNumber && phoneNumbers.length > 0 && (
+                        <p className="text-xs text-blue-600 mt-2">ℹ️ No "From" number selected. Will use first available number from your pool.</p>
+                      )}
+                      {!newCampaign.fromNumber && phoneNumbers.length === 0 && (
+                        <p className="text-xs text-amber-600 mt-2">⚠️ No phone numbers available. Please add a number in Settings.</p>
                       )}
                     </div>
 
