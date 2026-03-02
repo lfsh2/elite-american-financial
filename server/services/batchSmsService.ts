@@ -357,10 +357,21 @@ class BatchSmsService {
         lastDbUpdateCount = p.sent + p.failed;
         
         try {
+          // Get actual counts from campaign_recipients to avoid double-counting
+          const [sentCountResult] = await db.select({ count: sql<number>`count(*)` })
+            .from(campaignRecipients)
+            .where(and(eq(campaignRecipients.smsCampaignId, options.campaignId), eq(campaignRecipients.status, 'sent')));
+          const [failedCountResult] = await db.select({ count: sql<number>`count(*)` })
+            .from(campaignRecipients)
+            .where(and(eq(campaignRecipients.smsCampaignId, options.campaignId), eq(campaignRecipients.status, 'failed')));
+          
+          const actualSent = Number(sentCountResult?.count || 0);
+          const actualFailed = Number(failedCountResult?.count || 0);
+          
           await db.update(smsCampaigns)
             .set({
-              sentCount: baselineSent + p.sent,
-              failedCount: baselineFailed + p.failed,
+              sentCount: actualSent,
+              failedCount: actualFailed,
               updatedAt: new Date(),
             })
             .where(eq(smsCampaigns.id, options.campaignId));
@@ -373,22 +384,34 @@ class BatchSmsService {
       // Update campaign status when complete
       if (options.campaignId) {
         try {
-          // Check if all recipients have been processed (sent + failed >= total)
-          // Use totalCampaignRecipients if provided (for resume), otherwise use recipients.length
-          const totalCampaignRecipients = options.totalCampaignRecipients || options.recipients.length;
-          const totalProcessed = baselineSent + result.sent + baselineFailed + result.failed;
-          const isFullyComplete = totalProcessed >= totalCampaignRecipients;
+          // CRITICAL: Get actual counts from campaign_recipients table to avoid double-counting on resume
+          const [sentCountResult] = await db.select({ count: sql<number>`count(*)` })
+            .from(campaignRecipients)
+            .where(and(eq(campaignRecipients.smsCampaignId, options.campaignId), eq(campaignRecipients.status, 'sent')));
+          const [failedCountResult] = await db.select({ count: sql<number>`count(*)` })
+            .from(campaignRecipients)
+            .where(and(eq(campaignRecipients.smsCampaignId, options.campaignId), eq(campaignRecipients.status, 'failed')));
+          const [pendingCountResult] = await db.select({ count: sql<number>`count(*)` })
+            .from(campaignRecipients)
+            .where(and(eq(campaignRecipients.smsCampaignId, options.campaignId), eq(campaignRecipients.status, 'pending')));
           
-          // Always mark as completed when batch finishes - no auto-pause
+          const actualSent = Number(sentCountResult?.count || 0);
+          const actualFailed = Number(failedCountResult?.count || 0);
+          const actualPending = Number(pendingCountResult?.count || 0);
+          
+          // Determine if fully complete (no pending recipients left)
+          const isFullyComplete = actualPending === 0;
+          
+          // Update with actual counts from recipient table
           await db.update(smsCampaigns)
             .set({
-              status: 'completed',
-              sentCount: baselineSent + result.sent,
-              failedCount: baselineFailed + result.failed,
-              completedAt: new Date(),
+              status: isFullyComplete ? 'completed' : 'paused',
+              sentCount: actualSent,
+              failedCount: actualFailed,
+              completedAt: isFullyComplete ? new Date() : undefined,
             })
             .where(eq(smsCampaigns.id, options.campaignId));
-          console.log(`[BatchSMS] Campaign ${options.campaignId} COMPLETED: ${baselineSent + result.sent} total sent, ${baselineFailed + result.failed} total failed (this batch: +${result.sent}/+${result.failed}, total processed: ${totalProcessed}/${totalCampaignRecipients})`);
+          console.log(`[BatchSMS] Campaign ${options.campaignId} ${isFullyComplete ? 'COMPLETED' : 'PAUSED'}: ${actualSent} sent, ${actualFailed} failed, ${actualPending} pending (this batch: +${result.sent}/+${result.failed})`);
 
           // After 30s, recount delivered messages from DB (webhooks may have updated statuses)
           const campaignId = options.campaignId;
