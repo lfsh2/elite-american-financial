@@ -1011,6 +1011,30 @@ export async function startSmsCampaign(
     return { success: false, message: 'Campaign not found' };
   }
 
+  // Auto-fix message template if it has wrong brace formats
+  if (campaign.messageTemplate) {
+    let original = campaign.messageTemplate;
+    let sanitized = original;
+    
+    // Fix quadruple braces {{{{ to double braces {{
+    sanitized = sanitized.replace(/\{\{\{\{([^}]+)\}\}\}\}/g, '{{$1}}');
+    // Fix triple braces {{{ to double braces {{
+    sanitized = sanitized.replace(/\{\{\{([^}]+)\}\}\}/g, '{{$1}}');
+    // Fix single braces with content that looks like merge tags
+    sanitized = sanitized.replace(/\{([A-Z_][A-Za-z0-9_]*)\}/g, '{{$1}}');
+    
+    // Update in database if changed
+    if (sanitized !== original) {
+      await db
+        .update(smsCampaigns)
+        .set({ messageTemplate: sanitized, updatedAt: new Date() })
+        .where(eq(smsCampaigns.id, smsCampaignId));
+      
+      // Update the campaign object for this execution
+      campaign.messageTemplate = sanitized;
+    }
+  }
+
   // Allow resume from paused state; keep original startedAt when resuming
   if (!['draft', 'scheduled', 'paused'].includes(campaign.status)) {
     return { success: false, message: `Cannot start campaign in ${campaign.status} status` };
