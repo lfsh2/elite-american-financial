@@ -1020,8 +1020,7 @@ export async function startSmsCampaign(
     sanitized = sanitized.replace(/\{\{\{\{([^}]+)\}\}\}\}/g, '{{$1}}');
     // Fix triple braces {{{ to double braces {{
     sanitized = sanitized.replace(/\{\{\{([^}]+)\}\}\}/g, '{{$1}}');
-    // Fix single braces with content that looks like merge tags
-    sanitized = sanitized.replace(/\{([A-Z_][A-Za-z0-9_]*)\}/g, '{{$1}}');
+    // Note: Single braces are now handled by applyMergeTags which supports both formats
     
     // Update in database if changed
     if (sanitized !== original) {
@@ -1495,20 +1494,68 @@ function normalizePhoneNumber(phone: string): string {
  * Apply merge tags to message template
  * Supports special formatting for debt_loads and Total_Debt_Amount (adds $ prefix)
  * Case-insensitive matching to handle CSV headers stored in lowercase
+ * Handles both snake_case ({first_name}) and camelCase (firstName) field names
  */
 function applyMergeTags(template: string, data: Record<string, any>): string {
-  // Create a lowercase key map for case-insensitive lookup
+  // Create multiple lookup maps for flexible matching
   const lowerKeyMap: Record<string, string> = {};
+  const snakeToCamelMap: Record<string, string> = {};
+  const camelToSnakeMap: Record<string, string> = {};
+  
+  // Helper to convert snake_case to camelCase
+  const snakeToCamel = (str: string): string => {
+    return str.replace(/_([a-z])/g, (_, letter) => letter.toUpperCase());
+  };
+  
+  // Helper to convert camelCase to snake_case
+  const camelToSnake = (str: string): string => {
+    return str.replace(/[A-Z]/g, letter => `_${letter.toLowerCase()}`);
+  };
+  
   Object.keys(data).forEach(key => {
     lowerKeyMap[key.toLowerCase()] = key;
+    // Map snake_case versions to original keys
+    const snakeVersion = camelToSnake(key);
+    if (snakeVersion !== key) {
+      snakeToCamelMap[snakeVersion.toLowerCase()] = key;
+    }
+    // Map camelCase versions to original keys
+    const camelVersion = snakeToCamel(key);
+    if (camelVersion !== key) {
+      camelToSnakeMap[camelVersion.toLowerCase()] = key;
+    }
   });
+  
+  // Helper function to find the actual key in data
+  const findActualKey = (tagKey: string): string | undefined => {
+    const trimmedKey = tagKey.trim();
+    const lowerKey = trimmedKey.toLowerCase();
+    
+    // Try exact match first
+    if (data[trimmedKey] !== undefined) return trimmedKey;
+    
+    // Try case-insensitive match
+    if (lowerKeyMap[lowerKey]) return lowerKeyMap[lowerKey];
+    
+    // Try snake_case to camelCase conversion (e.g., first_name -> firstName)
+    if (snakeToCamelMap[lowerKey]) return snakeToCamelMap[lowerKey];
+    
+    // Try camelCase to snake_case conversion (e.g., firstName -> first_name)
+    if (camelToSnakeMap[lowerKey]) return camelToSnakeMap[lowerKey];
+    
+    // Try direct conversion
+    const camelVersion = snakeToCamel(trimmedKey);
+    if (data[camelVersion] !== undefined) return camelVersion;
+    
+    const snakeVersion = camelToSnake(trimmedKey);
+    if (data[snakeVersion] !== undefined) return snakeVersion;
+    
+    return undefined;
+  };
   
   // Helper function to process a merge tag
   const processMergeTag = (match: string, key: string): string => {
-    const trimmedKey = key.trim();
-    
-    // Try exact match first, then case-insensitive match
-    const actualKey = data[trimmedKey] !== undefined ? trimmedKey : lowerKeyMap[trimmedKey.toLowerCase()];
+    const actualKey = findActualKey(key);
     
     // If no value found, keep the tag as-is
     if (!actualKey || data[actualKey] === undefined || data[actualKey] === null) {
@@ -1516,7 +1563,7 @@ function applyMergeTags(template: string, data: Record<string, any>): string {
     }
     
     const value = data[actualKey];
-    const lowerKey = trimmedKey.toLowerCase();
+    const lowerKey = key.trim().toLowerCase();
     
     // Convert to string and clean whitespace
     let valueStr = String(value).trim();
@@ -1558,8 +1605,8 @@ function applyMergeTags(template: string, data: Record<string, any>): string {
   // Replace double braces {{field}} first
   let result = template.replace(/\{\{([^}]+)\}\}/g, processMergeTag);
   
-  // Then replace single braces {field} for fields that look like merge tags
-  result = result.replace(/\{([A-Z_][A-Za-z0-9_]*)\}/g, processMergeTag);
+  // Then replace single braces {field} for any valid field name (lowercase or uppercase)
+  result = result.replace(/\{([a-zA-Z_][a-zA-Z0-9_]*)\}/g, processMergeTag);
   
   return result;
 }

@@ -6571,8 +6571,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
         campaignData.messageTemplate = campaignData.messageTemplate.replace(/\{\{\{\{([^}]+)\}\}\}\}/g, '{{$1}}');
         // Fix triple braces {{{ to double braces {{
         campaignData.messageTemplate = campaignData.messageTemplate.replace(/\{\{\{([^}]+)\}\}\}/g, '{{$1}}');
-        // Fix single braces with content that looks like merge tags
-        campaignData.messageTemplate = campaignData.messageTemplate.replace(/\{([A-Z_][A-Za-z0-9_]*)\}/g, '{{$1}}');
+        // Note: Single braces are now handled by applyMergeTags which supports both formats
       }
 
       const campaign = await campaignService.createSmsCampaign(campaignData);
@@ -6800,8 +6799,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
         sanitized = sanitized.replace(/\{\{\{\{([^}]+)\}\}\}\}/g, '{{$1}}');
         // Fix triple braces {{{ to double braces {{
         sanitized = sanitized.replace(/\{\{\{([^}]+)\}\}\}/g, '{{$1}}');
-        // Fix single braces with content that looks like merge tags
-        sanitized = sanitized.replace(/\{([A-Z_][A-Za-z0-9_]*)\}/g, '{{$1}}');
+        // Note: Single braces are now handled by applyMergeTags which supports both formats
         updateData.messageTemplate = sanitized;
       }
       
@@ -7310,8 +7308,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
         sanitized = sanitized.replace(/\{\{\{\{([^}]+)\}\}\}\}/g, '{{$1}}');
         // Fix triple braces {{{ to double braces {{
         sanitized = sanitized.replace(/\{\{\{([^}]+)\}\}\}/g, '{{$1}}');
-        // Fix single braces with content that looks like merge tags
-        sanitized = sanitized.replace(/\{([A-Z_][A-Za-z0-9_]*)\}/g, '{{$1}}');
+        // Note: Single braces are now handled by applyMergeTags which supports both formats
         
         // Only update if changed
         if (sanitized !== original) {
