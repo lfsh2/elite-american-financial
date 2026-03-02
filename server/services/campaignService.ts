@@ -1484,41 +1484,47 @@ function applyMergeTags(template: string, data: Record<string, any>): string {
     lowerKeyMap[key.toLowerCase()] = key;
   });
   
-  const result = template.replace(/\{\{([^}]+)\}\}/g, (match, key) => {
+  return template.replace(/\{\{([^}]+)\}\}/g, (match, key) => {
     const trimmedKey = key.trim();
     
     // Try exact match first, then case-insensitive match
     const actualKey = data[trimmedKey] !== undefined ? trimmedKey : lowerKeyMap[trimmedKey.toLowerCase()];
     
     if (!actualKey || data[actualKey] === undefined) {
-      return match;
+      return match; // Keep the tag if no value found
     }
     
     const value = data[actualKey];
     const lowerKey = trimmedKey.toLowerCase();
-    const valueStr = String(value);
+    const valueStr = String(value).trim();
     
-    // Clean the value - remove $, commas, parentheses, and whitespace
-    const cleanedValue = valueStr.replace(/[\s$,()]/g, '');
-    const numValue = parseFloat(cleanedValue);
+    // Check if this field should be formatted as currency
+    const isCurrencyField = lowerKey.includes('debt') || 
+                           lowerKey.includes('amount') || 
+                           lowerKey.includes('balance') ||
+                           lowerKey.includes('total') ||
+                           lowerKey.includes('price') ||
+                           lowerKey.includes('cost');
     
-    // Check if this is a currency field by name OR if the value looks like a number
-    const isCurrencyFieldByName = lowerKey.includes('debt') || 
-                                  lowerKey.includes('amount') || 
-                                  lowerKey.includes('balance') ||
-                                  lowerKey.includes('total');
+    // Check if the value looks like a number (with or without formatting)
+    // Matches: 39235, (39235), 39,235, $39235, $ 39,235, etc.
+    const numericPattern = /^[\s$,()]*([0-9]+(?:\.[0-9]{1,2})?)[\s$,()]*$/;
+    const numericMatch = valueStr.match(numericPattern);
     
-    const looksLikeNumber = /^[\s$,()]*[0-9]+[\s$,()]*$/.test(valueStr);
-    
-    // Format as currency if it's a currency field OR if it's a plain number
-    if ((isCurrencyFieldByName || looksLikeNumber) && !isNaN(numValue) && numValue > 0) {
-      return '$' + numValue.toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 0 });
+    if ((isCurrencyField || numericMatch) && numericMatch) {
+      const numValue = parseFloat(numericMatch[1]);
+      
+      if (!isNaN(numValue) && numValue > 0) {
+        // Format as currency with $ and commas, no decimals
+        return '$' + numValue.toLocaleString('en-US', { 
+          minimumFractionDigits: 0, 
+          maximumFractionDigits: 0 
+        });
+      }
     }
     
     return valueStr;
   });
-  
-  return result;
 }
 
 /**
