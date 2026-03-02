@@ -6785,13 +6785,25 @@ export async function registerRoutes(app: Express): Promise<Server> {
   app.put("/api/campaigns/sms-campaigns/:campaignId", async (req, res) => {
     try {
       const campaignId = parseInt(req.params.campaignId);
-      const { status, sentCount, deliveredCount, failedCount } = req.body;
+      const { status, sentCount, deliveredCount, failedCount, messageTemplate } = req.body;
       
       const updateData: any = { updatedAt: new Date() };
       if (status !== undefined) updateData.status = status;
       if (sentCount !== undefined) updateData.sentCount = sentCount;
       if (deliveredCount !== undefined) updateData.deliveredCount = deliveredCount;
       if (failedCount !== undefined) updateData.failedCount = failedCount;
+      
+      // Sanitize message template if provided
+      if (messageTemplate !== undefined) {
+        let sanitized = messageTemplate;
+        // Fix quadruple braces {{{{ to double braces {{
+        sanitized = sanitized.replace(/\{\{\{\{([^}]+)\}\}\}\}/g, '{{$1}}');
+        // Fix triple braces {{{ to double braces {{
+        sanitized = sanitized.replace(/\{\{\{([^}]+)\}\}\}/g, '{{$1}}');
+        // Fix single braces with content that looks like merge tags
+        sanitized = sanitized.replace(/\{([A-Z_][A-Za-z0-9_]*)\}/g, '{{$1}}');
+        updateData.messageTemplate = sanitized;
+      }
       
       // Set timestamps based on status
       if (status === 'sending' && !updateData.startedAt) {
@@ -7271,6 +7283,58 @@ export async function registerRoutes(app: Express): Promise<Server> {
     } catch (error: any) {
       console.error("Error fetching SMS campaigns:", error);
       res.status(500).json({ error: error.message || "Failed to fetch SMS campaigns" });
+    }
+  });
+
+  /**
+   * Migration endpoint: Fix all existing campaign templates with wrong brace formats
+   */
+  app.post("/api/campaigns/sms-campaigns/fix-templates", async (req, res) => {
+    try {
+      // Get all campaigns
+      const allCampaigns = await db.select().from(smsCampaigns);
+      
+      let fixed = 0;
+      let skipped = 0;
+      
+      for (const campaign of allCampaigns) {
+        if (!campaign.messageTemplate) {
+          skipped++;
+          continue;
+        }
+        
+        let original = campaign.messageTemplate;
+        let sanitized = original;
+        
+        // Fix quadruple braces {{{{ to double braces {{
+        sanitized = sanitized.replace(/\{\{\{\{([^}]+)\}\}\}\}/g, '{{$1}}');
+        // Fix triple braces {{{ to double braces {{
+        sanitized = sanitized.replace(/\{\{\{([^}]+)\}\}\}/g, '{{$1}}');
+        // Fix single braces with content that looks like merge tags
+        sanitized = sanitized.replace(/\{([A-Z_][A-Za-z0-9_]*)\}/g, '{{$1}}');
+        
+        // Only update if changed
+        if (sanitized !== original) {
+          await db
+            .update(smsCampaigns)
+            .set({ messageTemplate: sanitized, updatedAt: new Date() })
+            .where(eq(smsCampaigns.id, campaign.id));
+          fixed++;
+        } else {
+          skipped++;
+        }
+      }
+      
+      res.json({ 
+        success: true, 
+        message: `Fixed ${fixed} campaigns, skipped ${skipped} campaigns`,
+        fixed,
+        skipped,
+        total: allCampaigns.length
+      });
+    } catch (error: any) {
+      console.error("Error fixing campaign templates:", error);
+      res.status(500).json({ error: error.message || "Failed to fix campaign templates" });
     }
   });
 
