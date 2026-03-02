@@ -132,18 +132,74 @@ class BatchSmsService {
     result = result.replace(/\{\{name\}\}/gi, recipient.name || firstName);
     result = result.replace(/\{name\}/gi, recipient.name || firstName);
     
-    // Replace custom fields (e.g., {dollar_amount}, ${dollar_amount}, {custom_field})
-    // Match any {field_name}, ${field_name}, or {{fieldName}} pattern
+    // Helper to format currency values
+    const formatCurrencyValue = (value: string, fieldName: string): string => {
+      const valueStr = String(value).trim();
+      const lowerField = fieldName.toLowerCase();
+      
+      // Check if this looks like a numeric value (with optional parens, $, commas)
+      const looksLikeNumber = /^\(?[\d,]+\.?\d*\)?$/.test(valueStr);
+      const isCurrencyField = lowerField.includes('debt') || 
+                             lowerField.includes('amount') || 
+                             lowerField.includes('balance') ||
+                             lowerField.includes('total') ||
+                             lowerField.includes('price') ||
+                             lowerField.includes('cost') ||
+                             lowerField.includes('payment') ||
+                             lowerField.includes('fee');
+      
+      // Extract numeric value from string (handles: 39235, (39235), $39,235, etc.)
+      const numericMatch = valueStr.match(/[\s$,()]*([0-9]+(?:\.[0-9]{1,2})?)[\s$,()]*/);
+      
+      if (numericMatch && numericMatch[1] && (looksLikeNumber || isCurrencyField)) {
+        const numValue = parseFloat(numericMatch[1]);
+        if (!isNaN(numValue) && numValue >= 0) {
+          return '$' + numValue.toLocaleString('en-US', { 
+            minimumFractionDigits: 0, 
+            maximumFractionDigits: 0 
+          });
+        }
+      }
+      
+      return valueStr;
+    };
+    
+    // Replace custom fields with double braces {{field}} first
+    const doubleBracePattern = /\{\{([a-zA-Z_][a-zA-Z0-9_]*)\}\}/g;
+    result = result.replace(doubleBracePattern, (match, fieldName) => {
+      // Try exact field name
+      if (recipient[fieldName] !== undefined) {
+        return formatCurrencyValue(recipient[fieldName], fieldName);
+      }
+      // Try lowercase
+      const lowerField = fieldName.toLowerCase();
+      if (recipient[lowerField] !== undefined) {
+        return formatCurrencyValue(recipient[lowerField], fieldName);
+      }
+      // Try camelCase conversion (e.g., Total_Debt_Amount -> totalDebtAmount)
+      const camelCase = fieldName.replace(/_([a-z])/gi, (g: string) => g[1].toUpperCase());
+      if (recipient[camelCase] !== undefined) {
+        return formatCurrencyValue(recipient[camelCase], fieldName);
+      }
+      // Try snake_case conversion
+      const snakeCase = fieldName.replace(/[A-Z]/g, (letter: string) => `_${letter.toLowerCase()}`);
+      if (recipient[snakeCase] !== undefined) {
+        return formatCurrencyValue(recipient[snakeCase], fieldName);
+      }
+      return match;
+    });
+    
+    // Replace custom fields with single braces {field} or ${field}
     const customFieldPattern = /\$?\{([a-zA-Z_][a-zA-Z0-9_]*)\}/g;
     result = result.replace(customFieldPattern, (match, fieldName) => {
       // Try snake_case field name
       if (recipient[fieldName] !== undefined) {
-        return String(recipient[fieldName]);
+        return formatCurrencyValue(recipient[fieldName], fieldName);
       }
       // Try camelCase conversion (e.g., dollar_amount -> dollarAmount)
       const camelCase = fieldName.replace(/_([a-z])/g, (g: string) => g[1].toUpperCase());
       if (recipient[camelCase] !== undefined) {
-        return String(recipient[camelCase]);
+        return formatCurrencyValue(recipient[camelCase], fieldName);
       }
       // Return original if not found
       return match;

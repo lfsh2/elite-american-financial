@@ -1557,19 +1557,26 @@ function applyMergeTags(template: string, data: Record<string, any>): string {
   const processMergeTag = (match: string, key: string): string => {
     const actualKey = findActualKey(key);
     
+    console.log(`[MergeTag] Processing: "${key}" -> actualKey: "${actualKey}", available keys:`, Object.keys(data));
+    
     // If no value found, keep the tag as-is
     if (!actualKey || data[actualKey] === undefined || data[actualKey] === null) {
+      console.log(`[MergeTag] No value found for "${key}", keeping original: "${match}"`);
       return match;
     }
     
     const value = data[actualKey];
     const lowerKey = key.trim().toLowerCase();
     
+    console.log(`[MergeTag] Found value for "${key}": "${value}" (type: ${typeof value})`);
+    
     // Convert to string and clean whitespace
     let valueStr = String(value).trim();
     
-    // Check if this is a currency/numeric field by name
-    const isCurrencyField = lowerKey.includes('debt') || 
+    // Check if this is a currency/numeric field by name OR if value looks like a number in parentheses
+    const looksLikeNumber = /^\(?[\d,]+\.?\d*\)?$/.test(valueStr);
+    const isCurrencyField = looksLikeNumber ||
+                           lowerKey.includes('debt') || 
                            lowerKey.includes('amount') || 
                            lowerKey.includes('balance') ||
                            lowerKey.includes('total') ||
@@ -1582,23 +1589,30 @@ function applyMergeTags(template: string, data: Record<string, any>): string {
     const numericPattern = /[\s$,()]*([0-9]+(?:\.[0-9]{1,2})?)[\s$,()]*/;
     const numericMatch = valueStr.match(numericPattern);
     
+    console.log(`[MergeTag] isCurrencyField: ${isCurrencyField}, looksLikeNumber: ${looksLikeNumber}, numericMatch:`, numericMatch);
+    
     // Format as currency if it's a currency field OR if the entire value is numeric
     if (numericMatch && numericMatch[1]) {
       const cleanedNum = numericMatch[1];
       const isEntirelyNumeric = /^[\s$,()]*[0-9]+(?:\.[0-9]{1,2})?[\s$,()]*$/.test(valueStr);
       
+      console.log(`[MergeTag] cleanedNum: ${cleanedNum}, isEntirelyNumeric: ${isEntirelyNumeric}`);
+      
       if (isCurrencyField || isEntirelyNumeric) {
         const numValue = parseFloat(cleanedNum);
         
         if (!isNaN(numValue) && numValue >= 0) {
-          return '$' + numValue.toLocaleString('en-US', { 
+          const formatted = '$' + numValue.toLocaleString('en-US', { 
             minimumFractionDigits: 0, 
             maximumFractionDigits: 0 
           });
+          console.log(`[MergeTag] Formatted as currency: ${formatted}`);
+          return formatted;
         }
       }
     }
     
+    console.log(`[MergeTag] Returning raw value: ${valueStr}`);
     return valueStr;
   };
   
