@@ -1484,51 +1484,40 @@ function applyMergeTags(template: string, data: Record<string, any>): string {
     lowerKeyMap[key.toLowerCase()] = key;
   });
   
-  console.log('[applyMergeTags] Template:', template);
-  console.log('[applyMergeTags] Data keys:', Object.keys(data));
-  console.log('[applyMergeTags] Data values:', JSON.stringify(data, null, 2));
-  
   const result = template.replace(/\{\{([^}]+)\}\}/g, (match, key) => {
     const trimmedKey = key.trim();
     
     // Try exact match first, then case-insensitive match
     const actualKey = data[trimmedKey] !== undefined ? trimmedKey : lowerKeyMap[trimmedKey.toLowerCase()];
     
-    console.log('[applyMergeTags] Processing tag:', match, 'key:', trimmedKey, 'actualKey:', actualKey);
-    
     if (!actualKey || data[actualKey] === undefined) {
-      console.log('[applyMergeTags] No value found for:', trimmedKey);
       return match;
     }
     
     const value = data[actualKey];
     const lowerKey = trimmedKey.toLowerCase();
-    
-    console.log('[applyMergeTags] Value for', actualKey, ':', value, 'type:', typeof value);
-    
-    // Check if this looks like a currency/numeric value
     const valueStr = String(value);
-    const cleanedValue = valueStr.replace(/[,$()]/g, '').trim();
+    
+    // Clean the value - remove $, commas, parentheses, and whitespace
+    const cleanedValue = valueStr.replace(/[\s$,()]/g, '');
     const numValue = parseFloat(cleanedValue);
     
-    // Special formatting for debt/amount/balance fields OR any numeric value with parentheses/commas
-    const isCurrencyField = lowerKey.includes('debt') || 
-                           lowerKey.includes('amount') || 
-                           lowerKey.includes('balance') ||
-                           lowerKey.includes('total') ||
-                           /^\([0-9,]+\)$/.test(valueStr) || // Matches (39235)
-                           /^[0-9,]+$/.test(valueStr); // Matches 39235 or 39,235
+    // Check if this is a currency field by name OR if the value looks like a number
+    const isCurrencyFieldByName = lowerKey.includes('debt') || 
+                                  lowerKey.includes('amount') || 
+                                  lowerKey.includes('balance') ||
+                                  lowerKey.includes('total');
     
-    if (isCurrencyField && !isNaN(numValue) && numValue > 0) {
-      const formatted = '$' + numValue.toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 0 });
-      console.log('[applyMergeTags] Formatted currency:', valueStr, '->', formatted);
-      return formatted;
+    const looksLikeNumber = /^[\s$,()]*[0-9]+[\s$,()]*$/.test(valueStr);
+    
+    // Format as currency if it's a currency field OR if it's a plain number
+    if ((isCurrencyFieldByName || looksLikeNumber) && !isNaN(numValue) && numValue > 0) {
+      return '$' + numValue.toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 0 });
     }
     
-    return String(value);
+    return valueStr;
   });
   
-  console.log('[applyMergeTags] Result:', result);
   return result;
 }
 
