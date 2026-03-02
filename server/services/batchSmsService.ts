@@ -293,6 +293,15 @@ class BatchSmsService {
 
   // Start batch job asynchronously and return immediately with job ID
   async startBatchAsync(options: BatchSendOptions): Promise<{ jobId: string; total: number }> {
+    // CRITICAL: Check if a batch job is already running for this campaign to prevent duplicate sends
+    if (options.campaignId) {
+      const existingJob = this.getCampaignProgress(options.campaignId);
+      if (existingJob) {
+        console.log(`[BatchSMS] ⚠️ Campaign ${options.campaignId} already has an active batch job (${existingJob.jobId}), skipping duplicate start`);
+        return { jobId: existingJob.jobId, total: existingJob.total };
+      }
+    }
+    
     const jobId = `batch_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
     
     // Load baseline counts from DB (for resume: existing sent/failed before this batch)
@@ -524,39 +533,83 @@ class BatchSmsService {
     });
 
     // Distribute recipients across phone numbers
+    // CRITICAL: Use assigned sender number if already set (for resume), otherwise assign one
     const numberQueues: Map<string, BatchRecipient[]> = new Map();
     phoneNumbers.forEach(pn => numberQueues.set(pn.phoneNumber, []));
+    
+    // Build a map of phone number strings to configs for quick lookup
+    const phoneConfigMap: Map<string, PhoneNumberConfig> = new Map();
+    phoneNumbers.forEach(pn => phoneConfigMap.set(pn.phoneNumber, pn));
+
+    // Track recipients that need their assigned number updated in DB
+    const recipientsToAssign: Array<{ phone: string; assignedNumber: string }> = [];
 
     // Round-robin distribution with messagesPerNumber limit
+    // BUT: if recipient already has an assigned sender, use that instead
     let numberIndex = 0;
     for (const recipient of recipients) {
-      const phoneNumber = phoneNumbers[numberIndex % phoneNumbers.length];
-      const queue = numberQueues.get(phoneNumber.phoneNumber)!;
-      
-      // Check if this number has reached its limit
-      if (queue.length < messagesPerNumber) {
+      // Check if this recipient already has an assigned sender number
+      if (recipient.assignedFromNumber && phoneConfigMap.has(recipient.assignedFromNumber)) {
+        // Use the previously assigned sender
+        const queue = numberQueues.get(recipient.assignedFromNumber)!;
         queue.push(recipient);
-        progress.byNumber[phoneNumber.phoneNumber].pending++;
+        progress.byNumber[recipient.assignedFromNumber].pending++;
       } else {
-        // Find next available number
-        let found = false;
-        for (let i = 0; i < phoneNumbers.length; i++) {
-          const nextNumber = phoneNumbers[(numberIndex + i) % phoneNumbers.length];
-          const nextQueue = numberQueues.get(nextNumber.phoneNumber)!;
-          if (nextQueue.length < messagesPerNumber) {
-            nextQueue.push(recipient);
-            progress.byNumber[nextNumber.phoneNumber].pending++;
-            found = true;
-            break;
-          }
-        }
-        if (!found) {
-          // All numbers at capacity, add to first number anyway
+        // Assign a new sender number using round-robin
+        const phoneNumber = phoneNumbers[numberIndex % phoneNumbers.length];
+        const queue = numberQueues.get(phoneNumber.phoneNumber)!;
+        
+        // Check if this number has reached its limit
+        if (queue.length < messagesPerNumber) {
           queue.push(recipient);
           progress.byNumber[phoneNumber.phoneNumber].pending++;
+          // Track for DB update
+          recipientsToAssign.push({ phone: recipient.phone, assignedNumber: phoneNumber.phoneNumber });
+        } else {
+          // Find next available number
+          let found = false;
+          for (let i = 0; i < phoneNumbers.length; i++) {
+            const nextNumber = phoneNumbers[(numberIndex + i) % phoneNumbers.length];
+            const nextQueue = numberQueues.get(nextNumber.phoneNumber)!;
+            if (nextQueue.length < messagesPerNumber) {
+              nextQueue.push(recipient);
+              progress.byNumber[nextNumber.phoneNumber].pending++;
+              recipientsToAssign.push({ phone: recipient.phone, assignedNumber: nextNumber.phoneNumber });
+              found = true;
+              break;
+            }
+          }
+          if (!found) {
+            // All numbers at capacity, add to first number anyway
+            queue.push(recipient);
+            progress.byNumber[phoneNumber.phoneNumber].pending++;
+            recipientsToAssign.push({ phone: recipient.phone, assignedNumber: phoneNumber.phoneNumber });
+          }
         }
+        numberIndex++;
       }
-      numberIndex++;
+    }
+    
+    // Update assigned sender numbers in DB (batch update for performance)
+    if (campaignId && recipientsToAssign.length > 0) {
+      console.log(`[BatchSMS] Assigning sender numbers to ${recipientsToAssign.length} recipients...`);
+      try {
+        // Batch update in chunks of 500
+        for (let i = 0; i < recipientsToAssign.length; i += 500) {
+          const chunk = recipientsToAssign.slice(i, i + 500);
+          for (const { phone, assignedNumber } of chunk) {
+            await db.update(campaignRecipients)
+              .set({ assignedFromNumber: assignedNumber })
+              .where(and(
+                eq(campaignRecipients.smsCampaignId, campaignId),
+                eq(campaignRecipients.phoneNumber, phone)
+              ));
+          }
+        }
+        console.log(`[BatchSMS] Assigned sender numbers to ${recipientsToAssign.length} recipients`);
+      } catch (assignErr) {
+        console.error(`[BatchSMS] Error assigning sender numbers:`, assignErr);
+      }
     }
 
     console.log(`[BatchSMS] Starting batch send: ${recipients.length} recipients across ${phoneNumbers.length} numbers, dripMode=${dripMode}, rate=${messagesPerMinute} msgs/min`);
@@ -568,8 +621,30 @@ class BatchSmsService {
     // Batch recipient status updates for campaign_recipients (enables pause/resume)
     const recipientStatusBatch: Array<{ phone: string; status: string; messageSid: string | null; error: string | null }> = [];
 
+    // Track which recipients have been sent in this batch to prevent duplicates
+    const sentInThisBatch: Set<string> = new Set();
+    
     // Helper: send a single message via the correct provider
     const sendMessage = async (recipient: BatchRecipient, phoneConfig: PhoneNumberConfig): Promise<void> => {
+      // CRITICAL SAFEGUARD 1: If recipient has an assigned sender that differs from current sender, SKIP
+      // This prevents the same recipient from receiving messages from multiple senders
+      if (recipient.assignedFromNumber && recipient.assignedFromNumber !== phoneConfig.phoneNumber) {
+        console.log(`[BatchSMS] ⚠️ SKIPPING ${recipient.phone} - assigned to ${recipient.assignedFromNumber} but trying to send from ${phoneConfig.phoneNumber}`);
+        progress.failed++;
+        progress.byNumber[phoneConfig.phoneNumber].failed++;
+        progress.byNumber[phoneConfig.phoneNumber].pending--;
+        errors.push({ phone: recipient.phone, error: 'Sender mismatch - recipient assigned to different number' });
+        return;
+      }
+      
+      // CRITICAL SAFEGUARD 2: If recipient already sent in this batch, SKIP (prevents duplicates)
+      if (sentInThisBatch.has(recipient.phone)) {
+        console.log(`[BatchSMS] ⚠️ SKIPPING ${recipient.phone} - already sent in this batch`);
+        progress.byNumber[phoneConfig.phoneNumber].pending--;
+        return;
+      }
+      sentInThisBatch.add(recipient.phone);
+      
       const personalizedMessage = this.applyMergeTags(message, recipient);
       let result: { success: boolean; messageSid?: string; error?: string };
 

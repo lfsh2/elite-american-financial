@@ -1508,6 +1508,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
               firstName: campaignRecipients.firstName,
               lastName: campaignRecipients.lastName,
               customFields: campaignRecipients.customFields,
+              assignedFromNumber: campaignRecipients.assignedFromNumber,
             })
             .from(campaignRecipients)
             .where(
@@ -1535,6 +1536,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
               name: r.firstName ? `${r.firstName} ${r.lastName || ''}`.trim() : undefined,
               firstName: r.firstName,
               lastName: r.lastName,
+              assignedFromNumber: r.assignedFromNumber, // Pass assigned sender number to batch service
               ...campaignDefaults,
               ...customFields,
             });

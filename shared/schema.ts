@@ -666,6 +666,7 @@ export const campaignRecipients = pgTable("campaign_recipients", {
   // Status
   status: text("status").notNull().default("pending"), // pending, sent, delivered, failed, opted_out, skipped
   messageSid: text("message_sid"), // Provider message ID
+  assignedFromNumber: text("assigned_from_number"), // Sender number assigned to this recipient (prevents multiple senders)
   
   // Delivery info
   sentAt: timestamp("sent_at"),

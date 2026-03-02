@@ -2,6 +2,7 @@ import { db } from '../db';
 import { smsCampaigns, campaignRecipients } from '@shared/schema';
 import { eq, and, sql, lt } from 'drizzle-orm';
 import * as campaignService from './campaignService';
+import { batchSmsService } from './batchSmsService';
 
 /**
  * Campaign Watchdog Service
@@ -89,6 +90,13 @@ async function getPendingRecipientCount(campaignId: number): Promise<number> {
  * Auto-resume a stalled campaign
  */
 async function autoResumeCampaign(campaignId: number, campaignName: string): Promise<boolean> {
+  // Check if batch job is already running for this campaign
+  const existingJob = batchSmsService.getCampaignProgress(campaignId);
+  if (existingJob) {
+    console.log(`[Watchdog] Campaign ${campaignId} already has active batch job, skipping auto-resume`);
+    return false;
+  }
+  
   const progress = campaignProgressMap.get(campaignId);
   
   if (progress && progress.autoResumeAttempts >= MAX_AUTO_RESUME_ATTEMPTS) {
