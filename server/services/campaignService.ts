@@ -1181,12 +1181,7 @@ async function sendCampaignMessages(
           ...((recipient.customFields as Record<string, any>) || {}),
         };
         
-        console.log('[Campaign] Merge data for recipient:', JSON.stringify(mergeData, null, 2));
-        console.log('[Campaign] Template:', campaign.messageTemplate);
-        
         const personalizedMessage = applyMergeTags(campaign.messageTemplate, mergeData);
-        
-        console.log('[Campaign] Personalized message:', personalizedMessage);
 
         // Send message
         const result = await providerInstance.sendMessage({
@@ -1484,47 +1479,65 @@ function applyMergeTags(template: string, data: Record<string, any>): string {
     lowerKeyMap[key.toLowerCase()] = key;
   });
   
-  return template.replace(/\{\{([^}]+)\}\}/g, (match, key) => {
+  // Helper function to process a merge tag
+  const processMergeTag = (match: string, key: string): string => {
     const trimmedKey = key.trim();
     
     // Try exact match first, then case-insensitive match
     const actualKey = data[trimmedKey] !== undefined ? trimmedKey : lowerKeyMap[trimmedKey.toLowerCase()];
     
-    if (!actualKey || data[actualKey] === undefined) {
-      return match; // Keep the tag if no value found
+    // If no value found, keep the tag as-is
+    if (!actualKey || data[actualKey] === undefined || data[actualKey] === null) {
+      return match;
     }
     
     const value = data[actualKey];
     const lowerKey = trimmedKey.toLowerCase();
-    const valueStr = String(value).trim();
     
-    // Check if this field should be formatted as currency
+    // Convert to string and clean whitespace
+    let valueStr = String(value).trim();
+    
+    // Check if this is a currency/numeric field by name
     const isCurrencyField = lowerKey.includes('debt') || 
                            lowerKey.includes('amount') || 
                            lowerKey.includes('balance') ||
                            lowerKey.includes('total') ||
                            lowerKey.includes('price') ||
-                           lowerKey.includes('cost');
+                           lowerKey.includes('cost') ||
+                           lowerKey.includes('payment') ||
+                           lowerKey.includes('fee');
     
-    // Check if the value looks like a number (with or without formatting)
-    // Matches: 39235, (39235), 39,235, $39235, $ 39,235, etc.
-    const numericPattern = /^[\s$,()]*([0-9]+(?:\.[0-9]{1,2})?)[\s$,()]*$/;
+    // Extract numeric value from string (handles: 39235, (39235), $39,235, etc.)
+    const numericPattern = /[\s$,()]*([0-9]+(?:\.[0-9]{1,2})?)[\s$,()]*/;
     const numericMatch = valueStr.match(numericPattern);
     
-    if ((isCurrencyField || numericMatch) && numericMatch) {
-      const numValue = parseFloat(numericMatch[1]);
+    // Format as currency if it's a currency field OR if the entire value is numeric
+    if (numericMatch && numericMatch[1]) {
+      const cleanedNum = numericMatch[1];
+      const isEntirelyNumeric = /^[\s$,()]*[0-9]+(?:\.[0-9]{1,2})?[\s$,()]*$/.test(valueStr);
       
-      if (!isNaN(numValue) && numValue > 0) {
-        // Format as currency with $ and commas, no decimals
-        return '$' + numValue.toLocaleString('en-US', { 
-          minimumFractionDigits: 0, 
-          maximumFractionDigits: 0 
-        });
+      if (isCurrencyField || isEntirelyNumeric) {
+        const numValue = parseFloat(cleanedNum);
+        
+        if (!isNaN(numValue) && numValue >= 0) {
+          return '$' + numValue.toLocaleString('en-US', { 
+            minimumFractionDigits: 0, 
+            maximumFractionDigits: 0 
+          });
+        }
       }
     }
     
     return valueStr;
-  });
+  };
+  
+  // Replace double braces {{field}} first
+  let result = template.replace(/\{\{([^}]+)\}\}/g, processMergeTag);
+  
+  // Then replace single braces {field} for fields that look like merge tags
+  result = result.replace(/\{([A-Z_][A-Za-z0-9_]*)\}/g, processMergeTag);
+  
+  return result;
 }
 
 /**

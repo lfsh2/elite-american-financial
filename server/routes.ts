@@ -6565,6 +6565,16 @@ export async function registerRoutes(app: Express): Promise<Server> {
         });
       }
 
+      // Sanitize message template - fix common issues with merge tags
+      if (campaignData.messageTemplate) {
+        // Fix quadruple braces {{{{ to double braces {{
+        campaignData.messageTemplate = campaignData.messageTemplate.replace(/\{\{\{\{([^}]+)\}\}\}\}/g, '{{$1}}');
+        // Fix triple braces {{{ to double braces {{
+        campaignData.messageTemplate = campaignData.messageTemplate.replace(/\{\{\{([^}]+)\}\}\}/g, '{{$1}}');
+        // Fix single braces with content that looks like merge tags
+        campaignData.messageTemplate = campaignData.messageTemplate.replace(/\{([A-Z_][A-Za-z0-9_]*)\}/g, '{{$1}}');
+      }
+
       const campaign = await campaignService.createSmsCampaign(campaignData);
       res.json({ success: true, campaign });
     } catch (error: any) {
