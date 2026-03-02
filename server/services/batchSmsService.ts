@@ -645,6 +645,25 @@ class BatchSmsService {
       }
       sentInThisBatch.add(recipient.phone);
       
+      // CRITICAL SAFEGUARD 3: Check DB if recipient was already sent in a previous batch (extra safety for resume)
+      if (campaignId) {
+        try {
+          const [existing] = await db.select({ status: campaignRecipients.status })
+            .from(campaignRecipients)
+            .where(and(
+              eq(campaignRecipients.smsCampaignId, campaignId),
+              eq(campaignRecipients.phoneNumber, recipient.phone)
+            ));
+          if (existing && (existing.status === 'sent' || existing.status === 'delivered')) {
+            console.log(`[BatchSMS] ⚠️ SKIPPING ${recipient.phone} - already sent in previous batch (status: ${existing.status})`);
+            progress.byNumber[phoneConfig.phoneNumber].pending--;
+            return;
+          }
+        } catch (checkErr) {
+          // Continue if check fails - other safeguards will catch duplicates
+        }
+      }
+      
       const personalizedMessage = this.applyMergeTags(message, recipient);
       let result: { success: boolean; messageSid?: string; error?: string };
 
