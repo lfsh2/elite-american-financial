@@ -15,6 +15,7 @@ import { accountService } from "./services/accountService";
 import { dataService } from "./services/dataService";
 import { messageService } from "./services/messageService";
 import { batchSmsService, type PhoneNumberConfig } from "./services/batchSmsService";
+import { startWatchdog, stopWatchdog, triggerWatchdogCheck, getWatchdogStatus } from "./services/campaignWatchdog";
 import { subAccountService } from "./services/subAccountService";
 import { analyticsService } from "./services/analyticsService";
 import { createHash, randomBytes } from "crypto";
@@ -6941,6 +6942,63 @@ export async function registerRoutes(app: Express): Promise<Server> {
     } catch (error: any) {
       console.error("Error fixing stuck campaigns:", error);
       res.status(500).json({ error: error.message || "Failed to fix stuck campaigns" });
+    }
+  });
+
+  /**
+   * Campaign Watchdog - Get status
+   */
+  app.get("/api/campaigns/watchdog/status", async (req, res) => {
+    try {
+      const status = getWatchdogStatus();
+      res.json({ success: true, ...status });
+    } catch (error: any) {
+      console.error("Error getting watchdog status:", error);
+      res.status(500).json({ error: error.message || "Failed to get watchdog status" });
+    }
+  });
+
+  /**
+   * Campaign Watchdog - Trigger manual check and auto-resume stalled campaigns
+   */
+  app.post("/api/campaigns/watchdog/check", async (req, res) => {
+    try {
+      console.log("[API] Manual watchdog check triggered");
+      const result = await triggerWatchdogCheck();
+      res.json({ 
+        success: true, 
+        message: `Checked ${result.checked} campaigns, resumed ${result.resumed}, completed ${result.completed}`,
+        ...result 
+      });
+    } catch (error: any) {
+      console.error("Error triggering watchdog check:", error);
+      res.status(500).json({ error: error.message || "Failed to trigger watchdog check" });
+    }
+  });
+
+  /**
+   * Campaign Watchdog - Start the watchdog service
+   */
+  app.post("/api/campaigns/watchdog/start", async (req, res) => {
+    try {
+      startWatchdog();
+      res.json({ success: true, message: "Watchdog started" });
+    } catch (error: any) {
+      console.error("Error starting watchdog:", error);
+      res.status(500).json({ error: error.message || "Failed to start watchdog" });
+    }
+  });
+
+  /**
+   * Campaign Watchdog - Stop the watchdog service
+   */
+  app.post("/api/campaigns/watchdog/stop", async (req, res) => {
+    try {
+      stopWatchdog();
+      res.json({ success: true, message: "Watchdog stopped" });
+    } catch (error: any) {
+      console.error("Error stopping watchdog:", error);
+      res.status(500).json({ error: error.message || "Failed to stop watchdog" });
     }
   });
 
