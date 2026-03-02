@@ -1412,7 +1412,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
   //   2. Client sends campaignId only, server loads recipients from DB (large campaigns 30k+)
   app.post("/api/sms/batch", async (req, res) => {
     try {
-      const { 
+      let { 
         recipients: clientRecipients, 
         message, 
         phoneNumbers, 
@@ -1428,15 +1428,41 @@ export async function registerRoutes(app: Express): Promise<Server> {
       // Load recipients from database if campaignId provided and no recipients sent from client
       let recipients = clientRecipients;
       let isResume = false;
+      let campaignFromNumber: string | null = null;
       
       if ((!recipients || recipients.length === 0) && campaignId) {
         // Check if this is a resume (campaign was paused) — only load pending recipients
         const [campaignRecord] = await db.select({ status: smsCampaigns.status, sentCount: smsCampaigns.sentCount, failedCount: smsCampaigns.failedCount })
           .from(smsCampaigns).where(eq(smsCampaigns.id, campaignId));
         
-        isResume = campaignRecord?.status === 'paused';
+        isResume = campaignRecord?.status === 'paused' || campaignRecord?.status === 'sending';
         if (isResume) {
-          console.log(`[BatchSMS] RESUMING campaign ${campaignId} from paused state (already sent: ${campaignRecord.sentCount}, failed: ${campaignRecord.failedCount})`);
+          console.log(`[BatchSMS] RESUMING campaign ${campaignId} from ${campaignRecord.status} state (already sent: ${campaignRecord.sentCount}, failed: ${campaignRecord.failedCount})`);
+          
+          // Load message template and fromNumber from campaign if not provided
+          if (!message || !phoneNumbers || phoneNumbers.length === 0) {
+            const [fullCampaign] = await db.select().from(smsCampaigns).where(eq(smsCampaigns.id, campaignId));
+            if (fullCampaign) {
+              if (!message) {
+                message = fullCampaign.messageTemplate;
+                console.log(`[BatchSMS] Loaded message template from campaign: "${message?.substring(0, 50)}..."`);
+              }
+              if (!phoneNumbers || phoneNumbers.length === 0) {
+                campaignFromNumber = fullCampaign.fromNumber;
+                // fromNumber can be a comma-separated list of phone numbers
+                if (campaignFromNumber && campaignFromNumber.includes(',')) {
+                  phoneNumbers = campaignFromNumber.split(',').map((n: string) => n.trim()).filter((n: string) => n);
+                } else if (campaignFromNumber) {
+                  phoneNumbers = [campaignFromNumber];
+                }
+                console.log(`[BatchSMS] Loaded ${phoneNumbers?.length || 0} fromNumber(s) from campaign`);
+              }
+              // Also get dripMode settings from campaign metadata
+              const metadata = (fullCampaign as any).metadata || {};
+              if (metadata.dripMode !== undefined) dripMode = metadata.dripMode;
+              if (metadata.messagesPerMinute !== undefined) messagesPerMinute = metadata.messagesPerMinute;
+            }
+          }
           
           // CRITICAL: Sync recipient statuses from sms_messages before loading pending recipients
           // This fixes the bug where recipients are resent because their status wasn't properly updated
@@ -1591,10 +1617,12 @@ export async function registerRoutes(app: Express): Promise<Server> {
       
       // Step 2: Match selected phone numbers to their account credentials
       for (const pn of phoneNumbers) {
-        const match = phoneToAccount.get(pn.phoneNumber);
+        // Handle both string phone numbers and objects with phoneNumber property
+        const phoneNum = typeof pn === 'string' ? pn : pn.phoneNumber;
+        const match = phoneToAccount.get(phoneNum);
         
         if (!match) {
-          console.log(`[BatchSMS] ✗ Phone number ${pn.phoneNumber} not found in any account`);
+          console.log(`[BatchSMS] ✗ Phone number ${phoneNum} not found in any account`);
           continue;
         }
         
@@ -1605,13 +1633,13 @@ export async function registerRoutes(app: Express): Promise<Server> {
         
         if (providerType === 'twilio' && creds?.accountSid && creds?.authToken) {
           phoneNumberConfigs.push({
-            phoneNumber: pn.phoneNumber,
+            phoneNumber: phoneNum,
             provider: 'twilio',
             accountId: numericAccountId,
             accountSid: creds.accountSid,
             authToken: creds.authToken,
           });
-          console.log(`[BatchSMS] ✓ Added Twilio number ${pn.phoneNumber}`);
+          console.log(`[BatchSMS] ✓ Added Twilio number ${phoneNum}`);
         } else if (providerType === 'commio') {
           // For Commio/ThinQ: 
           // - apiKey = username (amuniz1) for Basic Auth
@@ -1623,19 +1651,19 @@ export async function registerRoutes(app: Express): Promise<Server> {
           
           if (thinqUsername && thinqToken) {
             phoneNumberConfigs.push({
-              phoneNumber: pn.phoneNumber,
+              phoneNumber: phoneNum,
               provider: 'commio',
               accountId: numericAccountId,
               apiKey: thinqUsername,
               apiSecret: thinqToken,
               commioAccountId: thinqAccountId,
             });
-            console.log(`[BatchSMS] ✓ Added Commio number ${pn.phoneNumber} (account: ${thinqAccountId}, user: ${thinqUsername})`);
+            console.log(`[BatchSMS] ✓ Added Commio number ${phoneNum} (account: ${thinqAccountId}, user: ${thinqUsername})`);
           } else {
             console.log(`[BatchSMS] ✗ Commio account ${account.id} missing credentials (need apiKey and authToken)`);
           }
         } else {
-          console.log(`[BatchSMS] ✗ ${pn.phoneNumber} - provider ${providerType} missing credentials`);
+          console.log(`[BatchSMS] ✗ ${phoneNum} - provider ${providerType} missing credentials`);
         }
       }
 

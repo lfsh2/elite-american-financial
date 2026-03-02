@@ -15,9 +15,9 @@ import * as campaignService from './campaignService';
  * The watchdog runs every CHECK_INTERVAL_MINUTES and will auto-resume stalled campaigns.
  */
 
-const CHECK_INTERVAL_MINUTES = 3; // Check every 3 minutes
-const STALL_THRESHOLD_MINUTES = 5; // Consider stalled if no progress for 5 minutes
-const MAX_AUTO_RESUME_ATTEMPTS = 5; // Max auto-resume attempts per campaign
+const CHECK_INTERVAL_MINUTES = 2; // Check every 2 minutes (more aggressive)
+const STALL_THRESHOLD_MINUTES = 3; // Consider stalled if no progress for 3 minutes
+const MAX_AUTO_RESUME_ATTEMPTS = 10; // Max auto-resume attempts per campaign (increased for long campaigns)
 
 // Track campaign progress for stall detection
 interface CampaignProgress {
