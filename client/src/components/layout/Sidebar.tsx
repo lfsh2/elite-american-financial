@@ -61,7 +61,6 @@ const adminOnlyItems: NavItem[] = [
 
 // Settings items for all users
 const settingsItems: NavItem[] = [
-  { title: 'API & Integrations', href: '/api-integration', icon: Plug },
   { title: 'Settings', href: '/settings', icon: Settings },
 ];
 

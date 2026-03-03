@@ -54,13 +54,11 @@ const adminOnlyItems: NavItem[] = [
 
 // Items for client users (user role)
 const clientSettingsItems: NavItem[] = [
-  { href: '/api-integration', icon: Plug, label: 'API & Integrations' },
   { href: '/settings', icon: Settings, label: 'Settings' },
 ];
 
 // Admin settings items
 const adminSettingsItems: NavItem[] = [
-  { href: '/api-integration', icon: Plug, label: 'API & Integrations' },
   { href: '/settings', icon: Settings, label: 'Settings' },
 ];
 
