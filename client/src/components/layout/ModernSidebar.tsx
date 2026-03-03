@@ -18,8 +18,7 @@ import {
   Megaphone,
   Hash,
   Plug,
-  ClipboardList,
-  Shield
+  ClipboardList
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { Avatar, AvatarFallback } from '@/components/ui/avatar';
@@ -41,7 +40,6 @@ const commonNavItems: NavItem[] = [
   { href: '/voice', icon: Phone, label: 'Voice Calls' },
   { href: '/contacts', icon: Users, label: 'Contacts' },
   { href: '/campaigns', icon: Megaphone, label: 'SMS Campaigns' },
-  { href: '/compliance', icon: Shield, label: 'A2P Compliance' },
   { href: '/phone-numbers', icon: Hash, label: 'Phone Numbers' },
 ];
 

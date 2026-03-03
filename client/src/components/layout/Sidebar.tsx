@@ -87,7 +87,6 @@ export const Sidebar = memo(function Sidebar() {
     { title: 'Voice Calls', href: '/voice', icon: Phone },
     { title: 'Contacts', href: '/contacts', icon: Users },
     { title: 'SMS Campaigns', href: '/sms-campaigns', icon: Send },
-    { title: 'A2P Compliance', href: '/campaigns', icon: Megaphone },
     { title: 'Phone Numbers', href: '/phone-numbers', icon: Hash },
   ], [inboxCount]);
 
