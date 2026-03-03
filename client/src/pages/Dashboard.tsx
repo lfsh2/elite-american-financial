@@ -48,6 +48,11 @@ import {
 } from '@/components/ui/table';
 import { AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, BarChart, Bar, LineChart, Line } from 'recharts';
 import USStateHeatmap from '@/components/USStateHeatmap';
+import { Calendar as CalendarComponent } from '@/components/ui/calendar';
+import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
+import { format, subDays, startOfMonth, endOfMonth, subMonths, startOfWeek, endOfWeek, isWithinInterval, parseISO } from 'date-fns';
+import { DateRange } from 'react-day-picker';
 
 // Mini sparkline component
 const MiniSparkline = ({ data, color, trend }: { data: number[], color: string, trend: 'up' | 'down' }) => {
@@ -78,6 +83,14 @@ export default function Dashboard() {
   const [selectedReportType, setSelectedReportType] = useState<'messages' | 'calls' | 'usage' | 'summary'>('messages');
   const [isGeneratingReport, setIsGeneratingReport] = useState(false);
   const [chartTimeRange, setChartTimeRange] = useState<'weekly' | 'monthly'>('weekly');
+  
+  // Date range filter state
+  const [dateRange, setDateRange] = useState<DateRange | undefined>({
+    from: subDays(new Date(), 7),
+    to: new Date(),
+  });
+  const [datePreset, setDatePreset] = useState<string>('last7days');
+  const [isDatePickerOpen, setIsDatePickerOpen] = useState(false);
 
   // Live sending stats from in-memory active batch jobs (polls every 5 seconds)
   const [liveStats, setLiveStats] = useState<{ totalSent: number; totalFailed: number; totalInProgress: number; activeCampaigns: number } | null>(null);
@@ -222,15 +235,67 @@ export default function Dashboard() {
     };
   }, [analytics, liveStats]);
 
+  // Handle date preset changes
+  const handleDatePresetChange = (preset: string) => {
+    setDatePreset(preset);
+    const today = new Date();
+    let from: Date;
+    let to: Date = today;
+    
+    switch (preset) {
+      case 'today':
+        from = today;
+        break;
+      case 'yesterday':
+        from = subDays(today, 1);
+        to = subDays(today, 1);
+        break;
+      case 'last7days':
+        from = subDays(today, 7);
+        break;
+      case 'last30days':
+        from = subDays(today, 30);
+        break;
+      case 'thisMonth':
+        from = startOfMonth(today);
+        to = endOfMonth(today);
+        break;
+      case 'lastMonth':
+        from = startOfMonth(subMonths(today, 1));
+        to = endOfMonth(subMonths(today, 1));
+        break;
+      case 'thisWeek':
+        from = startOfWeek(today, { weekStartsOn: 0 });
+        to = endOfWeek(today, { weekStartsOn: 0 });
+        break;
+      case 'last3months':
+        from = subMonths(today, 3);
+        break;
+      case 'last6months':
+        from = subMonths(today, 6);
+        break;
+      default:
+        from = subDays(today, 7);
+    }
+    
+    setDateRange({ from, to });
+  };
+
   // Chart data for the weekly view - uses server dailyChartData (includes campaigns + sms_messages)
-  // Use the last 7 days from server data directly
+  // Filters based on selected date range
   const weeklyChartData = useMemo(() => {
     const daily = accountData?.dailyChartData || [];
     
-    // Get last 7 days from server data (already in correct order)
-    const last7Days = daily.slice(-7);
+    // Filter by date range if set
+    const filteredDaily = daily.filter((d: any) => {
+      if (!dateRange?.from) return true;
+      const date = new Date(d.date);
+      const from = dateRange.from;
+      const to = dateRange.to || new Date();
+      return date >= from && date <= to;
+    });
     
-    return last7Days.map((d: any) => {
+    return filteredDaily.map((d: any) => {
       // Parse date and display in user's local timezone
       const date = new Date(d.date);
       return {
@@ -239,7 +304,7 @@ export default function Dashboard() {
         calls: 0
       };
     });
-  }, [accountData]);
+  }, [accountData, dateRange]);
   
   // Monthly trend data - aggregates dailyChartData by month (using UTC)
   const sixMonthTrendData = useMemo(() => {
@@ -419,10 +484,72 @@ export default function Dashboard() {
             <Download className="h-4 w-4" />
             Download
           </Button>
-          <Button variant="outline" size="sm" className="gap-2">
-            <Calendar className="h-4 w-4" />
-            Pick a date
-          </Button>
+          <Popover open={isDatePickerOpen} onOpenChange={setIsDatePickerOpen}>
+            <PopoverTrigger asChild>
+              <Button variant="outline" size="sm" className="gap-2 min-w-[200px] justify-start">
+                <Calendar className="h-4 w-4" />
+                {dateRange?.from ? (
+                  dateRange.to ? (
+                    <>
+                      {format(dateRange.from, "MMM d")} - {format(dateRange.to, "MMM d, yyyy")}
+                    </>
+                  ) : (
+                    format(dateRange.from, "MMM d, yyyy")
+                  )
+                ) : (
+                  "Pick a date"
+                )}
+              </Button>
+            </PopoverTrigger>
+            <PopoverContent className="w-auto p-0" align="end">
+              <div className="p-3 border-b">
+                <Select value={datePreset} onValueChange={handleDatePresetChange}>
+                  <SelectTrigger className="w-full">
+                    <SelectValue placeholder="Select preset" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="today">Today</SelectItem>
+                    <SelectItem value="yesterday">Yesterday</SelectItem>
+                    <SelectItem value="thisWeek">This Week</SelectItem>
+                    <SelectItem value="last7days">Last 7 Days</SelectItem>
+                    <SelectItem value="last30days">Last 30 Days</SelectItem>
+                    <SelectItem value="thisMonth">This Month</SelectItem>
+                    <SelectItem value="lastMonth">Last Month</SelectItem>
+                    <SelectItem value="last3months">Last 3 Months</SelectItem>
+                    <SelectItem value="last6months">Last 6 Months</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+              <CalendarComponent
+                initialFocus
+                mode="range"
+                defaultMonth={dateRange?.from}
+                selected={dateRange}
+                onSelect={(range) => {
+                  setDateRange(range);
+                  setDatePreset('custom');
+                }}
+                numberOfMonths={2}
+              />
+              <div className="p-3 border-t flex justify-end gap-2">
+                <Button 
+                  variant="outline" 
+                  size="sm"
+                  onClick={() => {
+                    handleDatePresetChange('last7days');
+                  }}
+                >
+                  Reset
+                </Button>
+                <Button 
+                  size="sm"
+                  onClick={() => setIsDatePickerOpen(false)}
+                >
+                  Apply
+                </Button>
+              </div>
+            </PopoverContent>
+          </Popover>
         </div>
       </div>
 
@@ -554,7 +681,9 @@ export default function Dashboard() {
                   </CardTitle>
                   <CardDescription>
                     {chartTimeRange === 'weekly' 
-                      ? 'Showing activity for the last 7 days' 
+                      ? (dateRange?.from && dateRange?.to 
+                          ? `Showing activity from ${format(dateRange.from, 'MMM d')} to ${format(dateRange.to, 'MMM d, yyyy')}`
+                          : 'Showing activity for the last 7 days')
                       : 'Showing total activity for the last 6 months'}
                   </CardDescription>
                 </div>
