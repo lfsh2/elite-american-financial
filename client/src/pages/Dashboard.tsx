@@ -235,6 +235,62 @@ export default function Dashboard() {
     };
   }, [analytics, liveStats]);
 
+  // Filtered stats based on date range - calculates totals from dailyChartData
+  const filteredStats = useMemo(() => {
+    const daily = accountData?.dailyChartData || [];
+    
+    if (!dateRange?.from || daily.length === 0) {
+      return {
+        totalMessages: stats.messagesThisMonth,
+        totalOutbound: stats.messagesThisMonth,
+        totalInbound: 0,
+        avgPerDay: stats.messagesThisMonth > 0 ? Math.round(stats.messagesThisMonth / 30) : 0,
+        daysInRange: 30,
+        isFiltered: false,
+      };
+    }
+    
+    const from = dateRange.from;
+    const to = dateRange.to || new Date();
+    
+    // Filter daily data by date range
+    const filteredDaily = daily.filter((d: any) => {
+      const date = new Date(d.date);
+      return date >= from && date <= to;
+    });
+    
+    // Calculate totals from filtered data
+    const totalOutbound = filteredDaily.reduce((sum: number, d: any) => sum + (d.outbound || 0), 0);
+    const totalInbound = filteredDaily.reduce((sum: number, d: any) => sum + (d.inbound || 0), 0);
+    const totalMessages = totalOutbound + totalInbound;
+    const daysInRange = filteredDaily.length || 1;
+    const avgPerDay = daysInRange > 0 ? Math.round(totalMessages / daysInRange) : 0;
+    
+    return {
+      totalMessages,
+      totalOutbound,
+      totalInbound,
+      avgPerDay,
+      daysInRange,
+      isFiltered: true,
+    };
+  }, [accountData, dateRange, stats.messagesThisMonth]);
+
+  // Get label for the date range
+  const getDateRangeLabel = () => {
+    if (!dateRange?.from) return 'This Month';
+    if (datePreset === 'today') return 'Today';
+    if (datePreset === 'yesterday') return 'Yesterday';
+    if (datePreset === 'thisWeek') return 'This Week';
+    if (datePreset === 'last7days') return 'Last 7 Days';
+    if (datePreset === 'last30days') return 'Last 30 Days';
+    if (datePreset === 'thisMonth') return 'This Month';
+    if (datePreset === 'lastMonth') return 'Last Month';
+    if (datePreset === 'last3months') return 'Last 3 Months';
+    if (datePreset === 'last6months') return 'Last 6 Months';
+    return `${format(dateRange.from, 'MMM d')} - ${format(dateRange.to || new Date(), 'MMM d')}`;
+  };
+
   // Handle date preset changes
   const handleDatePresetChange = (preset: string) => {
     setDatePreset(preset);
@@ -577,13 +633,13 @@ export default function Dashboard() {
         <TabsContent value="overview" className="space-y-6 mt-6">
           {/* Stats Row */}
           <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-5">
-            {/* Messages Today */}
+            {/* Total Outbound - filtered by date range */}
             <Card className="bg-white">
               <CardContent className="p-6">
                 <div className="flex items-center justify-between">
                   <div className="flex items-center gap-2 text-sm text-muted-foreground">
                     <Send className="h-4 w-4" />
-                    Outbound Today
+                    Outbound ({getDateRangeLabel()})
                   </div>
                   {stats.activeCampaigns > 0 && (
                     <Badge className="gap-1 text-xs bg-green-100 text-green-700 border-green-200 animate-pulse">
@@ -592,41 +648,40 @@ export default function Dashboard() {
                     </Badge>
                   )}
                 </div>
-                <p className="text-3xl font-bold mt-3">{loading ? '...' : formatNumber(stats.messagesToday)}</p>
+                <p className="text-3xl font-bold mt-3">{loading ? '...' : formatNumber(filteredStats.totalOutbound)}</p>
                 <div className="flex items-center gap-2 mt-3 pt-3 border-t">
                   {stats.liveFailed > 0 && (
                     <span className="text-xs text-red-500">Failed: {formatNumber(stats.liveFailed)}</span>
                   )}
-                  <Badge variant="outline" className={`gap-1 text-xs ${stats.messageGrowth >= 0 ? 'text-green-600 border-green-200 bg-green-50' : 'text-red-600 border-red-200 bg-red-50'}`}>
-                    {stats.messageGrowth >= 0 ? <ArrowUpRight className="h-3 w-3" /> : <ArrowDownRight className="h-3 w-3" />}
-                    {Math.abs(stats.messageGrowth)}% vs yesterday
-                  </Badge>
+                  <span className="text-xs text-muted-foreground">
+                    {filteredStats.daysInRange} day{filteredStats.daysInRange !== 1 ? 's' : ''} selected
+                  </span>
                 </div>
               </CardContent>
             </Card>
 
-            {/* Messages This Week */}
+            {/* Total Messages - filtered by date range */}
             <Card className="bg-white">
               <CardContent className="p-6">
                 <div className="flex items-center gap-2 text-sm text-muted-foreground">
                   <MessageSquare className="h-4 w-4" />
-                  Messages This Week
+                  Total Messages
                 </div>
-                <p className="text-3xl font-bold mt-3">{loading ? '...' : formatNumber(stats.messagesThisWeek)}</p>
+                <p className="text-3xl font-bold mt-3">{loading ? '...' : formatNumber(filteredStats.totalMessages)}</p>
                 <div className="flex items-center gap-2 mt-3 pt-3 border-t">
-                  <span className="text-xs text-muted-foreground">Avg {stats.messagesThisWeek > 0 ? formatNumber(Math.round(stats.messagesThisWeek / 7)) : '0'}/day</span>
+                  <span className="text-xs text-muted-foreground">Avg {formatNumber(filteredStats.avgPerDay)}/day</span>
                 </div>
               </CardContent>
             </Card>
 
-            {/* Messages This Month */}
+            {/* Inbound Messages - filtered by date range */}
             <Card className="bg-white">
               <CardContent className="p-6">
                 <div className="flex items-center gap-2 text-sm text-muted-foreground">
                   <TrendingUp className="h-4 w-4" />
-                  Messages This Month
+                  Inbound Messages
                 </div>
-                <p className="text-3xl font-bold mt-3">{loading ? '...' : formatNumber(stats.messagesThisMonth)}</p>
+                <p className="text-3xl font-bold mt-3">{loading ? '...' : formatNumber(filteredStats.totalInbound)}</p>
                 <div className="flex items-center gap-2 mt-3 pt-3 border-t">
                   <span className="text-xs text-muted-foreground">{stats.activeNumbers} numbers active</span>
                   <Badge variant="outline" className="gap-1 text-xs text-blue-600 border-blue-200 bg-blue-50">
@@ -646,12 +701,12 @@ export default function Dashboard() {
                 </div>
                 <p className="text-3xl font-bold mt-3">{loading ? '...' : stats.deliveryRate.toFixed(1)}%</p>
                 <div className="flex items-center gap-2 mt-3 pt-3 border-t">
-                  <span className="text-xs text-muted-foreground">This month</span>
+                  <span className="text-xs text-muted-foreground">{getDateRangeLabel()}</span>
                 </div>
               </CardContent>
             </Card>
 
-            {/* Calls Today */}
+            {/* Calls - shows today's calls */}
             <Card className="bg-white">
               <CardContent className="p-6">
                 <div className="flex items-center gap-2 text-sm text-muted-foreground">
