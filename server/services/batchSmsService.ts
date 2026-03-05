@@ -645,22 +645,71 @@ class BatchSmsService {
       }
       sentInThisBatch.add(recipient.phone);
       
-      // CRITICAL SAFEGUARD 3: Check DB if recipient was already sent in a previous batch (extra safety for resume)
+      // CRITICAL SAFEGUARD 3: GLOBAL DEDUPLICATION - Check if recipient was EVER contacted by ANY campaign
+      // This prevents number burning by ensuring each recipient only gets ONE message across ALL campaigns
       if (campaignId) {
         try {
-          const [existing] = await db.select({ status: campaignRecipients.status })
-            .from(campaignRecipients)
+          const globalCheck = await db.execute(sql`
+            SELECT sm.id, sm.campaign_id, sm."from" as from_number
+            FROM sms_messages sm
+            WHERE sm."to" = ${recipient.phone}
+              AND sm.status IN ('sent', 'delivered', 'queued', 'accepted')
+            ORDER BY sm.sent_at DESC
+            LIMIT 1
+          `);
+          const existingMsg = (globalCheck as any).rows?.[0] || (globalCheck as any)[0];
+          
+          if (existingMsg) {
+            // Recipient was already contacted - skip to prevent number burning
+            console.log(`[BatchSMS] ⚠️ GLOBAL SKIP ${recipient.phone} - already contacted by campaign ${existingMsg.campaign_id} from ${existingMsg.from_number}`);
+            progress.byNumber[phoneConfig.phoneNumber].pending--;
+            // Mark as skipped in campaign_recipients
+            await db.update(campaignRecipients)
+              .set({ status: 'skipped' as any, errorMessage: `Already contacted by campaign ${existingMsg.campaign_id}` })
+              .where(and(
+                eq(campaignRecipients.smsCampaignId, campaignId),
+                eq(campaignRecipients.phoneNumber, recipient.phone)
+              ));
+            return;
+          }
+        } catch (globalErr) {
+          console.error(`[BatchSMS] Global dedup check error for ${recipient.phone}:`, globalErr);
+          // Continue - atomic lock will still protect within campaign
+        }
+      }
+      
+      // CRITICAL SAFEGUARD 4: ATOMIC LOCK - Try to claim this recipient by setting status to 'sending'
+      // This prevents duplicates across multiple processes/resumes. Only ONE process can claim a recipient.
+      if (campaignId) {
+        try {
+          const updateResult = await db.update(campaignRecipients)
+            .set({ 
+              status: 'sending' as any,
+            })
             .where(and(
               eq(campaignRecipients.smsCampaignId, campaignId),
-              eq(campaignRecipients.phoneNumber, recipient.phone)
-            ));
-          if (existing && (existing.status === 'sent' || existing.status === 'delivered')) {
-            console.log(`[BatchSMS] ⚠️ SKIPPING ${recipient.phone} - already sent in previous batch (status: ${existing.status})`);
+              eq(campaignRecipients.phoneNumber, recipient.phone),
+              eq(campaignRecipients.status, 'pending') // Only claim if still pending
+            ))
+            .returning({ id: campaignRecipients.id });
+          
+          // If no rows updated, recipient was already claimed (sent, sending, delivered, or failed)
+          if (!updateResult || updateResult.length === 0) {
+            // Double-check the actual status
+            const [existing] = await db.select({ status: campaignRecipients.status })
+              .from(campaignRecipients)
+              .where(and(
+                eq(campaignRecipients.smsCampaignId, campaignId),
+                eq(campaignRecipients.phoneNumber, recipient.phone)
+              ));
+            console.log(`[BatchSMS] ⚠️ SKIPPING ${recipient.phone} - already claimed (status: ${existing?.status || 'unknown'})`);
             progress.byNumber[phoneConfig.phoneNumber].pending--;
             return;
           }
-        } catch (checkErr) {
-          // Continue if check fails - other safeguards will catch duplicates
+          // Successfully claimed - proceed with sending
+        } catch (claimErr) {
+          console.error(`[BatchSMS] Error claiming recipient ${recipient.phone}:`, claimErr);
+          // Continue anyway - other safeguards will catch duplicates
         }
       }
       
@@ -735,6 +784,8 @@ class BatchSmsService {
       const batch = recipientStatusBatch.splice(0);
       try {
         for (const r of batch) {
+          // Update recipients that are in 'sending' status (claimed by atomic lock)
+          // This completes the send cycle: pending -> sending -> sent/failed
           await db.update(campaignRecipients)
             .set({
               status: r.status as any,
@@ -746,7 +797,7 @@ class BatchSmsService {
             .where(and(
               eq(campaignRecipients.smsCampaignId, campaignId),
               eq(campaignRecipients.phoneNumber, r.phone),
-              eq(campaignRecipients.status, 'pending')
+              eq(campaignRecipients.status, 'sending') // Update from 'sending' to final status
             ));
         }
       } catch (err) {

@@ -1196,6 +1196,44 @@ async function sendCampaignMessages(
     // Send to each recipient
     for (const recipient of recipients) {
       try {
+        // CRITICAL: GLOBAL DEDUPLICATION - Check if recipient was EVER contacted by ANY campaign
+        // This prevents number burning by ensuring each recipient only gets ONE message across ALL campaigns
+        const globalCheck = await db.execute(sql`
+          SELECT sm.id, sm.campaign_id, sm."from" as from_number
+          FROM sms_messages sm
+          WHERE sm."to" = ${recipient.phoneNumber}
+            AND sm.status IN ('sent', 'delivered', 'queued', 'accepted')
+          ORDER BY sm.sent_at DESC
+          LIMIT 1
+        `);
+        const existingMsg = (globalCheck as any).rows?.[0] || (globalCheck as any)[0];
+        
+        if (existingMsg) {
+          // Recipient was already contacted - skip to prevent number burning
+          console.log(`[Campaign] ⚠️ GLOBAL SKIP ${recipient.phoneNumber} - already contacted by campaign ${existingMsg.campaign_id} from ${existingMsg.from_number}`);
+          await db.update(campaignRecipients)
+            .set({ status: 'skipped' as any, errorMessage: `Already contacted by campaign ${existingMsg.campaign_id}` })
+            .where(eq(campaignRecipients.id, recipient.id));
+          continue;
+        }
+        
+        // ATOMIC LOCK: Claim recipient by setting status to 'sending' BEFORE sending
+        // This prevents duplicates across multiple processes/resumes
+        const claimResult = await db
+          .update(campaignRecipients)
+          .set({ status: 'sending' as any })
+          .where(and(
+            eq(campaignRecipients.id, recipient.id),
+            eq(campaignRecipients.status, 'pending') // Only claim if still pending
+          ))
+          .returning({ id: campaignRecipients.id });
+        
+        // If no rows updated, recipient was already claimed - skip
+        if (!claimResult || claimResult.length === 0) {
+          console.log(`[Campaign] ⚠️ SKIPPING ${recipient.phoneNumber} - already claimed`);
+          continue;
+        }
+        
         // Apply merge tags
         const mergeData = {
           firstName: recipient.firstName,
@@ -1214,6 +1252,7 @@ async function sendCampaignMessages(
           mediaUrls: campaign.mediaUrls || undefined,
         });
 
+        // Update from 'sending' to final status
         if (result.success) {
           await db
             .update(campaignRecipients)
@@ -1222,7 +1261,10 @@ async function sendCampaignMessages(
               messageSid: result.sid,
               sentAt: new Date(),
             })
-            .where(eq(campaignRecipients.id, recipient.id));
+            .where(and(
+              eq(campaignRecipients.id, recipient.id),
+              eq(campaignRecipients.status, 'sending')
+            ));
         } else {
           await db
             .update(campaignRecipients)
@@ -1231,7 +1273,10 @@ async function sendCampaignMessages(
               failedAt: new Date(),
               errorMessage: result.error,
             })
-            .where(eq(campaignRecipients.id, recipient.id));
+            .where(and(
+              eq(campaignRecipients.id, recipient.id),
+              eq(campaignRecipients.status, 'sending')
+            ));
         }
 
         // Track progress
@@ -1244,6 +1289,7 @@ async function sendCampaignMessages(
       } catch (error: any) {
         console.error(`Failed to send to ${recipient.phoneNumber}:`, error);
         
+        // Update from 'sending' to 'failed'
         await db
           .update(campaignRecipients)
           .set({
@@ -1251,7 +1297,10 @@ async function sendCampaignMessages(
             failedAt: new Date(),
             errorMessage: error.message,
           })
-          .where(eq(campaignRecipients.id, recipient.id));
+          .where(and(
+            eq(campaignRecipients.id, recipient.id),
+            eq(campaignRecipients.status, 'sending')
+          ));
         
         // Track progress even on failure
         messagesSinceLastReconcile++;
@@ -1278,7 +1327,7 @@ async function reconcileCampaignCounts(
   try {
     const countsResult = await db.execute(sql`
       SELECT
-        COUNT(*) FILTER (WHERE status IN ('sent', 'delivered')) AS sent_count,
+        COUNT(*) FILTER (WHERE status IN ('sent', 'delivered', 'sending')) AS sent_count,
         COUNT(*) FILTER (WHERE status = 'failed') AS failed_count,
         COUNT(*) AS total_count
       FROM campaign_recipients

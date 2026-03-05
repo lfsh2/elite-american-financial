@@ -1491,6 +1491,32 @@ export async function registerRoutes(app: Express): Promise<Server> {
               AND cr.status = 'pending'
           `);
           console.log(`[BatchSMS] Synced failed recipients from sms_messages`);
+          
+          // CRITICAL: Reset recipients stuck in 'sending' status back to 'pending'
+          // These are recipients that were claimed but the process crashed before completing
+          // First check if they actually have a message in sms_messages (if so, mark as sent)
+          await db.execute(sql`
+            UPDATE campaign_recipients cr
+            SET status = 'sent', sent_at = sm.sent_at
+            FROM sms_messages sm
+            WHERE cr.sms_campaign_id = ${campaignId}
+              AND cr.phone_number = sm."to"
+              AND sm.campaign_id = ${campaignId}
+              AND sm.status IN ('sent', 'delivered')
+              AND cr.status = 'sending'
+          `);
+          
+          // For 'sending' recipients without a message record, reset to 'pending' for retry
+          const stuckResult = await db.execute(sql`
+            UPDATE campaign_recipients
+            SET status = 'pending'
+            WHERE sms_campaign_id = ${campaignId}
+              AND status = 'sending'
+              AND phone_number NOT IN (
+                SELECT "to" FROM sms_messages WHERE campaign_id = ${campaignId}
+              )
+          `);
+          console.log(`[BatchSMS] Reset stuck 'sending' recipients to 'pending' for retry`);
         }
 
         console.log(`[BatchSMS] Loading ${isResume ? 'PENDING' : 'ALL'} recipients from database for campaign ${campaignId}`);
@@ -1873,6 +1899,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
   });
 
   // Campaign progress endpoint (polling)
+  // CRITICAL: Always use DB counts as source of truth to prevent progress regression on resume
   app.get("/api/campaigns/sms-campaigns/:id/progress", async (req, res) => {
     try {
       const campaignId = parseInt(req.params.id);
@@ -1881,34 +1908,29 @@ export async function registerRoutes(app: Express): Promise<Server> {
         return res.status(400).json({ error: "Campaign ID is required" });
       }
       
-      // Get progress from active batch job
-      const progress = batchSmsService.getCampaignProgress(campaignId);
+      // ALWAYS get counts from database (source of truth)
+      // This prevents progress regression when campaign is resumed (in-memory resets to 0)
+      const countsResult = await db.execute(sql`
+        SELECT
+          COUNT(*) FILTER (WHERE status IN ('sent', 'delivered', 'sending')) AS sent_count,
+          COUNT(*) FILTER (WHERE status = 'failed') AS failed_count,
+          COUNT(*) FILTER (WHERE status = 'pending') AS pending_count,
+          COUNT(*) FILTER (WHERE status = 'sending') AS in_progress_count,
+          COUNT(*) FILTER (WHERE status = 'skipped') AS skipped_count,
+          COUNT(*) AS total_count
+        FROM campaign_recipients
+        WHERE sms_campaign_id = ${campaignId}
+      `);
       
-      if (progress) {
-        // Also check DB status in case campaign was paused/cancelled
-        const [dbCampaign] = await db
-          .select({ status: smsCampaigns.status })
-          .from(smsCampaigns)
-          .where(eq(smsCampaigns.id, campaignId))
-          .limit(1);
-        
-        const dbStatus = dbCampaign?.status;
-        const isFinished = progress.sent + progress.failed >= progress.total;
-        const status = dbStatus === 'paused' ? 'paused' : dbStatus === 'cancelled' ? 'cancelled' : isFinished ? 'completed' : 'sending';
-        
-        return res.json({
-          status,
-          sent: progress.sent,
-          failed: progress.failed,
-          total: progress.total,
-          inProgress: progress.inProgress,
-          estimatedCompletionTime: progress.estimatedCompletionTime,
-          currentRate: progress.currentRate,
-          jobId: progress.jobId,
-        });
-      }
+      const row = (countsResult as any).rows?.[0] || (countsResult as any)[0] || {};
+      const dbSent = Number(row.sent_count || 0);
+      const dbFailed = Number(row.failed_count || 0);
+      const dbPending = Number(row.pending_count || 0);
+      const dbInProgress = Number(row.in_progress_count || 0);
+      const dbSkipped = Number(row.skipped_count || 0);
+      const dbTotal = Number(row.total_count || 0);
       
-      // No active job, get status from database
+      // Get campaign status and metadata from DB
       const [campaign] = await db
         .select()
         .from(smsCampaigns)
@@ -1919,12 +1941,29 @@ export async function registerRoutes(app: Express): Promise<Server> {
         return res.status(404).json({ error: "Campaign not found" });
       }
       
+      // Get real-time rate/ETA from in-memory progress (if active batch job exists)
+      const memProgress = batchSmsService.getCampaignProgress(campaignId);
+      
+      // Determine status: use DB status, but check if actually finished
+      const isFinished = dbPending === 0 && dbInProgress === 0;
+      let status = campaign.status;
+      if (isFinished && status === 'sending') {
+        status = 'completed';
+      }
+      
       return res.json({
-        status: campaign.status,
-        sent: campaign.sentCount || 0,
-        failed: campaign.failedCount || 0,
-        total: campaign.recipientCount || 0,
+        status,
+        sent: dbSent,
+        failed: dbFailed,
+        skipped: dbSkipped, // Recipients skipped due to global deduplication (already contacted)
+        total: dbTotal,
+        pending: dbPending,
+        inProgress: dbInProgress,
         delivered: campaign.deliveredCount || 0,
+        // Real-time info from in-memory (if available)
+        estimatedCompletionTime: memProgress?.estimatedCompletionTime,
+        currentRate: memProgress?.currentRate,
+        jobId: memProgress?.jobId,
       });
     } catch (error: any) {
       console.error("Error fetching campaign progress:", error);
@@ -1986,6 +2025,21 @@ export async function registerRoutes(app: Express): Promise<Server> {
   // Message heatmap data - geographic distribution by US state
   app.get("/api/dashboard/heatmap", async (req, res) => {
     try {
+      // Get date range from query params
+      const { from, to } = req.query;
+      let fromDate: Date | null = null;
+      let toDate: Date | null = null;
+      
+      try {
+        if (from) fromDate = new Date(from as string);
+        if (to) toDate = new Date(to as string);
+        // Validate dates
+        if (fromDate && isNaN(fromDate.getTime())) fromDate = null;
+        if (toDate && isNaN(toDate.getTime())) toDate = null;
+      } catch {
+        // Invalid date format, ignore filters
+      }
+      
       // Area code to state mapping (common US area codes)
       const areaCodeToState: Record<string, string> = {
         '205': 'AL', '251': 'AL', '256': 'AL', '334': 'AL', '938': 'AL',
@@ -2042,18 +2096,37 @@ export async function registerRoutes(app: Express): Promise<Server> {
       };
 
       // Query campaign recipients to get phone numbers and count by state
-      const recipients = await db.execute(sql`
-        SELECT 
-          SUBSTRING(REGEXP_REPLACE(phone_number, '[^0-9]', '', 'g') FROM 
-            CASE WHEN LENGTH(REGEXP_REPLACE(phone_number, '[^0-9]', '', 'g')) = 11 THEN 2 ELSE 1 END 
-            FOR 3
-          ) as area_code,
-          COUNT(*) as count
-        FROM campaign_recipients
-        WHERE status IN ('sent', 'delivered')
-        GROUP BY area_code
-        ORDER BY count DESC
-      `);
+      // Apply date filter if provided (use created_at for filtering)
+      let recipients;
+      if (fromDate && toDate) {
+        recipients = await db.execute(sql.raw(`
+          SELECT 
+            SUBSTRING(REGEXP_REPLACE(phone_number, '[^0-9]', '', 'g') FROM 
+              CASE WHEN LENGTH(REGEXP_REPLACE(phone_number, '[^0-9]', '', 'g')) = 11 THEN 2 ELSE 1 END 
+              FOR 3
+            ) as area_code,
+            COUNT(*) as count
+          FROM campaign_recipients
+          WHERE status IN ('sent', 'delivered')
+            AND created_at >= '${fromDate.toISOString()}'::timestamp
+            AND created_at <= '${toDate.toISOString()}'::timestamp
+          GROUP BY area_code
+          ORDER BY count DESC
+        `));
+      } else {
+        recipients = await db.execute(sql`
+          SELECT 
+            SUBSTRING(REGEXP_REPLACE(phone_number, '[^0-9]', '', 'g') FROM 
+              CASE WHEN LENGTH(REGEXP_REPLACE(phone_number, '[^0-9]', '', 'g')) = 11 THEN 2 ELSE 1 END 
+              FOR 3
+            ) as area_code,
+            COUNT(*) as count
+          FROM campaign_recipients
+          WHERE status IN ('sent', 'delivered')
+          GROUP BY area_code
+          ORDER BY count DESC
+        `);
+      }
 
       const rows = (recipients as any).rows || recipients || [];
       

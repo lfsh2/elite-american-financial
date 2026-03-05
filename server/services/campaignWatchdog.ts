@@ -73,17 +73,17 @@ function isCampaignStalled(
 }
 
 /**
- * Get pending recipient count for a campaign
+ * Get pending recipient count for a campaign (includes 'sending' status - in-progress sends)
  */
 async function getPendingRecipientCount(campaignId: number): Promise<number> {
-  const result = await db
-    .select({ count: sql<number>`count(*)` })
-    .from(campaignRecipients)
-    .where(and(
-      eq(campaignRecipients.smsCampaignId, campaignId),
-      eq(campaignRecipients.status, 'pending')
-    ));
-  return Number(result[0]?.count || 0);
+  const result = await db.execute(sql`
+    SELECT COUNT(*) as count
+    FROM campaign_recipients
+    WHERE sms_campaign_id = ${campaignId}
+      AND status IN ('pending', 'sending')
+  `);
+  const row = (result as any).rows?.[0] || (result as any)[0] || {};
+  return Number(row.count || 0);
 }
 
 /**
