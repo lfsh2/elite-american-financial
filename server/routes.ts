@@ -1898,6 +1898,10 @@ export async function registerRoutes(app: Express): Promise<Server> {
     sendProgress();
   });
 
+  // SCALING FIX: Cache for progress counts to avoid DB query on every poll
+  const progressCache: Map<number, { data: any; timestamp: number }> = new Map();
+  const PROGRESS_CACHE_TTL_MS = 2000; // Cache for 2 seconds (frontend polls every 5s)
+
   // Campaign progress endpoint (polling)
   // CRITICAL: Always use DB counts as source of truth to prevent progress regression on resume
   app.get("/api/campaigns/sms-campaigns/:id/progress", async (req, res) => {
@@ -1908,8 +1912,21 @@ export async function registerRoutes(app: Express): Promise<Server> {
         return res.status(400).json({ error: "Campaign ID is required" });
       }
       
-      // ALWAYS get counts from database (source of truth)
-      // This prevents progress regression when campaign is resumed (in-memory resets to 0)
+      // SCALING FIX: Check cache first to reduce DB load during batch sending
+      const cached = progressCache.get(campaignId);
+      const now = Date.now();
+      if (cached && (now - cached.timestamp) < PROGRESS_CACHE_TTL_MS) {
+        // Return cached data but update real-time info from in-memory
+        const memProgress = batchSmsService.getCampaignProgress(campaignId);
+        return res.json({
+          ...cached.data,
+          estimatedCompletionTime: memProgress?.estimatedCompletionTime,
+          currentRate: memProgress?.currentRate,
+          jobId: memProgress?.jobId,
+        });
+      }
+      
+      // Cache miss or expired - query DB
       const countsResult = await db.execute(sql`
         SELECT
           COUNT(*) FILTER (WHERE status IN ('sent', 'delivered', 'sending')) AS sent_count,
@@ -1951,7 +1968,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
         status = 'completed';
       }
       
-      return res.json({
+      const responseData = {
         status,
         sent: dbSent,
         failed: dbFailed,
@@ -1960,7 +1977,18 @@ export async function registerRoutes(app: Express): Promise<Server> {
         pending: dbPending,
         inProgress: dbInProgress,
         delivered: campaign.deliveredCount || 0,
-        // Real-time info from in-memory (if available)
+      };
+      
+      // Cache the response
+      progressCache.set(campaignId, { data: responseData, timestamp: now });
+      
+      // Clean up old cache entries (campaigns not polled in 60s)
+      for (const [id, entry] of progressCache.entries()) {
+        if (now - entry.timestamp > 60000) progressCache.delete(id);
+      }
+      
+      return res.json({
+        ...responseData,
         estimatedCompletionTime: memProgress?.estimatedCompletionTime,
         currentRate: memProgress?.currentRate,
         jobId: memProgress?.jobId,
