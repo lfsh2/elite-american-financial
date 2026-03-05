@@ -786,21 +786,35 @@ class BatchSmsService {
       const batch = recipientStatusBatch.splice(0);
       try {
         for (const r of batch) {
-          // Update recipients that are in 'sending' status (claimed by atomic lock)
-          // This completes the send cycle: pending -> sending -> sent/failed
-          await db.update(campaignRecipients)
-            .set({
-              status: r.status as any,
-              messageSid: r.messageSid,
-              sentAt: r.status === 'sent' ? new Date() : undefined,
-              failedAt: r.status === 'failed' ? new Date() : undefined,
-              errorMessage: r.error,
-            })
-            .where(and(
-              eq(campaignRecipients.smsCampaignId, campaignId),
-              eq(campaignRecipients.phoneNumber, r.phone),
-              eq(campaignRecipients.status, 'sending') // Update from 'sending' to final status
-            ));
+          if (r.status === 'skipped') {
+            // Skipped recipients are still in 'pending' status (never claimed with atomic lock)
+            await db.update(campaignRecipients)
+              .set({
+                status: 'skipped' as any,
+                errorMessage: r.error,
+              })
+              .where(and(
+                eq(campaignRecipients.smsCampaignId, campaignId),
+                eq(campaignRecipients.phoneNumber, r.phone),
+                eq(campaignRecipients.status, 'pending') // Update from 'pending' to 'skipped'
+              ));
+          } else {
+            // Sent/failed recipients are in 'sending' status (claimed by atomic lock)
+            // This completes the send cycle: pending -> sending -> sent/failed
+            await db.update(campaignRecipients)
+              .set({
+                status: r.status as any,
+                messageSid: r.messageSid,
+                sentAt: r.status === 'sent' ? new Date() : undefined,
+                failedAt: r.status === 'failed' ? new Date() : undefined,
+                errorMessage: r.error,
+              })
+              .where(and(
+                eq(campaignRecipients.smsCampaignId, campaignId),
+                eq(campaignRecipients.phoneNumber, r.phone),
+                eq(campaignRecipients.status, 'sending') // Update from 'sending' to final status
+              ));
+          }
         }
       } catch (err) {
         console.error('[BatchSMS] Recipient status update error:', err);

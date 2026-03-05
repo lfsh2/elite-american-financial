@@ -1506,17 +1506,18 @@ export async function registerRoutes(app: Express): Promise<Server> {
               AND cr.status = 'sending'
           `);
           
-          // For 'sending' recipients without a message record, reset to 'pending' for retry
+          // For 'sending' recipients without a message record, mark as 'failed' (NOT 'pending')
+          // This prevents re-sending and progress regression - they were claimed but crashed before completion
           const stuckResult = await db.execute(sql`
             UPDATE campaign_recipients
-            SET status = 'pending'
+            SET status = 'failed', error_message = 'Send interrupted - marked as failed to prevent duplicate'
             WHERE sms_campaign_id = ${campaignId}
               AND status = 'sending'
               AND phone_number NOT IN (
                 SELECT "to" FROM sms_messages WHERE campaign_id = ${campaignId}
               )
           `);
-          console.log(`[BatchSMS] Reset stuck 'sending' recipients to 'pending' for retry`);
+          console.log(`[BatchSMS] Marked stuck 'sending' recipients as 'failed' (prevents re-send/regression)`);
         }
 
         console.log(`[BatchSMS] Loading ${isResume ? 'PENDING' : 'ALL'} recipients from database for campaign ${campaignId}`);
