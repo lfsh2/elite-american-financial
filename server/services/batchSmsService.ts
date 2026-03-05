@@ -164,27 +164,30 @@ class BatchSmsService {
       return valueStr;
     };
     
+    // Helper: case-insensitive key lookup in recipient object
+    const findRecipientKey = (searchKey: string): string | undefined => {
+      const lowerSearch = searchKey.toLowerCase();
+      // Try exact match first
+      if (recipient[searchKey] !== undefined) return searchKey;
+      // Try case-insensitive match against all keys
+      for (const key of Object.keys(recipient)) {
+        if (key.toLowerCase() === lowerSearch) return key;
+      }
+      // Try camelCase conversion (e.g., debt_loads -> debtLoads)
+      const camelCase = searchKey.replace(/_([a-z])/gi, (g: string) => g[1].toUpperCase());
+      if (recipient[camelCase] !== undefined) return camelCase;
+      // Try snake_case conversion (e.g., debtLoads -> debt_loads)
+      const snakeCase = searchKey.replace(/[A-Z]/g, (letter: string) => `_${letter.toLowerCase()}`);
+      if (recipient[snakeCase] !== undefined) return snakeCase;
+      return undefined;
+    };
+    
     // Replace custom fields with double braces {{field}} first
     const doubleBracePattern = /\{\{([a-zA-Z_][a-zA-Z0-9_]*)\}\}/g;
     result = result.replace(doubleBracePattern, (match, fieldName) => {
-      // Try exact field name
-      if (recipient[fieldName] !== undefined) {
-        return formatCurrencyValue(recipient[fieldName], fieldName);
-      }
-      // Try lowercase
-      const lowerField = fieldName.toLowerCase();
-      if (recipient[lowerField] !== undefined) {
-        return formatCurrencyValue(recipient[lowerField], fieldName);
-      }
-      // Try camelCase conversion (e.g., Total_Debt_Amount -> totalDebtAmount)
-      const camelCase = fieldName.replace(/_([a-z])/gi, (g: string) => g[1].toUpperCase());
-      if (recipient[camelCase] !== undefined) {
-        return formatCurrencyValue(recipient[camelCase], fieldName);
-      }
-      // Try snake_case conversion
-      const snakeCase = fieldName.replace(/[A-Z]/g, (letter: string) => `_${letter.toLowerCase()}`);
-      if (recipient[snakeCase] !== undefined) {
-        return formatCurrencyValue(recipient[snakeCase], fieldName);
+      const actualKey = findRecipientKey(fieldName);
+      if (actualKey && recipient[actualKey] !== undefined) {
+        return formatCurrencyValue(recipient[actualKey], fieldName);
       }
       return match;
     });
@@ -192,16 +195,10 @@ class BatchSmsService {
     // Replace custom fields with single braces {field} or ${field}
     const customFieldPattern = /\$?\{([a-zA-Z_][a-zA-Z0-9_]*)\}/g;
     result = result.replace(customFieldPattern, (match, fieldName) => {
-      // Try snake_case field name
-      if (recipient[fieldName] !== undefined) {
-        return formatCurrencyValue(recipient[fieldName], fieldName);
+      const actualKey = findRecipientKey(fieldName);
+      if (actualKey && recipient[actualKey] !== undefined) {
+        return formatCurrencyValue(recipient[actualKey], fieldName);
       }
-      // Try camelCase conversion (e.g., dollar_amount -> dollarAmount)
-      const camelCase = fieldName.replace(/_([a-z])/g, (g: string) => g[1].toUpperCase());
-      if (recipient[camelCase] !== undefined) {
-        return formatCurrencyValue(recipient[camelCase], fieldName);
-      }
-      // Return original if not found
       return match;
     });
     
