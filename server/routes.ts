@@ -1902,6 +1902,10 @@ export async function registerRoutes(app: Express): Promise<Server> {
   // SCALING FIX: Cache for progress counts to avoid DB query on every poll
   const progressCache: Map<number, { data: any; timestamp: number }> = new Map();
   const PROGRESS_CACHE_TTL_MS = 2000; // Cache for 2 seconds (frontend polls every 5s)
+  
+  // CRITICAL FIX: High-water mark to prevent progress from EVER going backwards
+  // This ensures sent count only goes UP, never down - prevents "fake" looking progress
+  const progressHighWaterMark: Map<number, { sent: number; failed: number }> = new Map();
 
   // Campaign progress endpoint (polling)
   // CRITICAL: Always use DB counts as source of truth to prevent progress regression on resume
@@ -1969,13 +1973,34 @@ export async function registerRoutes(app: Express): Promise<Server> {
         status = 'completed';
       }
       
+      // CRITICAL FIX: Apply high-water mark to prevent progress from going backwards
+      // This ensures users NEVER see sent count decrease - builds trust in the software
+      const hwm = progressHighWaterMark.get(campaignId) || { sent: 0, failed: 0 };
+      
+      // Only update high-water mark if current values are higher
+      const finalSent = Math.max(dbSent, hwm.sent);
+      const finalFailed = Math.max(dbFailed, hwm.failed);
+      
+      // Update high-water mark
+      if (dbSent > hwm.sent || dbFailed > hwm.failed) {
+        progressHighWaterMark.set(campaignId, { 
+          sent: Math.max(dbSent, hwm.sent), 
+          failed: Math.max(dbFailed, hwm.failed) 
+        });
+      }
+      
+      // Clean up high-water marks for completed campaigns after 5 minutes
+      if (status === 'completed' || status === 'paused') {
+        setTimeout(() => progressHighWaterMark.delete(campaignId), 300000);
+      }
+      
       const responseData = {
         status,
-        sent: dbSent,
-        failed: dbFailed,
+        sent: finalSent,
+        failed: finalFailed,
         skipped: dbSkipped, // Recipients skipped due to global deduplication (already contacted)
         total: dbTotal,
-        pending: dbPending,
+        pending: Math.max(0, dbTotal - finalSent - finalFailed - dbSkipped), // Recalculate pending based on final counts
         inProgress: dbInProgress,
         delivered: campaign.deliveredCount || 0,
       };
