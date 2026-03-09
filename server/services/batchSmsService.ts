@@ -374,10 +374,20 @@ class BatchSmsService {
           const actualSent = Number(sentCountResult?.count || 0);
           const actualFailed = Number(failedCountResult?.count || 0);
           
+          // CRITICAL FIX: Get current counts to ensure we NEVER decrease them
+          const [currentCampaign] = await db.select({
+            sentCount: smsCampaigns.sentCount,
+            failedCount: smsCampaigns.failedCount,
+          }).from(smsCampaigns).where(eq(smsCampaigns.id, options.campaignId));
+          
+          // Only allow counts to go UP, never down - prevents regression
+          const finalSentCount = Math.max(actualSent, currentCampaign?.sentCount || 0);
+          const finalFailedCount = Math.max(actualFailed, currentCampaign?.failedCount || 0);
+          
           await db.update(smsCampaigns)
             .set({
-              sentCount: actualSent,
-              failedCount: actualFailed,
+              sentCount: finalSentCount,
+              failedCount: finalFailedCount,
               updatedAt: new Date(),
             })
             .where(eq(smsCampaigns.id, options.campaignId));
@@ -408,12 +418,22 @@ class BatchSmsService {
           // Determine if fully complete (no pending recipients left)
           const isFullyComplete = actualPending === 0;
           
-          // Update with actual counts from recipient table
+          // CRITICAL FIX: Get current counts to ensure we NEVER decrease them
+          const [currentCampaign] = await db.select({
+            sentCount: smsCampaigns.sentCount,
+            failedCount: smsCampaigns.failedCount,
+          }).from(smsCampaigns).where(eq(smsCampaigns.id, options.campaignId));
+          
+          // Only allow counts to go UP, never down - prevents regression
+          const finalSentCount = Math.max(actualSent, currentCampaign?.sentCount || 0);
+          const finalFailedCount = Math.max(actualFailed, currentCampaign?.failedCount || 0);
+          
+          // Update with actual counts from recipient table (but never decrease)
           await db.update(smsCampaigns)
             .set({
               status: isFullyComplete ? 'completed' : 'paused',
-              sentCount: actualSent,
-              failedCount: actualFailed,
+              sentCount: finalSentCount,
+              failedCount: finalFailedCount,
               completedAt: isFullyComplete ? new Date() : undefined,
             })
             .where(eq(smsCampaigns.id, options.campaignId));

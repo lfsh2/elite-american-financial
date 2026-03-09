@@ -48,7 +48,7 @@ export const smsMessages = pgTable("sms_messages", {
   direction: text("direction").notNull(), // inbound, outbound
   sentAt: timestamp("sent_at").notNull(),
   messageSid: text("message_sid").unique(), // Unique constraint for deduplication
-  campaignId: integer("campaign_id").references(() => campaigns.id),
+  campaignId: integer("campaign_id").references(() => smsCampaigns.id),
   mediaUrls: text("media_urls").array(),
   providerCode: text("provider_code"), // twilio, commio, bandwidth
   createdAt: timestamp("created_at").defaultNow(),

@@ -1339,12 +1339,28 @@ async function reconcileCampaignCounts(
     const failedCount = Number(row.failed_count || 0);
     const totalCount = Number(row.total_count || 0);
 
+    // CRITICAL FIX: Get current campaign counts to ensure we NEVER decrease them
+    // This prevents progress regression and "shrinking" recipient counts
+    const [currentCampaign] = await db
+      .select({
+        sentCount: smsCampaigns.sentCount,
+        failedCount: smsCampaigns.failedCount,
+        recipientCount: smsCampaigns.recipientCount,
+      })
+      .from(smsCampaigns)
+      .where(eq(smsCampaigns.id, smsCampaignId));
+    
+    // Only allow counts to go UP, never down - prevents regression
+    const finalSentCount = Math.max(sentCount, currentCampaign?.sentCount || 0);
+    const finalFailedCount = Math.max(failedCount, currentCampaign?.failedCount || 0);
+    const finalRecipientCount = Math.max(totalCount, currentCampaign?.recipientCount || 0);
+
     await db
       .update(smsCampaigns)
       .set({
-        sentCount,
-        failedCount,
-        recipientCount: totalCount,
+        sentCount: finalSentCount,
+        failedCount: finalFailedCount,
+        recipientCount: finalRecipientCount,
         updatedAt: new Date(),
         ...extraFields,
       })

@@ -45,7 +45,7 @@ import {
   providers,
 } from "@shared/schema";
 import { db } from "./db";
-import { eq, and, sql, desc, or } from "drizzle-orm";
+import { eq, and, sql, desc, or, lte } from "drizzle-orm";
 import { ZodError } from "zod";
 import { fromZodError } from "zod-validation-error";
 
@@ -1905,7 +1905,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
   
   // CRITICAL FIX: High-water mark to prevent progress from EVER going backwards
   // This ensures sent count only goes UP, never down - prevents "fake" looking progress
-  const progressHighWaterMark: Map<number, { sent: number; failed: number }> = new Map();
+  const progressHighWaterMark: Map<number, { sent: number; failed: number; total: number }> = new Map();
 
   // Campaign progress endpoint (polling)
   // CRITICAL: Always use DB counts as source of truth to prevent progress regression on resume
@@ -1974,18 +1974,23 @@ export async function registerRoutes(app: Express): Promise<Server> {
       }
       
       // CRITICAL FIX: Apply high-water mark to prevent progress from going backwards
-      // This ensures users NEVER see sent count decrease - builds trust in the software
-      const hwm = progressHighWaterMark.get(campaignId) || { sent: 0, failed: 0 };
+      // This ensures users NEVER see sent count decrease OR total count change - builds trust in the software
+      const hwm = progressHighWaterMark.get(campaignId) || { sent: 0, failed: 0, total: 0 };
+      
+      // Lock total count once campaign starts sending - NEVER let it change during active campaign
+      // This prevents the "shrinking recipient count" issue
+      const finalTotal = status === 'sending' && hwm.total > 0 ? hwm.total : Math.max(dbTotal, hwm.total);
       
       // Only update high-water mark if current values are higher
       const finalSent = Math.max(dbSent, hwm.sent);
       const finalFailed = Math.max(dbFailed, hwm.failed);
       
-      // Update high-water mark
-      if (dbSent > hwm.sent || dbFailed > hwm.failed) {
+      // Update high-water mark - lock in the total once we see it
+      if (dbSent > hwm.sent || dbFailed > hwm.failed || dbTotal > hwm.total) {
         progressHighWaterMark.set(campaignId, { 
           sent: Math.max(dbSent, hwm.sent), 
-          failed: Math.max(dbFailed, hwm.failed) 
+          failed: Math.max(dbFailed, hwm.failed),
+          total: Math.max(dbTotal, hwm.total)
         });
       }
       
@@ -1999,8 +2004,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
         sent: finalSent,
         failed: finalFailed,
         skipped: dbSkipped, // Recipients skipped due to global deduplication (already contacted)
-        total: dbTotal,
-        pending: Math.max(0, dbTotal - finalSent - finalFailed - dbSkipped), // Recalculate pending based on final counts
+        total: finalTotal, // LOCKED - never changes during active campaign
+        pending: Math.max(0, finalTotal - finalSent - finalFailed - dbSkipped), // Recalculate pending based on locked total
         inProgress: dbInProgress,
         delivered: campaign.deliveredCount || 0,
       };
@@ -7969,7 +7974,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
         .from(smsCampaigns)
         .where(and(
           eq(smsCampaigns.status, 'scheduled'),
-          sql`${smsCampaigns.scheduledAt} <= ${now}`
+          lte(smsCampaigns.scheduledAt, now)
         ));
 
       const results = [];
@@ -8005,7 +8010,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
         .from(smsCampaigns)
         .where(and(
           eq(smsCampaigns.status, 'scheduled'),
-          sql`${smsCampaigns.scheduledAt} <= ${now}`
+          lte(smsCampaigns.scheduledAt, now)
         ));
 
       for (const campaign of dueCampaigns) {
