@@ -3277,43 +3277,6 @@ export default function SmsCampaigns() {
                 <CardTitle>SMS Campaigns</CardTitle>
                 <CardDescription>Manage your SMS marketing campaigns with parallel batch sending</CardDescription>
               </div>
-              <Button 
-                variant="outline" 
-                size="sm"
-                onClick={async () => {
-                  try {
-                    toast({ title: 'Syncing...', description: 'Checking delivery statuses from Commio & Twilio...' });
-                    
-                    // 1. Sync Commio delivery statuses from ThinQ API
-                    const commioRes = await fetch('/api/commio/sync-delivery-status', {
-                      method: 'POST',
-                      headers: { 'Content-Type': 'application/json' },
-                      credentials: 'include',
-                      body: JSON.stringify({ limit: 500 }),
-                    });
-                    const commioData = commioRes.ok ? await commioRes.json() : { synced: 0 };
-                    
-                    // 2. Recount delivered from DB for all campaigns
-                    const res = await fetch('/api/campaigns/sms-campaigns/recount-delivered', {
-                      method: 'POST',
-                      credentials: 'include',
-                    });
-                    if (!res.ok) throw new Error('Failed to sync');
-                    const data = await res.json();
-                    
-                    toast({ 
-                      title: 'Synced', 
-                      description: `Updated ${data.campaignsUpdated} campaigns. Commio: ${commioData.synced || 0} statuses synced.` 
-                    });
-                    fetchData();
-                  } catch (e: any) {
-                    toast({ title: 'Error', description: e.message, variant: 'destructive' });
-                  }
-                }}
-              >
-                <RefreshCw className="mr-2 h-4 w-4" />
-                Sync Delivered
-              </Button>
             </CardHeader>
             <CardContent>
               {isLoading ? (
