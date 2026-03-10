@@ -228,7 +228,7 @@ export default function Analytics() {
     ];
   }, [accountData, dateFilter]);
 
-  // Calculate health metrics from DB aggregated metrics (source of truth)
+  // Calculate health metrics from phone health data (Twilio) + DB aggregated metrics
   const healthMetrics = useMemo(() => {
     if (!accountData) return null;
     const agg = accountData.aggregatedMetrics;
@@ -260,6 +260,70 @@ export default function Analytics() {
     const delivered = Math.round(totalMessages * (deliveryRate / 100));
     const failed = Math.round(totalMessages * (failureRate / 100));
     
+    // Use actual phone health data from Twilio/Commio if available
+    if (phoneHealthData && phoneHealthData.phoneNumbers.length > 0) {
+      // Filter phone health data by selected provider
+      let phones = phoneHealthData.phoneNumbers;
+      if (selectedProvider !== 'all') {
+        const selectedAccount = accounts?.find(a => a.id === selectedProvider);
+        if (selectedAccount) {
+          phones = phones.filter(p => p.accountId === selectedProvider || p.provider === selectedAccount.provider);
+        }
+      }
+      
+      // Skip if no phones match the filter
+      if (phones.length === 0) {
+        phones = phoneHealthData.phoneNumbers; // Fallback to all phones
+      }
+      
+      // Calculate metrics from filtered phone health data
+      const totalPhones = phones.length;
+      const avgDeliveryRate = phones.reduce((sum, p) => sum + (p.metrics.deliveryRate || 0), 0) / totalPhones;
+      const avgHealthScore = phones.reduce((sum, p) => sum + (p.healthScore || 0), 0) / totalPhones;
+      
+      // Count statuses from filtered phones
+      const healthyCount = phones.filter(p => p.status === 'healthy').length;
+      const warningCount = phones.filter(p => p.status === 'warning').length;
+      const criticalCount = phones.filter(p => p.status === 'critical').length;
+      
+      // Sent Rate: from actual phone delivery rates
+      const sentRate = Math.round(avgDeliveryRate) || Math.round(deliveryRate);
+      
+      // Compliance Rate: based on healthy phone ratio
+      const complianceRate = Math.round((healthyCount / totalPhones) * 100);
+      
+      // Fraud Score: inverse of critical/warning phones
+      const fraudScore = Math.round(((totalPhones - criticalCount - warningCount) / totalPhones) * 100);
+      
+      // Latency Score: based on phone health scores
+      const latencyScore = Math.round(avgHealthScore || deliveryRate);
+      
+      // Engagement Rate: inbound / outbound
+      const inboundToday = agg.totalMessagesReceivedToday || 0;
+      const outboundToday = agg.totalMessagesSentToday || 0;
+      const engagementRate = outboundToday > 0 
+        ? Math.min(100, Math.round((inboundToday / outboundToday) * 100))
+        : 0;
+      
+      // Overall health score from filtered phone health data
+      const healthScore = Math.round(avgHealthScore || 0);
+      
+      return {
+        healthScore,
+        sentRate,
+        complianceRate,
+        fraudScore,
+        latencyScore,
+        engagementRate,
+        totalMessages,
+        delivered,
+        failed,
+        sentRateChange,
+        complianceChange: 0,
+      };
+    }
+    
+    // Fallback to calculated metrics if no phone health data
     // Sent Rate: Messages that were successfully sent (not failed)
     const sentRate = totalMessages > 0 ? Math.round(((totalMessages - failed) / totalMessages) * 100) : 100;
     
@@ -303,7 +367,7 @@ export default function Analytics() {
       sentRateChange,
       complianceChange,
     };
-  }, [accountData, dateFilter]);
+  }, [accountData, dateFilter, phoneHealthData, selectedProvider, accounts]);
 
   // Calculate error data from actual API data
   const errorData = useMemo(() => {
@@ -416,52 +480,52 @@ export default function Analytics() {
   return (
     <div className="flex-1 space-y-6 p-6 bg-gray-50/50">
       {/* Navigation Tabs */}
-      <div className="border-b bg-white -mx-6 -mt-6 px-6 pt-4">
-        <div className="flex items-center justify-between mb-2">
-          <Tabs value={activeTab} onValueChange={(v) => setActiveTab(v as AnalyticsTab)}>
-            <TabsList className="bg-transparent border-0 h-auto p-0 gap-0">
+      <div className="border-b bg-white -mx-6 -mt-6 px-4 sm:px-6 pt-4">
+        <div className="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-4 mb-2">
+          <Tabs value={activeTab} onValueChange={(v) => setActiveTab(v as AnalyticsTab)} className="w-full lg:w-auto">
+            <TabsList className="bg-transparent border-0 h-auto p-0 gap-0 flex flex-wrap">
               <TabsTrigger 
                 value="overview" 
-                className="rounded-none border-b-2 border-transparent data-[state=active]:border-primary data-[state=active]:bg-transparent data-[state=active]:shadow-none px-4 pb-3"
+                className="rounded-none border-b-2 border-transparent data-[state=active]:border-primary data-[state=active]:bg-transparent data-[state=active]:shadow-none px-2 sm:px-4 pb-3 text-xs sm:text-sm"
               >
                 Overview
               </TabsTrigger>
               <TabsTrigger 
                 value="delivery" 
-                className="rounded-none border-b-2 border-transparent data-[state=active]:border-primary data-[state=active]:bg-transparent data-[state=active]:shadow-none px-4 pb-3"
+                className="rounded-none border-b-2 border-transparent data-[state=active]:border-primary data-[state=active]:bg-transparent data-[state=active]:shadow-none px-2 sm:px-4 pb-3 text-xs sm:text-sm"
               >
-                Delivery & Errors
+                Delivery
               </TabsTrigger>
               <TabsTrigger 
                 value="response" 
-                className="rounded-none border-b-2 border-transparent data-[state=active]:border-primary data-[state=active]:bg-transparent data-[state=active]:shadow-none px-4 pb-3"
+                className="rounded-none border-b-2 border-transparent data-[state=active]:border-primary data-[state=active]:bg-transparent data-[state=active]:shadow-none px-2 sm:px-4 pb-3 text-xs sm:text-sm"
               >
                 Response
               </TabsTrigger>
               <TabsTrigger 
                 value="latency" 
-                className="rounded-none border-b-2 border-transparent data-[state=active]:border-primary data-[state=active]:bg-transparent data-[state=active]:shadow-none px-4 pb-3"
+                className="rounded-none border-b-2 border-transparent data-[state=active]:border-primary data-[state=active]:bg-transparent data-[state=active]:shadow-none px-2 sm:px-4 pb-3 text-xs sm:text-sm"
               >
                 Latency
               </TabsTrigger>
               <TabsTrigger 
                 value="engagement" 
-                className="rounded-none border-b-2 border-transparent data-[state=active]:border-primary data-[state=active]:bg-transparent data-[state=active]:shadow-none px-4 pb-3"
+                className="rounded-none border-b-2 border-transparent data-[state=active]:border-primary data-[state=active]:bg-transparent data-[state=active]:shadow-none px-2 sm:px-4 pb-3 text-xs sm:text-sm"
               >
                 Engagement
               </TabsTrigger>
               <TabsTrigger 
                 value="health" 
-                className="rounded-none border-b-2 border-transparent data-[state=active]:border-primary data-[state=active]:bg-transparent data-[state=active]:shadow-none px-4 pb-3"
+                className="rounded-none border-b-2 border-transparent data-[state=active]:border-primary data-[state=active]:bg-transparent data-[state=active]:shadow-none px-2 sm:px-4 pb-3 text-xs sm:text-sm"
               >
-                <Activity className="w-4 h-4 mr-2" />
-                Phone Health
+                <Activity className="w-3 h-3 sm:w-4 sm:h-4 mr-1 sm:mr-2" />
+                Health
               </TabsTrigger>
             </TabsList>
           </Tabs>
-          <div className="flex items-center gap-2">
+          <div className="flex flex-wrap items-center gap-2">
             <Select value={dateFilter} onValueChange={(v) => setDateFilter(v as any)}>
-              <SelectTrigger className="w-[140px] h-9">
+              <SelectTrigger className="w-[120px] sm:w-[140px] h-9 text-xs sm:text-sm">
                 <SelectValue placeholder="Date Range" />
               </SelectTrigger>
               <SelectContent>
@@ -472,16 +536,16 @@ export default function Analytics() {
               </SelectContent>
             </Select>
             <Select value={selectedProvider} onValueChange={setSelectedProvider}>
-              <SelectTrigger className="w-[180px] h-9">
-                <SelectValue placeholder="Select Provider" />
+              <SelectTrigger className="w-[140px] sm:w-[180px] h-9 text-xs sm:text-sm">
+                <SelectValue placeholder="Provider" />
               </SelectTrigger>
               <SelectContent>
                 <SelectItem value="all">All Providers</SelectItem>
                 {accounts?.filter(a => a.type === 'master').map(account => (
                   <SelectItem key={account.id} value={account.id}>
                     <div className="flex items-center gap-2">
-                      <span>{account.friendlyName || account.name}</span>
-                      <Badge variant="secondary" className="text-xs">
+                      <span className="truncate">{account.friendlyName || account.name}</span>
+                      <Badge variant="secondary" className="text-xs hidden sm:inline-flex">
                         {account.provider === 'commio' ? 'Commio' : account.provider === 'twilio' ? 'Twilio' : account.provider}
                       </Badge>
                     </div>
@@ -489,9 +553,9 @@ export default function Analytics() {
                 ))}
               </SelectContent>
             </Select>
-            <Button variant="outline" size="sm" className="gap-2">
+            <Button variant="outline" size="sm" className="gap-2 text-xs sm:text-sm">
               <Download className="h-4 w-4" />
-              Export
+              <span className="hidden sm:inline">Export</span>
             </Button>
           </div>
         </div>
@@ -503,9 +567,9 @@ export default function Analytics() {
           {/* Health Score Section - Horizontal Layout like Twilio */}
           <Card className="bg-white border-0 shadow-sm overflow-hidden">
         <CardContent className="p-0">
-          <div className="grid grid-cols-1 lg:grid-cols-6 divide-y lg:divide-y-0 lg:divide-x divide-gray-100">
-            {/* Health Score Gauge - Takes 1 column */}
-            <div className="p-6 lg:col-span-1 flex flex-col">
+          <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6 divide-y sm:divide-y-0 divide-gray-100">
+            {/* Health Score Gauge - Takes full width on mobile, 1 column on lg */}
+            <div className="p-4 sm:p-6 col-span-2 sm:col-span-3 md:col-span-4 lg:col-span-1 flex flex-col">
               <div className="mb-2">
                 <p className="text-sm text-muted-foreground">Your Messaging Health Score is</p>
                 <span className={`text-lg font-bold ${healthRating.color}`}>{healthRating.label}</span>
@@ -561,7 +625,7 @@ export default function Analytics() {
             </div>
 
             {/* Sent Rate */}
-            <div className="p-4 lg:col-span-1 flex flex-col items-center justify-center hover:bg-gray-50/50 transition-colors cursor-pointer group">
+            <div className="p-3 sm:p-4 flex flex-col items-center justify-center hover:bg-gray-50/50 transition-colors cursor-pointer group">
               <p className="text-sm text-muted-foreground mb-2 flex items-center gap-1">
                 Sent rate
                 <Info className="h-3 w-3 opacity-0 group-hover:opacity-100 transition-opacity" />
@@ -600,7 +664,7 @@ export default function Analytics() {
             </div>
 
             {/* Compliance */}
-            <div className="p-4 lg:col-span-1 flex flex-col items-center justify-center hover:bg-gray-50/50 transition-colors cursor-pointer group">
+            <div className="p-3 sm:p-4 flex flex-col items-center justify-center hover:bg-gray-50/50 transition-colors cursor-pointer group">
               <p className="text-sm text-muted-foreground mb-2 flex items-center gap-1">
                 Compliance
                 <Info className="h-3 w-3 opacity-0 group-hover:opacity-100 transition-opacity" />
@@ -630,7 +694,7 @@ export default function Analytics() {
             </div>
 
             {/* Fraud */}
-            <div className="p-4 lg:col-span-1 flex flex-col items-center justify-center hover:bg-gray-50/50 transition-colors cursor-pointer group">
+            <div className="p-3 sm:p-4 flex flex-col items-center justify-center hover:bg-gray-50/50 transition-colors cursor-pointer group">
               <p className="text-sm text-muted-foreground mb-2 flex items-center gap-1">
                 Fraud
                 <Info className="h-3 w-3 opacity-0 group-hover:opacity-100 transition-opacity" />
@@ -659,7 +723,7 @@ export default function Analytics() {
             </div>
 
             {/* Latency */}
-            <div className="p-4 lg:col-span-1 flex flex-col items-center justify-center hover:bg-gray-50/50 transition-colors cursor-pointer group">
+            <div className="p-3 sm:p-4 flex flex-col items-center justify-center hover:bg-gray-50/50 transition-colors cursor-pointer group">
               <p className="text-sm text-muted-foreground mb-2 flex items-center gap-1">
                 Latency
                 <Info className="h-3 w-3 opacity-0 group-hover:opacity-100 transition-opacity" />
@@ -688,7 +752,7 @@ export default function Analytics() {
             </div>
 
             {/* Engagement */}
-            <div className="p-4 lg:col-span-1 flex flex-col items-center justify-center hover:bg-gray-50/50 transition-colors cursor-pointer group">
+            <div className="p-3 sm:p-4 flex flex-col items-center justify-center hover:bg-gray-50/50 transition-colors cursor-pointer group">
               <p className="text-sm text-muted-foreground mb-2 flex items-center gap-1">
                 Engagement
                 <Info className="h-3 w-3 opacity-0 group-hover:opacity-100 transition-opacity" />
@@ -730,7 +794,7 @@ export default function Analytics() {
         <CardContent>
           <div className="space-y-3">
             {errorData.map((error, index) => (
-              <div key={index} className="flex items-center justify-between py-2 border-b last:border-0">
+              <div key={index} className="flex flex-col sm:flex-row sm:items-center justify-between py-2 border-b last:border-0 gap-2">
                 <div className="flex items-center gap-3">
                   <MessageSquare className="h-4 w-4 text-muted-foreground" />
                   <span className="text-sm">
@@ -805,8 +869,8 @@ export default function Analytics() {
       )}
 
       {/* Communication Trends Chart */}
-      <div className="grid gap-6 lg:grid-cols-7">
-        <Card className="lg:col-span-4 bg-white border-0 shadow-sm">
+      <div className="grid gap-4 sm:gap-6 grid-cols-1 lg:grid-cols-7">
+        <Card className="col-span-1 lg:col-span-4 bg-white border-0 shadow-sm">
           <CardHeader className="pb-2">
             <div className="flex items-center justify-between">
               <div>
@@ -840,7 +904,7 @@ export default function Analytics() {
           </CardContent>
         </Card>
 
-        <Card className="lg:col-span-3 bg-white border-0 shadow-sm">
+        <Card className="col-span-1 lg:col-span-3 bg-white border-0 shadow-sm">
           <CardHeader className="pb-2">
             <CardTitle className="text-base">Message Status</CardTitle>
             <CardDescription className="text-xs">Breakdown by delivery status</CardDescription>

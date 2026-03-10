@@ -113,11 +113,19 @@ export default function Dashboard() {
     return () => clearInterval(interval);
   }, []);
 
-  // Fetch heatmap data
+  // Fetch heatmap data - responds to date filter and refreshes every 30 seconds for live data
   useEffect(() => {
     const fetchHeatmap = async () => {
       try {
-        const res = await fetch('/api/dashboard/heatmap');
+        // Build URL with date range params if set
+        let url = '/api/dashboard/heatmap';
+        if (dateRange?.from) {
+          const params = new URLSearchParams();
+          params.set('from', dateRange.from.toISOString());
+          params.set('to', (dateRange.to || new Date()).toISOString());
+          url += `?${params.toString()}`;
+        }
+        const res = await fetch(url);
         if (res.ok) {
           const data = await res.json();
           setHeatmapData(data.data || []);
@@ -125,7 +133,11 @@ export default function Dashboard() {
       } catch { /* ignore */ }
     };
     fetchHeatmap();
-  }, []);
+    
+    // Refresh heatmap data every 30 seconds for live updates
+    const interval = setInterval(fetchHeatmap, 30000);
+    return () => clearInterval(interval);
+  }, [dateRange]);
 
   // Transform account data to analytics format for compatibility
   // ALWAYS use aggregatedMetrics from server (DB source of truth) for stat cards
@@ -818,7 +830,7 @@ export default function Dashboard() {
                 <USStateHeatmap 
                   data={heatmapData}
                   title="Message Heatmap"
-                  subtitle="Geographic distribution across states"
+                  subtitle={`Geographic distribution across states • ${getDateRangeLabel()}`}
                 />
               </CardContent>
             </Card>
@@ -827,7 +839,7 @@ export default function Dashboard() {
             <Card className="bg-white">
               <CardHeader className="pb-2">
                 <CardTitle className="text-base font-medium">Top Sending States</CardTitle>
-                <CardDescription>Message volume by state</CardDescription>
+                <CardDescription>Message volume by state • {getDateRangeLabel()}</CardDescription>
               </CardHeader>
               <CardContent>
                 <div className="space-y-3">

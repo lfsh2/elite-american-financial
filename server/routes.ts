@@ -7164,84 +7164,10 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
-  /**
-   * Sync SMS metrics from Commio API
-   * Fetches delivery reports and updates campaign counts
-   */
-  app.post("/api/campaigns/sms-campaigns/:campaignId/sync-metrics", async (req, res) => {
-    try {
-      const campaignId = parseInt(req.params.campaignId);
-      
-      // Get campaign details
-      const [campaign] = await db
-        .select()
-        .from(smsCampaigns)
-        .where(eq(smsCampaigns.id, campaignId));
-      
-      if (!campaign) {
-        return res.status(404).json({ error: "Campaign not found" });
-      }
-
-      // Get Commio account credentials
-      const { accounts: userAccounts } = await accountService.getAccountsForUser(campaign.userId);
-      const commioAccount = userAccounts.find((a: any) => a.provider === 'commio');
-      
-      if (!commioAccount) {
-        return res.status(400).json({ error: "No Commio account found for this user" });
-      }
-
-      const accountIdNum = parseInt(commioAccount.id.replace('acc_', ''));
-      const creds = await accountService.getAccountCredentials(accountIdNum);
-      
-      if (!creds?.accountSid || !creds?.authToken) {
-        return res.status(400).json({ error: "Commio credentials not configured" });
-      }
-
-      // Create Commio provider instance
-      const { CommioProvider } = await import('./providers/commio.provider');
-      const commioProvider = new CommioProvider({
-        accountSid: creds.accountSid,
-        authToken: creds.authToken,
-        apiKey: creds.apiKey,
-      });
-
-      // Fetch SMS reports from Commio
-      const startDate = campaign.startedAt || campaign.createdAt;
-      const endDate = campaign.completedAt || new Date();
-      
-      const reports = await commioProvider.getSmsReports({
-        startDate: new Date(startDate),
-        endDate: new Date(endDate),
-        limit: 1000,
-      });
-
-      // Update campaign with metrics
-      const [updated] = await db
-        .update(smsCampaigns)
-        .set({
-          sentCount: reports.sent,
-          deliveredCount: reports.delivered,
-          failedCount: reports.failed,
-          updatedAt: new Date(),
-        })
-        .where(eq(smsCampaigns.id, campaignId))
-        .returning();
-
-      res.json({
-        success: true,
-        campaign: updated,
-        metrics: {
-          total: reports.total,
-          sent: reports.sent,
-          delivered: reports.delivered,
-          failed: reports.failed,
-        },
-      });
-    } catch (error: any) {
-      console.error("Error syncing campaign metrics:", error);
-      res.status(500).json({ error: error.message || "Failed to sync campaign metrics" });
-    }
-  });
+  // DISABLED: Sync metrics endpoint removed to prevent accidental data overwrite
+  // The endpoint was overwriting campaign counts with Commio API data which could
+  // conflict with the "never decrease counts" protection we implemented.
+  // app.post("/api/campaigns/sms-campaigns/:campaignId/sync-metrics", ...)
 
   /**
    * Sync Commio message delivery statuses from ThinQ API
