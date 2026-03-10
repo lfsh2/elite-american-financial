@@ -1,5 +1,6 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { useAuth } from '../hooks/use-auth';
+import { useToast } from '@/hooks/use-toast';
 import { 
   CreditCard, 
   Plus, 
@@ -22,61 +23,136 @@ import {
   PlusCircle,
   Settings as SettingsIcon,
   CreditCard as CreditCardIcon,
-  Bell
+  Bell,
+  Loader2
 } from 'lucide-react';
+
+interface CreditTransaction {
+  id: number;
+  type: string;
+  amount: number;
+  balanceAfter: number;
+  description: string;
+  referenceType?: string;
+  referenceId?: string;
+  createdAt: string;
+}
+
+interface CreditPackage {
+  id: number;
+  name: string;
+  credits: number;
+  price: string;
+  description?: string;
+  isActive: boolean;
+}
 
 export default function Billing() {
   const { user } = useAuth();
+  const { toast } = useToast();
   const [activeTab, setActiveTab] = useState('credits');
-  const [autoRefillEnabled, setAutoRefillEnabled] = useState(true);
+  const [isLoading, setIsLoading] = useState(true);
+  const [autoRefillEnabled, setAutoRefillEnabled] = useState(false);
   const [minBalance, setMinBalance] = useState(100);
   const [refillAmount, setRefillAmount] = useState(1000);
   const [showPurchaseModal, setShowPurchaseModal] = useState(false);
   const [purchaseAmount, setPurchaseAmount] = useState(1000);
 
-  // Mock credit data
-  const creditBalance = 2345;
-  const monthlySpending = 1240;
-  const projectedMonthEnd = 1850;
+  // Real data from API
+  const [creditBalance, setCreditBalance] = useState(0);
+  const [creditRates, setCreditRates] = useState<any>(null);
+  const [transactions, setTransactions] = useState<CreditTransaction[]>([]);
+  const [creditPackages, setCreditPackages] = useState<CreditPackage[]>([]);
+  const [monthlySpending, setMonthlySpending] = useState(0);
 
-  // Mock credit packages
-  const creditPackages = [
-    { id: 1, credits: 1000, price: 10.00, pricePerCredit: 0.01 },
-    { id: 2, credits: 10000, price: 95.00, pricePerCredit: 0.0095, savings: '5%' },
-    { id: 3, credits: 100000, price: 850.00, pricePerCredit: 0.0085, savings: '15%' }
+  // Fetch credit data from API
+  const fetchCreditData = useCallback(async () => {
+    if (!user?.id) return;
+    
+    setIsLoading(true);
+    try {
+      // Fetch credit balance and rates
+      const creditsRes = await fetch(`/api/users/${user.id}/credits`, { credentials: 'include' });
+      if (creditsRes.ok) {
+        const data = await creditsRes.json();
+        setCreditBalance(data.balance || 0);
+        setCreditRates(data.rates);
+        setMinBalance(data.rates?.lowBalanceThreshold || 50);
+      }
+
+      // Fetch transactions
+      const transRes = await fetch(`/api/users/${user.id}/credits/transactions?limit=20`, { credentials: 'include' });
+      if (transRes.ok) {
+        const data = await transRes.json();
+        setTransactions(data || []);
+        
+        // Calculate monthly spending from consumption transactions
+        const now = new Date();
+        const monthStart = new Date(now.getFullYear(), now.getMonth(), 1);
+        const spending = (data || [])
+          .filter((t: CreditTransaction) => 
+            t.type === 'consumption' && 
+            new Date(t.createdAt) >= monthStart
+          )
+          .reduce((sum: number, t: CreditTransaction) => sum + Math.abs(t.amount), 0);
+        setMonthlySpending(spending);
+      }
+
+      // Fetch credit packages
+      const packagesRes = await fetch('/api/credit-packages', { credentials: 'include' });
+      if (packagesRes.ok) {
+        const data = await packagesRes.json();
+        setCreditPackages(data || []);
+      }
+
+      // Check user's auto-refill settings
+      if (user.autoRefillEnabled !== undefined) {
+        setAutoRefillEnabled(user.autoRefillEnabled);
+      }
+      if (user.autoRefillThreshold) {
+        setMinBalance(user.autoRefillThreshold);
+      }
+      if (user.autoRefillAmount) {
+        setRefillAmount(user.autoRefillAmount);
+      }
+    } catch (error) {
+      console.error('Error fetching credit data:', error);
+    } finally {
+      setIsLoading(false);
+    }
+  }, [user?.id]);
+
+  useEffect(() => {
+    fetchCreditData();
+  }, [fetchCreditData]);
+
+  // Default packages if none from API
+  const displayPackages = creditPackages.length > 0 ? creditPackages.map(pkg => ({
+    id: pkg.id,
+    credits: pkg.credits,
+    price: parseFloat(pkg.price.replace('$', '')),
+    pricePerCredit: parseFloat(pkg.price.replace('$', '')) / pkg.credits,
+    name: pkg.name,
+    savings: pkg.credits >= 10000 ? '5%' : pkg.credits >= 100000 ? '15%' : undefined
+  })) : [
+    { id: 1, credits: 1000, price: 10.00, pricePerCredit: 0.01, name: 'Starter' },
+    { id: 2, credits: 10000, price: 95.00, pricePerCredit: 0.0095, savings: '5%', name: 'Pro' },
+    { id: 3, credits: 100000, price: 850.00, pricePerCredit: 0.0085, savings: '15%', name: 'Enterprise' }
   ];
 
-  // Mock usage data
+  // Usage breakdown from rates
   const usageBreakdown = [
-    { service: 'SMS', credits: 850, percentage: 65 },
-    { service: 'Voice Calls', credits: 340, percentage: 26 },
-    { service: 'Phone Numbers', credits: 120, percentage: 9 }
+    { service: 'SMS Outbound', credits: creditRates?.smsOutboundCredits || 1, description: 'per message' },
+    { service: 'SMS Inbound', credits: creditRates?.smsInboundCredits || 0, description: 'per message' },
+    { service: 'MMS Outbound', credits: creditRates?.mmsOutboundCredits || 3, description: 'per message' },
   ];
 
-  // Mock transaction history
-  const transactions = [
-    { id: 1, type: 'purchase', amount: 1000, credits: 1000, date: '2025-05-10T12:30:00', status: 'completed' },
-    { id: 2, type: 'usage', amount: -120, credits: -120, service: 'SMS', date: '2025-05-09T00:00:00', status: 'completed' },
-    { id: 3, type: 'usage', amount: -45, credits: -45, service: 'Voice', date: '2025-05-08T00:00:00', status: 'completed' },
-    { id: 4, type: 'auto-refill', amount: 1000, credits: 1000, date: '2025-05-05T14:25:00', status: 'completed' },
-    { id: 5, type: 'usage', amount: -250, credits: -250, service: 'SMS', date: '2025-05-04T00:00:00', status: 'completed' }
-  ];
-
-  // Credit usage by day (for chart)
-  const dailyUsage = [
-    { date: '2025-05-06', credits: 120 },
-    { date: '2025-05-07', credits: 150 },
-    { date: '2025-05-08', credits: 135 },
-    { date: '2025-05-09', credits: 180 },
-    { date: '2025-05-10', credits: 160 },
-    { date: '2025-05-11', credits: 190 },
-    { date: '2025-05-12', credits: 210 }
-  ];
-
-  // Handle purchase
-  const handlePurchase = () => {
-    // In a real app, this would call the billing API
-    alert(`Purchased ${purchaseAmount} credits`);
+  // Handle purchase (placeholder - would integrate with payment processor)
+  const handlePurchase = async () => {
+    toast({
+      title: 'Purchase Credits',
+      description: `To purchase ${purchaseAmount} credits, please contact your account manager or use the payment portal.`,
+    });
     setShowPurchaseModal(false);
   };
 
@@ -216,31 +292,37 @@ export default function Billing() {
       {/* Credit Management Tab */}
       {activeTab === 'credits' && (
         <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-          {creditPackages.map(pkg => (
-            <div key={pkg.id} className="bg-white rounded-lg border border-gray-200 overflow-hidden">
-              <div className="p-6">
-                <h3 className="text-lg font-bold mb-1">{formatCredits(pkg.credits)} Credits</h3>
-                <p className="text-2xl font-bold text-blue-600 mb-1">${pkg.price.toFixed(2)}</p>
-                <p className="text-sm text-gray-500 mb-4">${pkg.pricePerCredit.toFixed(4)} per credit</p>
-                
-                {pkg.savings && (
-                  <div className="bg-green-50 text-green-800 text-xs font-medium px-2 py-1 rounded inline-block mb-4">
-                    Save {pkg.savings}
-                  </div>
-                )}
-                
-                <button 
-                  className="w-full bg-blue-600 text-white py-2 rounded hover:bg-blue-700 transition-colors"
-                  onClick={() => {
-                    setPurchaseAmount(pkg.credits);
-                    setShowPurchaseModal(true);
-                  }}
-                >
-                  Purchase
-                </button>
-              </div>
+          {isLoading ? (
+            <div className="col-span-3 flex justify-center py-12">
+              <Loader2 className="h-8 w-8 animate-spin text-blue-500" />
             </div>
-          ))}
+          ) : (
+            displayPackages.map(pkg => (
+              <div key={pkg.id} className="bg-white rounded-lg border border-gray-200 overflow-hidden">
+                <div className="p-6">
+                  <h3 className="text-lg font-bold mb-1">{formatCredits(pkg.credits)} Credits</h3>
+                  <p className="text-2xl font-bold text-blue-600 mb-1">${pkg.price.toFixed(2)}</p>
+                  <p className="text-sm text-gray-500 mb-4">${pkg.pricePerCredit.toFixed(4)} per credit</p>
+                  
+                  {pkg.savings && (
+                    <div className="bg-green-50 text-green-800 text-xs font-medium px-2 py-1 rounded inline-block mb-4">
+                      Save {pkg.savings}
+                    </div>
+                  )}
+                  
+                  <button 
+                    className="w-full bg-blue-600 text-white py-2 rounded hover:bg-blue-700 transition-colors"
+                    onClick={() => {
+                      setPurchaseAmount(pkg.credits);
+                      setShowPurchaseModal(true);
+                    }}
+                  >
+                    Purchase
+                  </button>
+                </div>
+              </div>
+            ))
+          )}
         </div>
       )}
 
@@ -256,13 +338,7 @@ export default function Billing() {
                 <div key={index} className="mb-4 last:mb-0">
                   <div className="flex justify-between mb-1">
                     <span className="text-sm font-medium">{item.service}</span>
-                    <span className="text-sm text-gray-500">{item.credits} credits ({item.percentage}%)</span>
-                  </div>
-                  <div className="w-full bg-gray-200 rounded-full h-2.5">
-                    <div 
-                      className="bg-blue-600 h-2.5 rounded-full" 
-                      style={{ width: `${item.percentage}%` }}
-                    ></div>
+                    <span className="text-sm text-gray-500">{item.credits} credits {item.description}</span>
                   </div>
                 </div>
               ))}
@@ -271,34 +347,21 @@ export default function Billing() {
           
           <div className="bg-white rounded-lg border border-gray-200 overflow-hidden">
             <div className="p-4 border-b border-gray-200">
-              <h3 className="text-lg font-medium">Daily Usage</h3>
+              <h3 className="text-lg font-medium">Monthly Summary</h3>
             </div>
             <div className="p-6">
-              <div className="h-64 relative">
-                <div className="absolute inset-0 flex items-end space-x-1">
-                  {dailyUsage.map((day, i) => {
-                    const height = (day.credits / 250) * 100;
-                    return (
-                      <div key={i} className="flex-1 flex flex-col justify-end">
-                        <div 
-                          className="bg-blue-500 rounded-sm" 
-                          style={{ height: `${height}%` }}
-                        ></div>
-                      </div>
-                    );
-                  })}
+              <div className="space-y-4">
+                <div className="flex justify-between items-center">
+                  <span className="text-sm text-gray-600">Credits Used This Month</span>
+                  <span className="font-semibold">{formatCredits(monthlySpending)}</span>
                 </div>
-                
-                {/* X-axis labels */}
-                <div className="absolute bottom-0 left-0 right-0 flex justify-between text-xs text-gray-500 pt-4">
-                  {dailyUsage.map((day, i) => {
-                    const date = new Date(day.date);
-                    return (
-                      <div key={i} className="text-center">
-                        {date.getDate()} May
-                      </div>
-                    );
-                  })}
+                <div className="flex justify-between items-center">
+                  <span className="text-sm text-gray-600">Current Balance</span>
+                  <span className="font-semibold text-green-600">{formatCredits(creditBalance)}</span>
+                </div>
+                <div className="flex justify-between items-center">
+                  <span className="text-sm text-gray-600">Low Balance Alert</span>
+                  <span className="font-semibold">{formatCredits(minBalance)} credits</span>
                 </div>
               </div>
             </div>
@@ -390,37 +453,49 @@ export default function Billing() {
                 </tr>
               </thead>
               <tbody className="bg-white divide-y divide-gray-200">
-                {transactions.map(transaction => (
-                  <tr key={transaction.id} className="hover:bg-gray-50">
-                    <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
-                      {new Date(transaction.date).toLocaleDateString()}
-                    </td>
-                    <td className="px-6 py-4 whitespace-nowrap">
-                      <span className={`capitalize ${
-                        transaction.type === 'purchase' || transaction.type === 'auto-refill'
-                          ? 'text-green-600' 
-                          : 'text-blue-600'
-                      }`}>
-                        {transaction.type}
-                      </span>
-                    </td>
-                    <td className="px-6 py-4 whitespace-nowrap font-medium">
-                      <span className={transaction.credits > 0 ? 'text-green-600' : 'text-gray-900'}>
-                        {transaction.credits > 0 ? '+' : ''}{transaction.credits}
-                      </span>
-                    </td>
-                    <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
-                      {transaction.type === 'usage' ? `${transaction.service} usage` : 
-                        transaction.type === 'purchase' ? 'Manual purchase' : 
-                        'Automatic refill'}
-                    </td>
-                    <td className="px-6 py-4 whitespace-nowrap">
-                      <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-green-100 text-green-800">
-                        {transaction.status}
-                      </span>
+                {isLoading ? (
+                  <tr>
+                    <td colSpan={5} className="px-6 py-12 text-center">
+                      <Loader2 className="h-8 w-8 animate-spin text-blue-500 mx-auto" />
                     </td>
                   </tr>
-                ))}
+                ) : transactions.length === 0 ? (
+                  <tr>
+                    <td colSpan={5} className="px-6 py-12 text-center text-gray-500">
+                      No transactions yet
+                    </td>
+                  </tr>
+                ) : (
+                  transactions.map(transaction => (
+                    <tr key={transaction.id} className="hover:bg-gray-50">
+                      <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
+                        {new Date(transaction.createdAt).toLocaleDateString()}
+                      </td>
+                      <td className="px-6 py-4 whitespace-nowrap">
+                        <span className={`capitalize ${
+                          transaction.type === 'purchase' || transaction.type === 'bonus'
+                            ? 'text-green-600' 
+                            : transaction.type === 'consumption' ? 'text-orange-600' : 'text-blue-600'
+                        }`}>
+                          {transaction.type}
+                        </span>
+                      </td>
+                      <td className="px-6 py-4 whitespace-nowrap font-medium">
+                        <span className={transaction.amount > 0 ? 'text-green-600' : 'text-gray-900'}>
+                          {transaction.amount > 0 ? '+' : ''}{transaction.amount}
+                        </span>
+                      </td>
+                      <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
+                        {transaction.description}
+                      </td>
+                      <td className="px-6 py-4 whitespace-nowrap">
+                        <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-green-100 text-green-800">
+                          Balance: {transaction.balanceAfter}
+                        </span>
+                      </td>
+                    </tr>
+                  ))
+                )}
               </tbody>
             </table>
           </div>

@@ -83,6 +83,9 @@ export class CommunicationService {
     success: boolean; 
     sid?: string; 
     error?: string;
+    price?: string;
+    priceUnit?: string;
+    numSegments?: string;
   }> {
     try {
       console.log(`Sending SMS from ${from} to ${to}: ${body}`);
@@ -113,7 +116,10 @@ export class CommunicationService {
         
         return {
           success: true,
-          sid: message.sid
+          sid: message.sid,
+          price: message.price || undefined,
+          priceUnit: message.priceUnit || undefined,
+          numSegments: message.numSegments || undefined,
         };
       } else {
         throw new Error("Communication service client not initialized");

@@ -46,7 +46,7 @@ import {
   conversationMetadata,
 } from "@shared/schema";
 import { db } from "./db";
-import { eq, and, sql, desc, or, lte } from "drizzle-orm";
+import { eq, and, sql, desc, or, lte, gte, inArray } from "drizzle-orm";
 import { ZodError } from "zod";
 import { fromZodError } from "zod-validation-error";
 
@@ -1068,6 +1068,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
         messageSid: result.sid,
         mediaUrls: mediaUrls || [],
         providerCode: providerCode,
+        price: (result as any).price,
+        priceUnit: (result as any).priceUnit || 'USD',
+        segmentCount: (result as any).numSegments ? parseInt((result as any).numSegments) : 1,
       });
       
       // Also save to in-memory storage for backward compatibility
@@ -5416,6 +5419,139 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
+  /**
+   * Get expense/spending report from message costs
+   * Returns total spend by provider, campaign, and time period
+   */
+  app.get("/api/analytics/expenses", async (req, res) => {
+    try {
+      const userId = (req as any).user?.id || 1;
+      const accountId = req.query.accountId ? parseInt(req.query.accountId as string) : undefined;
+      const startDate = req.query.startDate 
+        ? new Date(req.query.startDate as string)
+        : new Date(Date.now() - 30 * 24 * 60 * 60 * 1000); // Default 30 days
+      const endDate = req.query.endDate
+        ? new Date(req.query.endDate as string)
+        : new Date();
+
+      // Query messages with price data
+      let query = db
+        .select({
+          providerCode: smsMessages.providerCode,
+          campaignId: smsMessages.campaignId,
+          price: smsMessages.price,
+          priceUnit: smsMessages.priceUnit,
+          segmentCount: smsMessages.segmentCount,
+          direction: smsMessages.direction,
+          sentAt: smsMessages.sentAt,
+        })
+        .from(smsMessages)
+        .where(
+          and(
+            gte(smsMessages.sentAt, startDate),
+            lte(smsMessages.sentAt, endDate),
+            accountId ? eq(smsMessages.accountId, accountId) : undefined
+          )
+        );
+
+      const messages = await query;
+
+      // Calculate totals
+      let totalSpend = 0;
+      let totalMessages = messages.length;
+      let totalSegments = 0;
+      const byProvider: Record<string, { count: number; spend: number; segments: number }> = {};
+      const byCampaign: Record<number, { count: number; spend: number; segments: number }> = {};
+      const byDay: Record<string, { count: number; spend: number }> = {};
+
+      for (const msg of messages) {
+        const price = msg.price ? parseFloat(msg.price) : 0;
+        const segments = msg.segmentCount || 1;
+        const provider = msg.providerCode || 'unknown';
+        const day = msg.sentAt ? new Date(msg.sentAt).toISOString().split('T')[0] : 'unknown';
+
+        totalSpend += price;
+        totalSegments += segments;
+
+        // By provider
+        if (!byProvider[provider]) {
+          byProvider[provider] = { count: 0, spend: 0, segments: 0 };
+        }
+        byProvider[provider].count++;
+        byProvider[provider].spend += price;
+        byProvider[provider].segments += segments;
+
+        // By campaign
+        if (msg.campaignId) {
+          if (!byCampaign[msg.campaignId]) {
+            byCampaign[msg.campaignId] = { count: 0, spend: 0, segments: 0 };
+          }
+          byCampaign[msg.campaignId].count++;
+          byCampaign[msg.campaignId].spend += price;
+          byCampaign[msg.campaignId].segments += segments;
+        }
+
+        // By day
+        if (!byDay[day]) {
+          byDay[day] = { count: 0, spend: 0 };
+        }
+        byDay[day].count++;
+        byDay[day].spend += price;
+      }
+
+      // Get campaign names
+      const campaignIds = Object.keys(byCampaign).map(Number);
+      let campaignNames: Record<number, string> = {};
+      if (campaignIds.length > 0) {
+        const campaigns = await db
+          .select({ id: smsCampaigns.id, name: smsCampaigns.name })
+          .from(smsCampaigns)
+          .where(inArray(smsCampaigns.id, campaignIds));
+        campaignNames = Object.fromEntries(campaigns.map(c => [c.id, c.name]));
+      }
+
+      // Format campaign data with names
+      const campaignExpenses = Object.entries(byCampaign).map(([id, data]) => ({
+        campaignId: parseInt(id),
+        campaignName: campaignNames[parseInt(id)] || `Campaign ${id}`,
+        ...data,
+        avgCostPerMessage: data.count > 0 ? data.spend / data.count : 0,
+      })).sort((a, b) => b.spend - a.spend);
+
+      res.json({
+        summary: {
+          totalSpend: totalSpend.toFixed(4),
+          totalMessages,
+          totalSegments,
+          avgCostPerMessage: totalMessages > 0 ? (totalSpend / totalMessages).toFixed(6) : '0',
+          avgCostPerSegment: totalSegments > 0 ? (totalSpend / totalSegments).toFixed(6) : '0',
+          currency: 'USD',
+          period: { startDate: startDate.toISOString(), endDate: endDate.toISOString() },
+        },
+        byProvider: Object.entries(byProvider).map(([provider, data]) => ({
+          provider,
+          ...data,
+          spend: data.spend.toFixed(4),
+        })),
+        byCampaign: campaignExpenses.map(c => ({
+          ...c,
+          spend: c.spend.toFixed(4),
+          avgCostPerMessage: c.avgCostPerMessage.toFixed(6),
+        })),
+        byDay: Object.entries(byDay)
+          .sort(([a], [b]) => a.localeCompare(b))
+          .map(([date, data]) => ({
+            date,
+            ...data,
+            spend: data.spend.toFixed(4),
+          })),
+      });
+    } catch (error: any) {
+      console.error("Error fetching expense data:", error);
+      res.status(500).json({ error: error.message || "Failed to fetch expense data" });
+    }
+  });
+
   // Twilio Analytics endpoint - Real-time Twilio data (with Redis caching)
   app.get("/api/twilio/analytics", async (req, res) => {
     try {
@@ -6480,31 +6616,31 @@ export async function registerRoutes(app: Express): Promise<Server> {
   const { campaignService } = await import('./services/campaignService');
 
   /**
-   * Get all contact lists (optimized with limit)
+   * Get all contact lists (no default limit - returns all lists)
    */
   app.get("/api/campaigns/contact-lists", async (req, res) => {
     try {
       const accountId = req.query.accountId ? parseInt(req.query.accountId as string) : undefined;
       const userId = (req as any).user?.id || 1;
-      const limit = req.query.limit ? parseInt(req.query.limit as string) : 100;
+      const limit = req.query.limit ? parseInt(req.query.limit as string) : undefined;
       
-      let query = db
-        .select()
-        .from(contactLists)
-        .where(eq(contactLists.userId, userId))
-        .orderBy(contactLists.createdAt)
-        .limit(limit);
-        
+      let query;
       if (accountId) {
         query = db
           .select()
           .from(contactLists)
           .where(and(eq(contactLists.userId, userId), eq(contactLists.accountId, accountId)))
-          .orderBy(contactLists.createdAt)
-          .limit(limit) as any;
+          .orderBy(desc(contactLists.createdAt));
+      } else {
+        query = db
+          .select()
+          .from(contactLists)
+          .where(eq(contactLists.userId, userId))
+          .orderBy(desc(contactLists.createdAt));
       }
       
-      const lists = await query;
+      // Apply limit only if explicitly requested
+      const lists = limit ? await (query as any).limit(limit) : await query;
       res.json({ lists });
     } catch (error: any) {
       console.error("Error fetching contact lists:", error);
@@ -6639,6 +6775,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
   /**
    * Delete a contact list
+   * Blocks if campaigns are using this list
    */
   app.delete("/api/campaigns/contact-lists/:id", async (req, res) => {
     try {
@@ -6653,7 +6790,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
       res.json({ success: true, message: "Contact list deleted successfully" });
     } catch (error: any) {
       console.error("Error deleting contact list:", error);
-      res.status(500).json({ error: error.message || "Failed to delete contact list" });
+      // Return 409 Conflict if it's a "cannot delete" error due to linked campaigns
+      const status = error.message?.includes('Cannot delete') ? 409 : 500;
+      res.status(status).json({ error: error.message || "Failed to delete contact list" });
     }
   });
 

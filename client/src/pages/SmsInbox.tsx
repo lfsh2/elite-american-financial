@@ -583,7 +583,7 @@ export default function SmsInbox() {
         headers: { 'Content-Type': 'application/json' },
         credentials: 'include',
         body: JSON.stringify({
-          userId: 1, // TODO: Get from auth context
+          userId: user?.id || 1,
           to: selectedConversation.contactPhone,
           from: selectedFromNumber,
           body: newMessage,

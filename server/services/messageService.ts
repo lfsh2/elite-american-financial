@@ -356,6 +356,9 @@ class MessageService {
           campaignId: message.campaignId,
           mediaUrls: message.mediaUrls,
           providerCode: message.providerCode,
+          price: message.price,
+          priceUnit: message.priceUnit,
+          segmentCount: message.segmentCount,
         })
         .returning({ id: smsMessages.id });
 

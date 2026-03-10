@@ -1035,7 +1035,7 @@ export default function SmsCampaigns() {
 
       toast({
         title: 'Success',
-        description: 'Contact list deleted successfully',
+        description: result.message || 'Contact list deleted successfully',
       });
 
       // Refresh data to ensure consistency

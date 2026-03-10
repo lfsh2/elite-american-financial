@@ -51,6 +51,9 @@ export const smsMessages = pgTable("sms_messages", {
   campaignId: integer("campaign_id").references(() => smsCampaigns.id),
   mediaUrls: text("media_urls").array(),
   providerCode: text("provider_code"), // twilio, commio, bandwidth
+  price: text("price"), // Cost from provider (e.g., "0.0075")
+  priceUnit: text("price_unit"), // Currency (e.g., "USD")
+  segmentCount: integer("segment_count"), // Number of segments for long messages
   createdAt: timestamp("created_at").defaultNow(),
 }, (table) => ({
   // Performance indexes for common queries

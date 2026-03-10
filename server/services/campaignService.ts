@@ -284,6 +284,7 @@ async function updateContactListCount(contactListId: number): Promise<void> {
 
 /**
  * Delete a contact list and all its members
+ * Blocks deletion if any campaigns are using this list
  */
 export async function deleteContactList(
   userId: number,
@@ -297,6 +298,18 @@ export async function deleteContactList(
 
   if (!list) {
     throw new Error("Contact list not found or access denied");
+  }
+
+  // Check if any campaigns are using this contact list
+  const linkedCampaigns = await db
+    .select({ id: smsCampaigns.id, name: smsCampaigns.name })
+    .from(smsCampaigns)
+    .where(eq(smsCampaigns.contactListId, contactListId));
+
+  if (linkedCampaigns.length > 0) {
+    const campaignNames = linkedCampaigns.slice(0, 3).map(c => c.name).join(', ');
+    const moreCount = linkedCampaigns.length > 3 ? ` and ${linkedCampaigns.length - 3} more` : '';
+    throw new Error(`Cannot delete: This contact list is used by ${linkedCampaigns.length} campaign(s): ${campaignNames}${moreCount}. Please delete or modify those campaigns first.`);
   }
 
   // Delete all members first

@@ -1,4 +1,4 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect, useCallback } from 'react';
 import { 
   TrendingUp, 
   MessageSquare, 
@@ -68,7 +68,7 @@ import { PhoneHealthDashboard } from '@/components/PhoneHealthDashboard';
 import { usePhoneHealth } from '@/hooks/usePhoneHealth';
 
 type TimePeriod = 'day' | 'week' | 'month';
-type AnalyticsTab = 'overview' | 'delivery' | 'response' | 'latency' | 'engagement' | 'health';
+type AnalyticsTab = 'overview' | 'expenses' | 'delivery' | 'response' | 'latency' | 'engagement' | 'health';
 
 // Health score rating helper
 const getHealthRating = (score: number) => {
@@ -102,6 +102,50 @@ export default function Analytics() {
     dateFilter === 'month' ? '30days' : '90days';
   
   const { data: phoneHealthData, loading: healthLoading, refresh: refreshHealth } = usePhoneHealth(healthDateRange);
+
+  // Expense data state
+  const [expenseData, setExpenseData] = useState<any>(null);
+  const [expenseLoading, setExpenseLoading] = useState(false);
+
+  // Fetch expense data
+  const fetchExpenseData = useCallback(async () => {
+    setExpenseLoading(true);
+    try {
+      const now = new Date();
+      let startDate: Date;
+      if (dateFilter === 'today') {
+        startDate = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+      } else if (dateFilter === 'week') {
+        startDate = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
+      } else if (dateFilter === 'month') {
+        startDate = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000);
+      } else {
+        startDate = new Date(now.getTime() - 90 * 24 * 60 * 60 * 1000);
+      }
+      
+      const params = new URLSearchParams({
+        startDate: startDate.toISOString(),
+        endDate: now.toISOString(),
+      });
+      
+      const res = await fetch(`/api/analytics/expenses?${params}`, { credentials: 'include' });
+      if (res.ok) {
+        const data = await res.json();
+        setExpenseData(data);
+      }
+    } catch (error) {
+      console.error('Error fetching expense data:', error);
+    } finally {
+      setExpenseLoading(false);
+    }
+  }, [dateFilter]);
+
+  // Fetch expense data when tab changes to expenses or date filter changes
+  useEffect(() => {
+    if (activeTab === 'expenses') {
+      fetchExpenseData();
+    }
+  }, [activeTab, dateFilter, fetchExpenseData]);
 
   // Transform account data to analytics format for compatibility
   const analytics = useMemo(() => {
@@ -507,6 +551,13 @@ export default function Analytics() {
                 className="rounded-none border-b-2 border-transparent data-[state=active]:border-primary data-[state=active]:bg-transparent data-[state=active]:shadow-none px-2 sm:px-4 pb-3 text-xs sm:text-sm"
               >
                 Latency
+              </TabsTrigger>
+              <TabsTrigger 
+                value="expenses" 
+                className="rounded-none border-b-2 border-transparent data-[state=active]:border-primary data-[state=active]:bg-transparent data-[state=active]:shadow-none px-2 sm:px-4 pb-3 text-xs sm:text-sm"
+              >
+                <DollarSign className="w-3 h-3 sm:w-4 sm:h-4 mr-1 sm:mr-2" />
+                Expenses
               </TabsTrigger>
               <TabsTrigger 
                 value="engagement" 
@@ -1073,6 +1124,180 @@ export default function Analytics() {
             <CardDescription>Coming soon</CardDescription>
           </CardHeader>
         </Card>
+      )}
+
+      {/* Expenses Tab Content */}
+      {activeTab === 'expenses' && (
+        <div className="space-y-6">
+          {expenseLoading ? (
+            <div className="flex justify-center py-12">
+              <RefreshCw className="h-8 w-8 animate-spin text-blue-500" />
+            </div>
+          ) : expenseData ? (
+            <>
+              {/* Summary Cards */}
+              <div className="grid gap-4 md:grid-cols-4">
+                <Card className="bg-white border-0 shadow-sm">
+                  <CardContent className="pt-6">
+                    <div className="flex items-center justify-between">
+                      <div>
+                        <p className="text-sm text-muted-foreground">Total Spend</p>
+                        <p className="text-2xl font-bold text-green-600">${expenseData.summary.totalSpend}</p>
+                      </div>
+                      <div className="p-3 bg-green-100 rounded-full">
+                        <DollarSign className="h-5 w-5 text-green-600" />
+                      </div>
+                    </div>
+                  </CardContent>
+                </Card>
+                <Card className="bg-white border-0 shadow-sm">
+                  <CardContent className="pt-6">
+                    <div className="flex items-center justify-between">
+                      <div>
+                        <p className="text-sm text-muted-foreground">Total Messages</p>
+                        <p className="text-2xl font-bold">{formatNumber(expenseData.summary.totalMessages)}</p>
+                      </div>
+                      <div className="p-3 bg-blue-100 rounded-full">
+                        <MessageSquare className="h-5 w-5 text-blue-600" />
+                      </div>
+                    </div>
+                  </CardContent>
+                </Card>
+                <Card className="bg-white border-0 shadow-sm">
+                  <CardContent className="pt-6">
+                    <div className="flex items-center justify-between">
+                      <div>
+                        <p className="text-sm text-muted-foreground">Avg Cost/Message</p>
+                        <p className="text-2xl font-bold">${expenseData.summary.avgCostPerMessage}</p>
+                      </div>
+                      <div className="p-3 bg-purple-100 rounded-full">
+                        <TrendingUp className="h-5 w-5 text-purple-600" />
+                      </div>
+                    </div>
+                  </CardContent>
+                </Card>
+                <Card className="bg-white border-0 shadow-sm">
+                  <CardContent className="pt-6">
+                    <div className="flex items-center justify-between">
+                      <div>
+                        <p className="text-sm text-muted-foreground">Total Segments</p>
+                        <p className="text-2xl font-bold">{formatNumber(expenseData.summary.totalSegments)}</p>
+                      </div>
+                      <div className="p-3 bg-orange-100 rounded-full">
+                        <Activity className="h-5 w-5 text-orange-600" />
+                      </div>
+                    </div>
+                  </CardContent>
+                </Card>
+              </div>
+
+              <div className="grid gap-6 lg:grid-cols-2">
+                {/* Spend by Provider */}
+                <Card className="bg-white border-0 shadow-sm">
+                  <CardHeader className="pb-3">
+                    <CardTitle className="text-base">Spend by Provider</CardTitle>
+                  </CardHeader>
+                  <CardContent>
+                    {expenseData.byProvider.length > 0 ? (
+                      <div className="space-y-4">
+                        {expenseData.byProvider.map((p: any) => (
+                          <div key={p.provider} className="flex items-center justify-between p-3 bg-gray-50 rounded-lg">
+                            <div>
+                              <p className="font-medium capitalize">{p.provider}</p>
+                              <p className="text-sm text-muted-foreground">{formatNumber(p.count)} messages</p>
+                            </div>
+                            <div className="text-right">
+                              <p className="font-bold text-green-600">${p.spend}</p>
+                              <p className="text-xs text-muted-foreground">{p.segments} segments</p>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    ) : (
+                      <p className="text-center text-muted-foreground py-8">No provider data available</p>
+                    )}
+                  </CardContent>
+                </Card>
+
+                {/* Daily Spend Chart */}
+                <Card className="bg-white border-0 shadow-sm">
+                  <CardHeader className="pb-3">
+                    <CardTitle className="text-base">Daily Spend</CardTitle>
+                  </CardHeader>
+                  <CardContent>
+                    {expenseData.byDay.length > 0 ? (
+                      <ResponsiveContainer width="100%" height={200}>
+                        <BarChart data={expenseData.byDay}>
+                          <CartesianGrid strokeDasharray="3 3" vertical={false} />
+                          <XAxis 
+                            dataKey="date" 
+                            tickFormatter={(d) => new Date(d).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}
+                            tick={{ fontSize: 11 }}
+                          />
+                          <YAxis tick={{ fontSize: 11 }} tickFormatter={(v) => `$${v}`} />
+                          <Tooltip 
+                            formatter={(value: any) => [`$${value}`, 'Spend']}
+                            labelFormatter={(d) => new Date(d).toLocaleDateString()}
+                          />
+                          <Bar dataKey="spend" fill="#10b981" radius={[4, 4, 0, 0]} />
+                        </BarChart>
+                      </ResponsiveContainer>
+                    ) : (
+                      <p className="text-center text-muted-foreground py-8">No daily data available</p>
+                    )}
+                  </CardContent>
+                </Card>
+              </div>
+
+              {/* Campaign Expenses Table */}
+              <Card className="bg-white border-0 shadow-sm">
+                <CardHeader className="pb-3">
+                  <CardTitle className="text-base">Spend by Campaign</CardTitle>
+                  <CardDescription>Cost breakdown for each SMS campaign</CardDescription>
+                </CardHeader>
+                <CardContent>
+                  {expenseData.byCampaign.length > 0 ? (
+                    <Table>
+                      <TableHeader>
+                        <TableRow>
+                          <TableHead>Campaign</TableHead>
+                          <TableHead className="text-right">Messages</TableHead>
+                          <TableHead className="text-right">Segments</TableHead>
+                          <TableHead className="text-right">Avg Cost</TableHead>
+                          <TableHead className="text-right">Total Spend</TableHead>
+                        </TableRow>
+                      </TableHeader>
+                      <TableBody>
+                        {expenseData.byCampaign.map((c: any) => (
+                          <TableRow key={c.campaignId}>
+                            <TableCell className="font-medium">{c.campaignName}</TableCell>
+                            <TableCell className="text-right">{formatNumber(c.count)}</TableCell>
+                            <TableCell className="text-right">{formatNumber(c.segments)}</TableCell>
+                            <TableCell className="text-right">${c.avgCostPerMessage}</TableCell>
+                            <TableCell className="text-right font-semibold text-green-600">${c.spend}</TableCell>
+                          </TableRow>
+                        ))}
+                      </TableBody>
+                    </Table>
+                  ) : (
+                    <p className="text-center text-muted-foreground py-8">No campaign expense data available yet. Expenses will appear here as messages are sent.</p>
+                  )}
+                </CardContent>
+              </Card>
+            </>
+          ) : (
+            <Card>
+              <CardContent className="py-12 text-center">
+                <DollarSign className="h-12 w-12 mx-auto text-muted-foreground mb-4" />
+                <p className="text-muted-foreground">No expense data available for this period</p>
+                <Button variant="outline" className="mt-4" onClick={fetchExpenseData}>
+                  <RefreshCw className="h-4 w-4 mr-2" />
+                  Refresh
+                </Button>
+              </CardContent>
+            </Card>
+          )}
+        </div>
       )}
     </div>
   );
