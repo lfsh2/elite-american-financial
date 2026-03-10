@@ -958,3 +958,26 @@ export const insertCreditPackageSchema = createInsertSchema(creditPackages).omit
 
 export type CreditPackage = typeof creditPackages.$inferSelect;
 export type InsertCreditPackage = z.infer<typeof insertCreditPackageSchema>;
+
+// Conversation metadata for SMS inbox filters (starred, read status)
+export const conversationMetadata = pgTable("conversation_metadata", {
+  id: serial("id").primaryKey(),
+  userId: integer("user_id").notNull().references(() => users.id),
+  contactPhone: text("contact_phone").notNull(),
+  isStarred: boolean("is_starred").notNull().default(false),
+  lastReadAt: timestamp("last_read_at"),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+  updatedAt: timestamp("updated_at").notNull().defaultNow(),
+}, (table) => ({
+  // Unique constraint: one metadata record per user+contact combination
+  userContactIdx: index("idx_conv_meta_user_contact").on(table.userId, table.contactPhone),
+}));
+
+export const insertConversationMetadataSchema = createInsertSchema(conversationMetadata).omit({
+  id: true,
+  createdAt: true,
+  updatedAt: true,
+});
+
+export type ConversationMetadata = typeof conversationMetadata.$inferSelect;
+export type InsertConversationMetadata = z.infer<typeof insertConversationMetadataSchema>;

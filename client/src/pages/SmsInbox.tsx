@@ -125,11 +125,15 @@ export default function SmsInbox() {
   // New conversation
   const [showNewConversation, setShowNewConversation] = useState(false);
   const [newConversationPhone, setNewConversationPhone] = useState('');
+  
+  // Conversation metadata (starred, read status) from backend
+  const [conversationMetadata, setConversationMetadata] = useState<Record<string, { isStarred: boolean; lastReadAt: string | null }>>({});
 
   useEffect(() => {
     fetchConversations(false); // Always fetch fresh data on initial load
     fetchPhoneNumbers();
     fetchCampaigns();
+    fetchConversationMetadata(); // Fetch starred/read status
   }, [currentAccount]);
 
   // Auto-refresh conversations every 30 seconds to pick up new inbound messages
@@ -250,6 +254,18 @@ export default function SmsInbox() {
     }
   };
 
+  const fetchConversationMetadata = async () => {
+    try {
+      const res = await fetch('/api/conversations/metadata', { credentials: 'include' });
+      if (res.ok) {
+        const data = await res.json();
+        setConversationMetadata(data.metadata || {});
+      }
+    } catch (error) {
+      console.error('Error fetching conversation metadata:', error);
+    }
+  };
+
   const fetchConversations = async (useCache = true, page = 1) => {
     // Only show loading on initial load, not on background refreshes
     if (conversations.length === 0) {
@@ -297,7 +313,7 @@ export default function SmsInbox() {
             lastMessage: conv.lastMessage || '',
             lastMessageTime: conv.lastMessageTime || new Date().toISOString(),
             unreadCount: conv.unreadCount || 0,
-            isStarred: false,
+            isStarred: conversationMetadata[conv.contactPhone]?.isStarred || false,
             messages: [], // Messages loaded on demand when conversation is selected
           }));
         }
@@ -349,7 +365,7 @@ export default function SmsInbox() {
                 lastMessage: message.body,
                 lastMessageTime: message.createdAt,
                 unreadCount: msg.direction === 'inbound' && msg.status !== 'read' ? 1 : 0,
-                isStarred: false,
+                isStarred: conversationMetadata[contactPhone]?.isStarred || false,
                 messages: [message],
               });
             }
@@ -442,6 +458,19 @@ export default function SmsInbox() {
   const handleSelectConversation = async (conversation: Conversation) => {
     // Set conversation immediately with existing messages (may be empty)
     setSelectedConversation({ ...conversation, messages: conversation.messages || [] });
+    
+    // Mark conversation as read (fire and forget)
+    if (conversation.unreadCount > 0) {
+      fetch(`/api/conversations/${encodeURIComponent(conversation.contactPhone)}/mark-read`, {
+        method: 'POST',
+        credentials: 'include',
+      }).then(() => {
+        // Update local state to reflect read status
+        setConversations(prev => prev.map(c => 
+          c.id === conversation.id ? { ...c, unreadCount: 0 } : c
+        ));
+      }).catch(err => console.error('Error marking as read:', err));
+    }
     
     // Helper to update contact details
     const updateContactDetails = (messages: Message[], contactName: string) => {
@@ -665,8 +694,42 @@ export default function SmsInbox() {
     }
   });
 
-  const toggleStar = (convId: string) => {
-    setConversations(prev => prev.map(c => c.id === convId ? { ...c, isStarred: !c.isStarred } : c));
+  const toggleStar = async (convId: string) => {
+    // Find the conversation to get the contact phone
+    const conv = conversations.find(c => c.id === convId);
+    if (!conv) return;
+    
+    // Optimistically update UI
+    const newStarred = !conv.isStarred;
+    setConversations(prev => prev.map(c => c.id === convId ? { ...c, isStarred: newStarred } : c));
+    
+    // Persist to backend
+    try {
+      const res = await fetch(`/api/conversations/${encodeURIComponent(conv.contactPhone)}/star`, {
+        method: 'POST',
+        credentials: 'include',
+      });
+      
+      if (res.ok) {
+        const data = await res.json();
+        // Update metadata state
+        setConversationMetadata(prev => ({
+          ...prev,
+          [conv.contactPhone]: {
+            ...prev[conv.contactPhone],
+            isStarred: data.isStarred,
+          },
+        }));
+      } else {
+        // Revert on error
+        setConversations(prev => prev.map(c => c.id === convId ? { ...c, isStarred: !newStarred } : c));
+        toast({ title: 'Error', description: 'Failed to update star status', variant: 'destructive' });
+      }
+    } catch (error) {
+      // Revert on error
+      setConversations(prev => prev.map(c => c.id === convId ? { ...c, isStarred: !newStarred } : c));
+      console.error('Error toggling star:', error);
+    }
   };
 
   const toggleSelectContact = (contactId: string) => {

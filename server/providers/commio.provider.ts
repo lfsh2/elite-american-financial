@@ -127,50 +127,54 @@ export class CommioProvider implements ICommunicationProvider {
   // ============================================
 
   async getPhoneNumbers(): Promise<PhoneNumber[]> {
-    // ThinQ API endpoints to try for phone numbers
-    const endpoints = [
-      '/product/origination/did/list',
-      '/product/origination/did',
-      '/origination/did/list',
-      '/origination/did',
-    ];
+    // ThinQ API typically requires special DID management permissions that most SMS-only tokens don't have.
+    // Most Commio accounts use manually imported phone numbers instead.
+    // We'll try the API once with a single endpoint, but gracefully return empty if it fails.
+    // This prevents log spam from 403/404 errors on accounts with limited permissions.
     
-    for (const endpoint of endpoints) {
-      try {
-        console.log(`[Commio] Trying endpoint: ${endpoint}`);
-        const response = await this.apiRequest<any>('GET', endpoint);
+    const endpoint = '/product/origination/did';
+    
+    try {
+      console.log(`[Commio] Attempting to fetch phone numbers from API`);
+      const response = await this.apiRequest<any>('GET', endpoint);
+      
+      // Response structure: { rows: [...], total: number } or array directly
+      const numbers = response.rows || response.data || response.dids || response || [];
+      const numberList = Array.isArray(numbers) ? numbers : [];
+      
+      if (numberList.length > 0) {
+        console.log(`[Commio] Fetched ${numberList.length} phone numbers from API`);
         
-        // Response structure: { rows: [...], total: number } or array directly
-        const numbers = response.rows || response.data || response.dids || response || [];
-        const numberList = Array.isArray(numbers) ? numbers : [];
-        
-        if (numberList.length > 0) {
-          console.log(`[Commio] Fetched ${numberList.length} phone numbers from ${endpoint}`);
-          
-          return numberList.map((n: any) => ({
-            sid: n.id || n.did_id || n.did || n.phone_number,
-            phoneNumber: this.formatPhoneNumber(n.did || n.phone_number || n.number),
-            friendlyName: n.friendly_name || n.name || n.did || n.phone_number,
-            capabilities: {
-              sms: n.sms_enabled ?? n.features?.sms ?? true,
-              voice: n.voice_enabled ?? n.features?.voice ?? true,
-              mms: n.mms_enabled ?? n.features?.mms ?? false,
-            },
-            status: n.status || 'active',
-            monthlyCost: n.monthly_cost || n.price,
-            dateCreated: n.created_at || n.purchase_date || new Date().toISOString(),
-            // Commio/ThinQ numbers are typically A2P registered through their platform
-            a2pStatus: (n.sms_enabled ?? n.features?.sms ?? true) ? 'registered' as const : 'unknown' as const,
-          }));
-        }
-      } catch (error: any) {
-        console.log(`[Commio] Endpoint ${endpoint} failed: ${error.message}`);
-        continue;
+        return numberList.map((n: any) => ({
+          sid: n.id || n.did_id || n.did || n.phone_number,
+          phoneNumber: this.formatPhoneNumber(n.did || n.phone_number || n.number),
+          friendlyName: n.friendly_name || n.name || n.did || n.phone_number,
+          capabilities: {
+            sms: n.sms_enabled ?? n.features?.sms ?? true,
+            voice: n.voice_enabled ?? n.features?.voice ?? true,
+            mms: n.mms_enabled ?? n.features?.mms ?? false,
+          },
+          status: n.status || 'active',
+          monthlyCost: n.monthly_cost || n.price,
+          dateCreated: n.created_at || n.purchase_date || new Date().toISOString(),
+          // Commio/ThinQ numbers are typically A2P registered through their platform
+          a2pStatus: (n.sms_enabled ?? n.features?.sms ?? true) ? 'registered' as const : 'unknown' as const,
+        }));
       }
+      
+      // API returned empty - this is normal, use imported numbers instead
+      console.log(`[Commio] API returned no phone numbers - use imported numbers instead`);
+      return [];
+    } catch (error: any) {
+      // 403/404 errors are expected for SMS-only tokens without DID management permissions
+      // Log once at info level and return empty - caller should use imported numbers
+      if (error.message?.includes('403') || error.message?.includes('404')) {
+        console.log(`[Commio] DID listing not available (token may lack permissions) - use imported numbers instead`);
+      } else {
+        console.log(`[Commio] Could not fetch phone numbers: ${error.message}`);
+      }
+      return [];
     }
-    
-    console.error('[Commio] All phone number endpoints failed');
-    return [];
   }
   
   private formatPhoneNumber(number: string): string {

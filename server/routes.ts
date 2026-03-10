@@ -43,6 +43,7 @@ import {
   messageTemplates,
   accountPhoneNumbers,
   providers,
+  conversationMetadata,
 } from "@shared/schema";
 import { db } from "./db";
 import { eq, and, sql, desc, or, lte } from "drizzle-orm";
@@ -6209,6 +6210,122 @@ export async function registerRoutes(app: Express): Promise<Server> {
   });
 
   /**
+   * Toggle starred status for a conversation
+   */
+  app.post("/api/conversations/:contactPhone/star", async (req, res) => {
+    try {
+      const userId = (req as any).user?.id || 1;
+      const contactPhone = decodeURIComponent(req.params.contactPhone);
+
+      // Check if metadata exists
+      const existing = await db
+        .select()
+        .from(conversationMetadata)
+        .where(
+          and(
+            eq(conversationMetadata.userId, userId),
+            eq(conversationMetadata.contactPhone, contactPhone)
+          )
+        )
+        .limit(1);
+
+      if (existing.length > 0) {
+        // Toggle existing
+        const newStarred = !existing[0].isStarred;
+        await db
+          .update(conversationMetadata)
+          .set({ isStarred: newStarred, updatedAt: new Date() })
+          .where(eq(conversationMetadata.id, existing[0].id));
+        
+        res.json({ isStarred: newStarred });
+      } else {
+        // Create new with starred = true
+        await db.insert(conversationMetadata).values({
+          userId,
+          contactPhone,
+          isStarred: true,
+        });
+        
+        res.json({ isStarred: true });
+      }
+    } catch (error) {
+      console.error("Error toggling star:", error);
+      res.status(500).json({ error: "Failed to toggle star" });
+    }
+  });
+
+  /**
+   * Mark conversation as read
+   */
+  app.post("/api/conversations/:contactPhone/mark-read", async (req, res) => {
+    try {
+      const userId = (req as any).user?.id || 1;
+      const contactPhone = decodeURIComponent(req.params.contactPhone);
+      const now = new Date();
+
+      // Check if metadata exists
+      const existing = await db
+        .select()
+        .from(conversationMetadata)
+        .where(
+          and(
+            eq(conversationMetadata.userId, userId),
+            eq(conversationMetadata.contactPhone, contactPhone)
+          )
+        )
+        .limit(1);
+
+      if (existing.length > 0) {
+        // Update existing
+        await db
+          .update(conversationMetadata)
+          .set({ lastReadAt: now, updatedAt: now })
+          .where(eq(conversationMetadata.id, existing[0].id));
+      } else {
+        // Create new
+        await db.insert(conversationMetadata).values({
+          userId,
+          contactPhone,
+          lastReadAt: now,
+        });
+      }
+
+      res.json({ success: true, lastReadAt: now.toISOString() });
+    } catch (error) {
+      console.error("Error marking as read:", error);
+      res.status(500).json({ error: "Failed to mark as read" });
+    }
+  });
+
+  /**
+   * Get conversation metadata (starred, read status) for multiple contacts
+   */
+  app.get("/api/conversations/metadata", async (req, res) => {
+    try {
+      const userId = (req as any).user?.id || 1;
+
+      const metadata = await db
+        .select()
+        .from(conversationMetadata)
+        .where(eq(conversationMetadata.userId, userId));
+
+      // Return as a map for easy lookup
+      const metadataMap: Record<string, { isStarred: boolean; lastReadAt: string | null }> = {};
+      metadata.forEach((m) => {
+        metadataMap[m.contactPhone] = {
+          isStarred: m.isStarred,
+          lastReadAt: m.lastReadAt?.toISOString() || null,
+        };
+      });
+
+      res.json({ metadata: metadataMap });
+    } catch (error) {
+      console.error("Error fetching conversation metadata:", error);
+      res.status(500).json({ error: "Failed to fetch conversation metadata" });
+    }
+  });
+
+  /**
    * Get message stats for dashboard
    */
   app.get("/api/messages/stats", async (req, res) => {
@@ -7410,7 +7527,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       let query = db
         .select()
         .from(smsCampaigns)
-        .orderBy(smsCampaigns.createdAt)
+        .orderBy(desc(smsCampaigns.createdAt))
         .limit(limit);
         
       if (accountId) {
@@ -7418,7 +7535,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
           .select()
           .from(smsCampaigns)
           .where(eq(smsCampaigns.accountId, accountId))
-          .orderBy(smsCampaigns.createdAt)
+          .orderBy(desc(smsCampaigns.createdAt))
           .limit(limit) as any;
       }
       
