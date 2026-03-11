@@ -984,3 +984,29 @@ export const insertConversationMetadataSchema = createInsertSchema(conversationM
 
 export type ConversationMetadata = typeof conversationMetadata.$inferSelect;
 export type InsertConversationMetadata = z.infer<typeof insertConversationMetadataSchema>;
+
+// Contacted Recipients - Global deduplication table to prevent number burning
+// Each phone number can only receive ONE campaign message ever (across all campaigns)
+export const contactedRecipients = pgTable("contacted_recipients", {
+  id: serial("id").primaryKey(),
+  // Phone number (unique - database-level guarantee of no duplicates)
+  phoneNumber: text("phone_number").notNull().unique(),
+  // User who owns this contact
+  userId: integer("user_id").notNull().references(() => users.id),
+  // First campaign that contacted this recipient
+  firstCampaignId: integer("first_campaign_id").references(() => smsCampaigns.id),
+  // Tracking
+  contactedAt: timestamp("contacted_at").notNull().defaultNow(),
+}, (table) => ({
+  // Index for fast lookups
+  phoneIdx: index("idx_contacted_recipients_phone").on(table.phoneNumber),
+  userIdx: index("idx_contacted_recipients_user").on(table.userId),
+}));
+
+export const insertContactedRecipientSchema = createInsertSchema(contactedRecipients).omit({
+  id: true,
+  contactedAt: true,
+});
+
+export type ContactedRecipient = typeof contactedRecipients.$inferSelect;
+export type InsertContactedRecipient = z.infer<typeof insertContactedRecipientSchema>;

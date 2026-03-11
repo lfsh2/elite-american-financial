@@ -18,6 +18,7 @@ import {
   optOutList,
   accounts,
   providers,
+  contactedRecipients,
   InsertBrandRegistration,
   InsertMessagingCampaign,
   InsertContactList,
@@ -1209,23 +1210,21 @@ async function sendCampaignMessages(
     // Send to each recipient
     for (const recipient of recipients) {
       try {
-        // CRITICAL: GLOBAL DEDUPLICATION - Check if recipient was EVER contacted by ANY campaign
+        // CRITICAL: GLOBAL DEDUPLICATION - Check contacted_recipients table (fast indexed lookup)
         // This prevents number burning by ensuring each recipient only gets ONE message across ALL campaigns
         const globalCheck = await db.execute(sql`
-          SELECT sm.id, sm.campaign_id, sm."from" as from_number
-          FROM sms_messages sm
-          WHERE sm."to" = ${recipient.phoneNumber}
-            AND sm.status IN ('sent', 'delivered', 'queued', 'accepted')
-          ORDER BY sm.sent_at DESC
+          SELECT id, first_campaign_id
+          FROM contacted_recipients
+          WHERE phone_number = ${recipient.phoneNumber}
           LIMIT 1
         `);
-        const existingMsg = (globalCheck as any).rows?.[0] || (globalCheck as any)[0];
+        const existingContact = (globalCheck as any).rows?.[0] || (globalCheck as any)[0];
         
-        if (existingMsg) {
+        if (existingContact) {
           // Recipient was already contacted - skip to prevent number burning
-          console.log(`[Campaign] ⚠️ GLOBAL SKIP ${recipient.phoneNumber} - already contacted by campaign ${existingMsg.campaign_id} from ${existingMsg.from_number}`);
+          console.log(`[Campaign] ⚠️ GLOBAL SKIP ${recipient.phoneNumber} - already contacted by campaign ${existingContact.first_campaign_id}`);
           await db.update(campaignRecipients)
-            .set({ status: 'skipped' as any, errorMessage: `Already contacted by campaign ${existingMsg.campaign_id}` })
+            .set({ status: 'skipped' as any, errorMessage: `Already contacted by campaign ${existingContact.first_campaign_id}` })
             .where(eq(campaignRecipients.id, recipient.id));
           continue;
         }
@@ -1278,6 +1277,18 @@ async function sendCampaignMessages(
               eq(campaignRecipients.id, recipient.id),
               eq(campaignRecipients.status, 'sending')
             ));
+          
+          // CRITICAL: Add to contacted_recipients for global deduplication
+          // Uses ON CONFLICT DO NOTHING for race condition safety
+          try {
+            await db.execute(sql`
+              INSERT INTO contacted_recipients (phone_number, user_id, first_campaign_id, contacted_at)
+              VALUES (${recipient.phoneNumber}, ${campaign.userId}, ${smsCampaignId}, NOW())
+              ON CONFLICT (phone_number) DO NOTHING
+            `);
+          } catch (contactedErr) {
+            console.error(`[Campaign] Failed to record contacted recipient ${recipient.phoneNumber}:`, contactedErr);
+          }
         } else {
           await db
             .update(campaignRecipients)

@@ -1756,7 +1756,12 @@ export default function SmsCampaigns() {
     completedCampaigns: campaigns.filter(c => c.status === 'completed').length,
     totalSent: campaigns.reduce((sum, c) => sum + (c.sentCount || 0), 0),
     totalDelivered: campaigns.reduce((sum, c) => sum + (c.deliveredCount || 0), 0),
-    totalFailed: campaigns.reduce((sum, c) => sum + (c.failedCount || 0), 0),
+    // Use stored failed_count if > 0 (reference data), otherwise calculate Sent - Delivered
+    totalFailed: campaigns.reduce((sum, c) => {
+      const storedFailed = c.failedCount || 0;
+      const calculatedFailed = Math.max(0, (c.sentCount || 0) - (c.deliveredCount || 0));
+      return sum + (storedFailed > 0 ? storedFailed : calculatedFailed);
+    }, 0),
     totalRecipients: campaigns.reduce((sum, c) => sum + (c.recipientCount || 0), 0),
     totalContacts: contactLists.reduce((sum, l) => sum + (l.contactCount || 0), 0),
   };
@@ -3312,6 +3317,7 @@ export default function SmsCampaigns() {
                         <TableHead>Status</TableHead>
                         <TableHead>Recipients</TableHead>
                         <TableHead>Sent</TableHead>
+                        <TableHead>Delivered</TableHead>
                         <TableHead>Failed</TableHead>
                         <TableHead>Created</TableHead>
                         <TableHead className="w-[100px]">Actions</TableHead>
@@ -3323,7 +3329,10 @@ export default function SmsCampaigns() {
                         const progress = activeProgressMap[campaign.id];
                         const displayStatus = progress?.status || campaign.status;
                         const displaySent = progress?.sent ?? campaign.sentCount ?? 0;
-                        const displayFailed = progress?.failed ?? campaign.failedCount ?? 0;
+                        const displayDelivered = campaign.deliveredCount ?? 0;
+                        // Use stored failed_count if > 0 (reference data), otherwise calculate Sent - Delivered
+                        const storedFailed = campaign.failedCount ?? 0;
+                        const displayFailed = storedFailed > 0 ? storedFailed : Math.max(0, displaySent - displayDelivered);
                         
                         return (
                         <TableRow key={campaign.id}>
@@ -3348,7 +3357,29 @@ export default function SmsCampaigns() {
                           <TableCell>{getStatusBadge(displayStatus)}</TableCell>
                           <TableCell>{campaign.recipientCount?.toLocaleString() || 0}</TableCell>
                           <TableCell className="text-green-600 font-medium">{displaySent.toLocaleString()}</TableCell>
-                          <TableCell className="text-red-600">{displayFailed.toLocaleString()}</TableCell>
+                          <TableCell className="text-blue-600">{displayDelivered.toLocaleString()}</TableCell>
+                          <TableCell className="text-red-600">
+                            <div className="flex items-center gap-1">
+                              {displayFailed > 0 ? displayFailed.toLocaleString() : 0}
+                              {displayFailed > 0 && (
+                                <div className="relative group">
+                                  <AlertCircle className="h-3.5 w-3.5 text-amber-500 cursor-help" />
+                                  <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 hidden group-hover:block z-50 w-64">
+                                    <div className="bg-gray-900 text-white text-xs rounded-lg p-3 shadow-lg">
+                                      <p className="font-semibold mb-1">Why messages fail:</p>
+                                      <ul className="space-y-0.5 text-gray-300">
+                                        <li>• Carrier filtering (spam)</li>
+                                        <li>• Invalid/disconnected numbers</li>
+                                        <li>• Phone off/unreachable</li>
+                                        <li>• DND protection</li>
+                                      </ul>
+                                      <div className="absolute top-full left-1/2 -translate-x-1/2 border-4 border-transparent border-t-gray-900"></div>
+                                    </div>
+                                  </div>
+                                </div>
+                              )}
+                            </div>
+                          </TableCell>
                           <TableCell className="text-sm text-muted-foreground">
                             {new Date(campaign.createdAt).toLocaleDateString()}
                           </TableCell>
@@ -4082,8 +4113,10 @@ export default function SmsCampaigns() {
             const c = viewingCampaignDetail;
             const deliveryRate = c.recipientCount > 0 ? ((c.sentCount || 0) / c.recipientCount * 100).toFixed(1) : '0';
             const deliveredRate = (c.sentCount || 0) > 0 ? (((c.deliveredCount || 0) / (c.sentCount || 1)) * 100).toFixed(1) : '0';
-            const undelivered = (c.sentCount || 0) - (c.deliveredCount || 0) - (c.failedCount || 0);
-            const undeliveredRate = (c.sentCount || 0) > 0 ? ((undelivered / (c.sentCount || 1)) * 100).toFixed(1) : '0';
+            // Use stored failed_count if > 0 (reference data), otherwise calculate Sent - Delivered
+            const storedFailed = c.failedCount || 0;
+            const failedCount = storedFailed > 0 ? storedFailed : Math.max(0, (c.sentCount || 0) - (c.deliveredCount || 0));
+            const failedRate = (c.sentCount || 0) > 0 ? ((failedCount / (c.sentCount || 1)) * 100).toFixed(1) : '0';
             return (
               <>
                 <DialogHeader>
@@ -4110,12 +4143,53 @@ export default function SmsCampaigns() {
                       <div className="text-xs text-green-500">{deliveredRate}%</div>
                     </div>
                     <div className="bg-red-50 border border-red-200 rounded-lg p-3 text-center">
-                      <div className="text-2xl font-bold text-red-800">{(c.failedCount || 0).toLocaleString()}</div>
-                      <div className="text-xs text-red-600">Undelivered</div>
-                      <div className="text-lg font-semibold text-red-700">{undelivered > 0 ? undelivered : 0}</div>
-                      <div className="text-xs text-red-500">{undeliveredRate}%</div>
+                      <div className="text-2xl font-bold text-red-800">{failedCount > 0 ? failedCount.toLocaleString() : 0}</div>
+                      <div className="text-xs text-red-600">Failed</div>
+                      <div className="text-lg font-semibold text-red-700">{c.sentCount || 0}</div>
+                      <div className="text-xs text-red-500">{failedRate}%</div>
                     </div>
                   </div>
+
+                  {/* Failed Messages Explanation */}
+                  {failedCount > 0 && (
+                    <div className="bg-amber-50 border border-amber-200 rounded-lg p-4">
+                      <div className="flex items-start gap-2">
+                        <AlertCircle className="h-5 w-5 text-amber-600 mt-0.5 flex-shrink-0" />
+                        <div>
+                          <h4 className="font-semibold text-sm text-amber-800 mb-2">Why messages may not be delivered</h4>
+                          <ul className="text-xs text-amber-700 space-y-1">
+                            <li>• <strong>Carrier filtering</strong> - Carriers blocked messages as potential spam</li>
+                            <li>• <strong>Invalid/disconnected numbers</strong> - Phone numbers no longer in service</li>
+                            <li>• <strong>Phone off/unreachable</strong> - Recipient's phone was off or out of coverage</li>
+                            <li>• <strong>DND protection</strong> - Some carriers have spam protection enabled</li>
+                            <li>• <strong>Pending delivery receipts</strong> - Some carriers don't send delivery confirmations</li>
+                          </ul>
+                          <p className="text-xs text-amber-600 mt-2 italic">
+                            Note: Messages are charged when sent, regardless of carrier delivery status.
+                          </p>
+                        </div>
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Delivery Rate Boost Tip */}
+                  {parseFloat(deliveredRate) < 70 && (c.sentCount || 0) > 100 && (
+                    <div className="bg-blue-50 border border-blue-200 rounded-lg p-4">
+                      <div className="flex items-start gap-2">
+                        <TrendingUp className="h-5 w-5 text-blue-600 mt-0.5 flex-shrink-0" />
+                        <div>
+                          <h4 className="font-semibold text-sm text-blue-800 mb-2">Tips to improve delivery rate</h4>
+                          <ul className="text-xs text-blue-700 space-y-1">
+                            <li>• <strong>Clean your contact list</strong> - Remove invalid or disconnected numbers</li>
+                            <li>• <strong>Use A2P registered numbers</strong> - Registered numbers have higher trust with carriers</li>
+                            <li>• <strong>Avoid spam triggers</strong> - Don't use ALL CAPS, excessive punctuation, or spammy words</li>
+                            <li>• <strong>Personalize messages</strong> - Use recipient's name and relevant content</li>
+                            <li>• <strong>Send during business hours</strong> - Messages sent at odd hours may be filtered</li>
+                          </ul>
+                        </div>
+                      </div>
+                    </div>
+                  )}
 
                   {/* Engagement & Issue Tracking */}
                   <div className="grid grid-cols-2 gap-4">
@@ -4142,7 +4216,7 @@ export default function SmsCampaigns() {
                           <div className="text-[10px] text-gray-500">Segments</div>
                         </div>
                         <div className="bg-gray-50 border rounded-lg p-2 text-center">
-                          <div className="text-lg font-bold">{c.failedCount || 0}</div>
+                          <div className="text-lg font-bold">0</div>
                           <div className="text-[10px] text-gray-500">Invalid Numbers</div>
                         </div>
                         <div className="bg-gray-50 border rounded-lg p-2 text-center">

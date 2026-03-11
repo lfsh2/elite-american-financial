@@ -1,6 +1,6 @@
 import { db } from '../db';
-import { smsMessages, smsCampaigns, campaignRecipients } from '@shared/schema';
-import { eq, sql, and } from 'drizzle-orm';
+import { smsMessages, smsCampaigns, campaignRecipients, contactedRecipients } from '@shared/schema';
+import { eq, sql, and, inArray } from 'drizzle-orm';
 import Twilio from 'twilio';
 
 interface BatchRecipient {
@@ -635,26 +635,26 @@ class BatchSmsService {
       console.log(`[BatchSMS] ${pn.phoneNumber} (${pn.provider}): ${queue.length} messages`);
     });
 
-    // SCALING FIX: Pre-load ALL previously contacted phones into a Set (ONE query instead of N queries)
-    // This prevents N+1 DB queries during batch sending and dramatically reduces DB load
+    // SCALING FIX: Pre-load ALL previously contacted phones from contacted_recipients table
+    // This is MUCH faster than querying sms_messages (small indexed table vs large message table)
+    // The contacted_recipients table has a UNIQUE constraint on phone_number for guaranteed deduplication
     const globallyContactedPhones: Set<string> = new Set();
     try {
       const allRecipientPhones = recipients.map(r => r.phone);
-      // Query in chunks of 5000 to avoid query size limits
+      // Query contacted_recipients table in chunks of 5000
       for (let i = 0; i < allRecipientPhones.length; i += 5000) {
         const phoneChunk = allRecipientPhones.slice(i, i + 5000);
         const contactedResult = await db.execute(sql`
-          SELECT DISTINCT "to" as phone
-          FROM sms_messages
-          WHERE "to" = ANY(${phoneChunk})
-            AND status IN ('sent', 'delivered', 'queued', 'accepted')
+          SELECT phone_number as phone
+          FROM contacted_recipients
+          WHERE phone_number = ANY(${phoneChunk})
         `);
         const rows = (contactedResult as any).rows || contactedResult || [];
         for (const row of rows) {
           if (row.phone) globallyContactedPhones.add(row.phone);
         }
       }
-      console.log(`[BatchSMS] Pre-loaded ${globallyContactedPhones.size} globally contacted phones (will skip these)`);
+      console.log(`[BatchSMS] Pre-loaded ${globallyContactedPhones.size} globally contacted phones from contacted_recipients (will skip these)`);
     } catch (preloadErr) {
       console.error(`[BatchSMS] Failed to pre-load contacted phones, will check per-message:`, preloadErr);
     }
@@ -778,6 +778,22 @@ class BatchSmsService {
           messageSid: result.messageSid || null,
           error: result.error || null,
         });
+        
+        // CRITICAL: Add to contacted_recipients table for global deduplication
+        // This prevents the same recipient from receiving messages in future campaigns
+        // Uses ON CONFLICT DO NOTHING for race condition safety
+        if (result.success) {
+          try {
+            await db.execute(sql`
+              INSERT INTO contacted_recipients (phone_number, user_id, first_campaign_id, contacted_at)
+              VALUES (${recipient.phone}, ${userId}, ${campaignId}, NOW())
+              ON CONFLICT (phone_number) DO NOTHING
+            `);
+          } catch (contactedErr) {
+            // Non-fatal - log but don't fail the send
+            console.error(`[BatchSMS] Failed to record contacted recipient ${recipient.phone}:`, contactedErr);
+          }
+        }
       }
 
       if (onProgress) {
