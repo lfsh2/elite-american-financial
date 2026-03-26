@@ -168,28 +168,39 @@ class BatchSmsService {
     const normalizeKey = (str: string): string =>
       str.trim().toLowerCase().replace(/[\s\-\.]+/g, '_');
 
-    // Helper: flexible key lookup in recipient object (spaces↔underscores, case-insensitive, camel/snake)
+    // Build a normalized lookup map once: normalizedKey → original key
+    const recipientKeyMap: Record<string, string> = {};
+    for (const key of Object.keys(recipient)) {
+      const norm = normalizeKey(key);
+      if (!recipientKeyMap[norm]) recipientKeyMap[norm] = key;
+    }
+
+    // Helper: flexible key lookup — case-insensitive, spaces↔underscores, plural/singular fallback
     const findRecipientKey = (searchKey: string): string | undefined => {
-      // Exact match
       if (recipient[searchKey] !== undefined) return searchKey;
-      const normSearch = normalizeKey(searchKey);
-      for (const key of Object.keys(recipient)) {
-        if (normalizeKey(key) === normSearch) return key;
-      }
+      const norm = normalizeKey(searchKey);
+      if (recipientKeyMap[norm]) return recipientKeyMap[norm];
+      // Plural → singular fallback (e.g. debt_loads → debt_load)
+      if (norm.endsWith('s') && recipientKeyMap[norm.slice(0, -1)]) return recipientKeyMap[norm.slice(0, -1)];
+      // Singular → plural fallback
+      if (!norm.endsWith('s') && recipientKeyMap[norm + 's']) return recipientKeyMap[norm + 's'];
       return undefined;
     };
-    
+
     // Helper to find a value, checking top-level recipient and nested customFields
     const findValue = (fieldName: string): string | undefined => {
       const actualKey = findRecipientKey(fieldName);
       if (actualKey && recipient[actualKey] !== undefined) {
         return recipient[actualKey];
       }
-      // Also check nested customFields object with normalized matching
+      // Also check nested customFields object with normalized matching + plural fallback
       const customFields = (recipient as any).customFields;
       if (customFields && typeof customFields === 'object') {
-        const normField = normalizeKey(fieldName);
-        const cfKey = Object.keys(customFields).find(k => normalizeKey(k) === normField);
+        const norm = normalizeKey(fieldName);
+        const cfKeys = Object.keys(customFields);
+        const cfKey = cfKeys.find(k => normalizeKey(k) === norm)
+          || (norm.endsWith('s') ? cfKeys.find(k => normalizeKey(k) === norm.slice(0, -1)) : undefined)
+          || (!norm.endsWith('s') ? cfKeys.find(k => normalizeKey(k) === norm + 's') : undefined);
         if (cfKey && customFields[cfKey] !== undefined && customFields[cfKey] !== null) {
           return customFields[cfKey];
         }
