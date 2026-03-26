@@ -891,13 +891,33 @@ export async function addRecipientsFromContactList(
     optOutNumbers = new Set(optOuts.map(o => o.phoneNumber));
   }
 
-  // Get existing recipients to avoid duplicates
+  // Get existing recipients to avoid duplicates within this campaign
   const existingRecipients = await db
     .select({ phoneNumber: campaignRecipients.phoneNumber })
     .from(campaignRecipients)
     .where(eq(campaignRecipients.smsCampaignId, smsCampaignId));
-  
+
   const existingNumbers = new Set(existingRecipients.map(r => r.phoneNumber));
+
+  // Pre-load globally contacted phones to skip numbers already messaged in past campaigns
+  const allPhones = listContacts.map(({ contact }) => contact.phoneNumber).filter(Boolean) as string[];
+  const globallyContactedPhones = new Set<string>();
+  if (allPhones.length > 0) {
+    try {
+      for (let i = 0; i < allPhones.length; i += 5000) {
+        const chunk = allPhones.slice(i, i + 5000);
+        const result = await db.execute(sql`
+          SELECT phone_number FROM contacted_recipients WHERE phone_number = ANY(${chunk})
+        `);
+        const rows = (result as any).rows || result || [];
+        for (const row of rows) {
+          if (row.phone_number) globallyContactedPhones.add(row.phone_number);
+        }
+      }
+    } catch (e) {
+      console.error('[Campaign] Failed to pre-load contacted phones:', e);
+    }
+  }
 
   // Filter and prepare recipients for batch insert
   const recipientsToAdd: Array<{
@@ -944,7 +964,13 @@ export async function addRecipientsFromContactList(
       continue;
     }
 
-    // Check if already added
+    // Skip numbers already contacted in a previous campaign (global dedup)
+    if (globallyContactedPhones.has(contact.phoneNumber)) {
+      skipped++;
+      continue;
+    }
+
+    // Check if already added to this campaign
     if (existingNumbers.has(contact.phoneNumber)) {
       // If contact now has customFields, refresh them on the existing recipient
       // so re-imports always propagate the latest merge tag data
@@ -1069,8 +1095,23 @@ export async function startSmsCampaign(
     }
   }
 
-  // Allow resume from paused state; keep original startedAt when resuming
-  if (!['draft', 'scheduled', 'paused'].includes(campaign.status)) {
+  // ATOMIC LOCK: claim the campaign for starting in a single DB round-trip.
+  // This prevents two concurrent API calls from both spawning a send loop.
+  const claimResult = await db
+    .update(smsCampaigns)
+    .set({
+      status: 'sending',
+      startedAt: campaign.startedAt || new Date(),
+      updatedAt: new Date(),
+    })
+    .where(and(
+      eq(smsCampaigns.id, smsCampaignId),
+      inArray(smsCampaigns.status, ['draft', 'scheduled', 'paused'])
+    ))
+    .returning({ id: smsCampaigns.id });
+
+  if (!claimResult || claimResult.length === 0) {
+    // Status was already changed by another concurrent request
     return { success: false, message: `Cannot start campaign in ${campaign.status} status` };
   }
 
@@ -1081,6 +1122,8 @@ export async function startSmsCampaign(
     .where(eq(accounts.id, campaign.accountId!));
 
   if (!account || !account.accountSid || !account.authToken) {
+    // Roll back campaign status since we already set it to 'sending'
+    await db.update(smsCampaigns).set({ status: campaign.status as any, updatedAt: new Date() }).where(eq(smsCampaigns.id, smsCampaignId));
     return { success: false, message: 'Account credentials not configured' };
   }
 
@@ -1090,22 +1133,12 @@ export async function startSmsCampaign(
     .where(eq(providers.id, account.providerId));
 
   if (!provider) {
+    await db.update(smsCampaigns).set({ status: campaign.status as any, updatedAt: new Date() }).where(eq(smsCampaigns.id, smsCampaignId));
     return { success: false, message: 'Provider not found' };
   }
 
-  // CRITICAL: Reset counts to match actual recipient statuses before starting
-  // This prevents count drift from previous runs
+  // CRITICAL: Sync counts to match actual recipient statuses before starting
   await reconcileCampaignCounts(smsCampaignId);
-
-  // Update campaign status
-  await db
-    .update(smsCampaigns)
-    .set({
-      status: 'sending',
-      startedAt: campaign.startedAt || new Date(),
-      updatedAt: new Date(),
-    })
-    .where(eq(smsCampaigns.id, smsCampaignId));
 
   // Start sending in background
   sendCampaignMessages(smsCampaignId, campaign, account, provider.code as ProviderCode)
@@ -1210,10 +1243,32 @@ async function sendCampaignMessages(
       }
     }
 
-    // Get batch of recipients
+    // Get batch of recipients, merging contact's latest customFields with recipient-specific ones.
+    // This ensures debt_load and other CSV fields are always available even if contacts
+    // were re-imported after the campaign_recipients row was originally created.
+    // JSONB || merges: contact fields first, then recipient overrides on top.
     const recipients = await db
-      .select()
+      .select({
+        id: campaignRecipients.id,
+        smsCampaignId: campaignRecipients.smsCampaignId,
+        contactId: campaignRecipients.contactId,
+        phoneNumber: campaignRecipients.phoneNumber,
+        firstName: campaignRecipients.firstName,
+        lastName: campaignRecipients.lastName,
+        status: campaignRecipients.status,
+        messageSid: campaignRecipients.messageSid,
+        assignedFromNumber: campaignRecipients.assignedFromNumber,
+        sentAt: campaignRecipients.sentAt,
+        deliveredAt: campaignRecipients.deliveredAt,
+        failedAt: campaignRecipients.failedAt,
+        errorCode: campaignRecipients.errorCode,
+        errorMessage: campaignRecipients.errorMessage,
+        recipientTimezone: campaignRecipients.recipientTimezone,
+        createdAt: campaignRecipients.createdAt,
+        customFields: sql<Record<string, any>>`COALESCE(${contacts.customFields}, '{}'::jsonb) || COALESCE(${campaignRecipients.customFields}, '{}'::jsonb)`,
+      })
       .from(campaignRecipients)
+      .leftJoin(contacts, eq(campaignRecipients.contactId, contacts.id))
       .where(and(
         eq(campaignRecipients.smsCampaignId, smsCampaignId),
         eq(campaignRecipients.status, 'pending')
@@ -1231,27 +1286,8 @@ async function sendCampaignMessages(
     // Send to each recipient
     for (const recipient of recipients) {
       try {
-        // CRITICAL: GLOBAL DEDUPLICATION - Check contacted_recipients table (fast indexed lookup)
-        // This prevents number burning by ensuring each recipient only gets ONE message across ALL campaigns
-        const globalCheck = await db.execute(sql`
-          SELECT id, first_campaign_id
-          FROM contacted_recipients
-          WHERE phone_number = ${recipient.phoneNumber}
-          LIMIT 1
-        `);
-        const existingContact = (globalCheck as any).rows?.[0] || (globalCheck as any)[0];
-        
-        if (existingContact) {
-          // Recipient was already contacted - skip to prevent number burning
-          console.log(`[Campaign] ⚠️ GLOBAL SKIP ${recipient.phoneNumber} - already contacted by campaign ${existingContact.first_campaign_id}`);
-          await db.update(campaignRecipients)
-            .set({ status: 'skipped' as any, errorMessage: `Already contacted by campaign ${existingContact.first_campaign_id}` })
-            .where(eq(campaignRecipients.id, recipient.id));
-          continue;
-        }
-        
-        // ATOMIC LOCK: Claim recipient by setting status to 'sending' BEFORE sending
-        // This prevents duplicates across multiple processes/resumes
+        // ATOMIC LOCK: Claim recipient by setting status to 'sending' BEFORE sending.
+        // This prevents duplicates from concurrent campaign processes for the same campaign.
         const claimResult = await db
           .update(campaignRecipients)
           .set({ status: 'sending' as any })
@@ -1260,11 +1296,37 @@ async function sendCampaignMessages(
             eq(campaignRecipients.status, 'pending') // Only claim if still pending
           ))
           .returning({ id: campaignRecipients.id });
-        
+
         // If no rows updated, recipient was already claimed - skip
         if (!claimResult || claimResult.length === 0) {
           console.log(`[Campaign] ⚠️ SKIPPING ${recipient.phoneNumber} - already claimed`);
           continue;
+        }
+
+        // ATOMIC GLOBAL DEDUP: INSERT into contacted_recipients first.
+        // Uses ON CONFLICT DO NOTHING so only one campaign can "win" the INSERT.
+        // If RETURNING is empty, another campaign already contacted this number → skip.
+        let globalClaimSucceeded = false;
+        try {
+          const globalClaim = await db.execute(sql`
+            INSERT INTO contacted_recipients (phone_number, user_id, first_campaign_id, contacted_at)
+            VALUES (${recipient.phoneNumber}, ${campaign.userId}, ${smsCampaignId}, NOW())
+            ON CONFLICT (phone_number) DO NOTHING
+            RETURNING id
+          `);
+          const claimedRows = (globalClaim as any).rows || globalClaim || [];
+          if (claimedRows.length === 0) {
+            // Another campaign already contacted this number - skip it
+            console.log(`[Campaign] ⚠️ GLOBAL SKIP ${recipient.phoneNumber} - already contacted by a previous campaign`);
+            await db.update(campaignRecipients)
+              .set({ status: 'skipped' as any, errorMessage: 'Already contacted by a previous campaign' })
+              .where(eq(campaignRecipients.id, recipient.id));
+            continue;
+          }
+          globalClaimSucceeded = true;
+        } catch (globalClaimErr) {
+          console.error(`[Campaign] Failed to claim contacted recipient ${recipient.phoneNumber}:`, globalClaimErr);
+          // Continue anyway - other safeguards remain active
         }
         
         // Apply merge tags
@@ -1299,17 +1361,6 @@ async function sendCampaignMessages(
               eq(campaignRecipients.status, 'sending')
             ));
           
-          // CRITICAL: Add to contacted_recipients for global deduplication
-          // Uses ON CONFLICT DO NOTHING for race condition safety
-          try {
-            await db.execute(sql`
-              INSERT INTO contacted_recipients (phone_number, user_id, first_campaign_id, contacted_at)
-              VALUES (${recipient.phoneNumber}, ${campaign.userId}, ${smsCampaignId}, NOW())
-              ON CONFLICT (phone_number) DO NOTHING
-            `);
-          } catch (contactedErr) {
-            console.error(`[Campaign] Failed to record contacted recipient ${recipient.phoneNumber}:`, contactedErr);
-          }
         } else {
           await db
             .update(campaignRecipients)

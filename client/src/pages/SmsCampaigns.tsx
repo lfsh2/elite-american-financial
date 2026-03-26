@@ -1206,24 +1206,17 @@ export default function SmsCampaigns() {
       if (!listRes.ok) throw new Error('Failed to create contact list');
       const listData = await listRes.json();
 
-      // Transform contacts to separate standard fields from custom fields
+      // Transform contacts: use the already-parsed customFields object directly.
+      // Previously this re-scanned all contact keys, which leaked internal UI fields
+      // (like `selected` and the nested `customFields` object) into the stored data.
       const transformedContacts = contacts.map(contact => {
-        const standardFields = ['phoneNumber', 'firstName', 'lastName', 'email', 'birthday', 'address', 'city', 'state', 'zipCode', 'country', 'source'];
-        const customFields: Record<string, any> = {};
-        
-        // Separate custom fields from standard fields
-        Object.keys(contact).forEach(key => {
-          if (!standardFields.includes(key) && contact[key]) {
-            customFields[key] = contact[key];
-          }
-        });
-        
+        const cf = (contact as any).customFields as Record<string, any> | undefined;
         return {
           phoneNumber: contact.phoneNumber,
           firstName: contact.firstName || null,
           lastName: contact.lastName || null,
           email: contact.email || null,
-          customFields: Object.keys(customFields).length > 0 ? customFields : undefined,
+          customFields: cf && Object.keys(cf).length > 0 ? cf : undefined,
         };
       });
 
@@ -2622,10 +2615,10 @@ export default function SmsCampaigns() {
                       // Supports both {variable} and ${variable} formats
                       const standardVars = ['first_name', 'last_name', 'phone', 'phone_number', 'name', 'firstName', 'lastName', 'phoneNumber'];
                       const varMatches = newCampaign.messageTemplate.match(/\$?\{([a-zA-Z_][a-zA-Z0-9_]*)\}/g) || [];
-                      const customVars = [...new Set(varMatches
+                      const customVars = Array.from(new Set(varMatches
                         .map(v => v.replace(/[${}]/g, '')) // Remove $, {, and }
                         .filter(v => !standardVars.includes(v))
-                      )];
+                      ));
                       
                       // Get all available custom fields from uploaded contacts and selected list
                       const availableFields = new Set<string>();
