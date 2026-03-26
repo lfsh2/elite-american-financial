@@ -1635,7 +1635,15 @@ function applyMergeTags(template: string, data: Record<string, any>): string {
     if (data[trimmed] !== undefined) return trimmed;
     // Normalized match: handles spaces↔underscores, case, hyphens
     const norm = normalizeKey(trimmed);
-    return normalizedKeyMap[norm];
+    if (normalizedKeyMap[norm]) return normalizedKeyMap[norm];
+    // Plural/singular fallback: debt_loads ↔ debt_load (and similar)
+    if (norm.endsWith('s') && normalizedKeyMap[norm.slice(0, -1)]) {
+      return normalizedKeyMap[norm.slice(0, -1)];
+    }
+    if (!norm.endsWith('s') && normalizedKeyMap[norm + 's']) {
+      return normalizedKeyMap[norm + 's'];
+    }
+    return undefined;
   };
   
   // Helper function to process a merge tag

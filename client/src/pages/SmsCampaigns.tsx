@@ -387,6 +387,22 @@ export default function SmsCampaigns() {
 
   // Fetch custom fields when campaign dialog opens or contact list changes
   useEffect(() => {
+    // Normalize a key to deduplicate (same as server-side normalizeKey)
+    const normalizeFieldKey = (k: string) => k.trim().toLowerCase().replace(/[\s\-\.]+/g, '_');
+
+    // Collect unique custom field keys, deduplicating by normalized form
+    // Returns array of canonical (first-seen) key names
+    const deduplicateKeys = (keys: string[]): string[] => {
+      const seen = new Map<string, string>(); // normalized → original
+      const skipPatterns = ['middle', 'midl', 'stdaddr_midlnm'];
+      keys.forEach(key => {
+        if (skipPatterns.some(p => key.toLowerCase().includes(p))) return;
+        const norm = normalizeFieldKey(key);
+        if (!seen.has(norm)) seen.set(norm, key);
+      });
+      return Array.from(seen.values());
+    };
+
     const fetchCustomFields = async () => {
       // If a specific contact list is selected, fetch from that list
       if (newCampaign.contactListId) {
@@ -396,51 +412,36 @@ export default function SmsCampaigns() {
           });
           if (res.ok) {
             const data = await res.json();
-            const customFieldKeys = new Set<string>();
-            
+            const allKeys: string[] = [];
             (data.contacts || []).forEach((contact: any) => {
               if (contact.customFields) {
-                Object.keys(contact.customFields).forEach(key => {
-                  if (!key.includes('middle') && !key.includes('midl') && key !== 'stdaddr_midlnm') {
-                    customFieldKeys.add(key);
-                  }
-                });
+                allKeys.push(...Object.keys(contact.customFields));
               }
             });
-            
-            setSelectedListCustomFields(Array.from(customFieldKeys));
+            setSelectedListCustomFields(deduplicateKeys(allKeys));
             return;
           }
         } catch (error) {
           console.error('Failed to fetch custom fields:', error);
         }
       }
-      
-      // If no contact list selected but dialog is open, fetch from all lists to show available fields
+
+      // If no contact list selected but dialog is open, fetch from first list only
       if (showNewCampaign && contactLists.length > 0) {
         try {
-          const customFieldKeys = new Set<string>();
-          
-          // Fetch from first few contact lists to detect available custom fields
-          for (const list of contactLists.slice(0, 3)) {
-            const res = await fetch(`/api/campaigns/contact-lists/${list.id}/contacts?limit=50`, {
-              credentials: 'include'
+          const allKeys: string[] = [];
+          const res = await fetch(`/api/campaigns/contact-lists/${contactLists[0].id}/contacts?limit=50`, {
+            credentials: 'include'
+          });
+          if (res.ok) {
+            const data = await res.json();
+            (data.contacts || []).forEach((contact: any) => {
+              if (contact.customFields) {
+                allKeys.push(...Object.keys(contact.customFields));
+              }
             });
-            if (res.ok) {
-              const data = await res.json();
-              (data.contacts || []).forEach((contact: any) => {
-                if (contact.customFields) {
-                  Object.keys(contact.customFields).forEach(key => {
-                    if (!key.includes('middle') && !key.includes('midl') && key !== 'stdaddr_midlnm') {
-                      customFieldKeys.add(key);
-                    }
-                  });
-                }
-              });
-            }
           }
-          
-          setSelectedListCustomFields(Array.from(customFieldKeys));
+          setSelectedListCustomFields(deduplicateKeys(allKeys));
         } catch (error) {
           console.error('Failed to fetch custom fields:', error);
         }
@@ -2462,7 +2463,7 @@ export default function SmsCampaigns() {
                       <Textarea
                         ref={messageTemplateRef}
                         id="messageTemplate"
-                        placeholder="Hi {first_name}, quick update - we finalized details on an option around {{debt_loads}}. Please call me back here as soon as you can. 562-606-5539"
+                        placeholder="Hi {first_name}, quick update - we finalized details on an option around {{Debt_Load}}. Please call me back here as soon as you can. 562-606-5539"
                         className="min-h-[150px]"
                         value={newCampaign.messageTemplate}
                         onChange={(e) => setNewCampaign(prev => ({ ...prev, messageTemplate: e.target.value }))}
@@ -2494,29 +2495,37 @@ export default function SmsCampaigns() {
                               {tag}
                             </button>
                           ))}
-                          {/* Debt loads with automatic $ formatting */}
-                          <button
-                            type="button"
-                            className="bg-green-50 px-2 py-1 rounded text-green-700 text-xs border border-green-300 hover:bg-green-100 transition-colors font-medium"
-                            onClick={() => {
-                              const textarea = messageTemplateRef.current;
-                              const tag = '{{debt_loads}}';
-                              if (textarea) {
-                                const start = textarea.selectionStart;
-                                const end = textarea.selectionEnd;
-                                const text = newCampaign.messageTemplate;
-                                const newText = text.substring(0, start) + tag + text.substring(end);
-                                setNewCampaign(prev => ({ ...prev, messageTemplate: newText }));
-                                setTimeout(() => {
-                                  textarea.focus();
-                                  textarea.setSelectionRange(start + tag.length, start + tag.length);
-                                }, 0);
-                              }
-                            }}
-                            title="Automatically formats with $ sign"
-                          >
-                            {'{{debt_loads}}'} 💰
-                          </button>
+                          {/* Debt Load — dynamically uses actual field name from selected list */}
+                          {(() => {
+                            const debtField = selectedListCustomFields.find(k =>
+                              k.toLowerCase().replace(/[\s_]+/g, '') === 'debtload' ||
+                              k.toLowerCase().replace(/[\s_]+/g, '') === 'debtloads'
+                            ) || 'Debt_Load';
+                            const tag = `{{${debtField}}}`;
+                            return (
+                              <button
+                                type="button"
+                                className="bg-green-50 px-2 py-1 rounded text-green-700 text-xs border border-green-300 hover:bg-green-100 transition-colors font-medium"
+                                onClick={() => {
+                                  const textarea = messageTemplateRef.current;
+                                  if (textarea) {
+                                    const start = textarea.selectionStart;
+                                    const end = textarea.selectionEnd;
+                                    const text = newCampaign.messageTemplate;
+                                    const newText = text.substring(0, start) + tag + text.substring(end);
+                                    setNewCampaign(prev => ({ ...prev, messageTemplate: newText }));
+                                    setTimeout(() => {
+                                      textarea.focus();
+                                      textarea.setSelectionRange(start + tag.length, start + tag.length);
+                                    }, 0);
+                                  }
+                                }}
+                                title="Debt Load — automatically formats with $ sign"
+                              >
+                                {tag} 💰
+                              </button>
+                            );
+                          })()}
                           {/* Total Debt Amount with automatic $ formatting */}
                           <button
                             type="button"
@@ -2633,20 +2642,24 @@ export default function SmsCampaigns() {
                       
                       if (customVars.length === 0) return null;
                       
-                      // Check for dollar_amount -> debt_loads suggestion
+                      // Check for dollar_amount -> Debt_Load suggestion
                       const hasDollarAmount = customVars.includes('dollar_amount');
-                      const hasDebtLoads = availableFields.has('debt_loads');
-                      
+                      const debtLoadField = Array.from(availableFields).find(k =>
+                        k.toLowerCase().replace(/[\s_]+/g, '') === 'debtload' ||
+                        k.toLowerCase().replace(/[\s_]+/g, '') === 'debtloads'
+                      );
+                      const hasDebtLoads = !!debtLoadField;
+
                       return (
                         <div className="bg-amber-50 border border-amber-200 rounded-lg p-3">
                           <p className="text-xs font-medium text-amber-900 mb-2">📝 Custom Variables Detected:</p>
-                          
-                          {/* Show suggestion to use debt_loads instead of dollar_amount */}
+
+                          {/* Show suggestion to use Debt_Load instead of dollar_amount */}
                           {hasDollarAmount && hasDebtLoads && (
                             <div className="bg-green-100 border border-green-300 rounded p-2 mb-3">
-                              <p className="text-xs text-green-800 font-medium">💡 Tip: Your contact list has <code className="bg-white px-1 rounded">{'{debt_loads}'}</code> data!</p>
+                              <p className="text-xs text-green-800 font-medium">💡 Tip: Your contact list has <code className="bg-white px-1 rounded">{`{{${debtLoadField}}}`}</code> data!</p>
                               <p className="text-xs text-green-700 mt-1">
-                                Replace <code className="bg-white px-1 rounded">${'{dollar_amount}'}</code> with <code className="bg-white px-1 rounded">{'{debt_loads}'}</code> in your message to use the actual values from your CSV.
+                                Replace <code className="bg-white px-1 rounded">${'{dollar_amount}'}</code> with <code className="bg-white px-1 rounded">{`{{${debtLoadField}}}`}</code> in your message to use the actual values from your CSV.
                               </p>
                               <Button
                                 type="button"
@@ -2654,13 +2667,14 @@ export default function SmsCampaigns() {
                                 variant="outline"
                                 className="mt-2 h-7 text-xs bg-white border-green-400 text-green-700 hover:bg-green-50"
                                 onClick={() => {
+                                  const replacement = `{{${debtLoadField}}}`;
                                   const updatedTemplate = newCampaign.messageTemplate
-                                    .replace(/\$\{dollar_amount\}/g, '{debt_loads}')
-                                    .replace(/\{dollar_amount\}/g, '{debt_loads}');
+                                    .replace(/\$\{dollar_amount\}/g, replacement)
+                                    .replace(/\{dollar_amount\}/g, replacement);
                                   setNewCampaign(prev => ({ ...prev, messageTemplate: updatedTemplate }));
                                 }}
                               >
-                                Replace with {'{debt_loads}'}
+                                Replace with {`{{${debtLoadField}}}`}
                               </Button>
                             </div>
                           )}
@@ -3827,17 +3841,21 @@ export default function SmsCampaigns() {
                       {tag}
                     </button>
                   ))}
-                  {/* Debt loads with automatic $ formatting */}
+                  {/* Debt Load — use actual field name from list */}
                   <button
                     type="button"
                     className="bg-green-50 px-2 py-1 rounded text-green-700 text-xs border border-green-300 hover:bg-green-100 transition-colors font-medium"
                     onClick={() => {
+                      const debtField = selectedListCustomFields.find(k =>
+                        k.toLowerCase().replace(/[\s_]+/g, '') === 'debtload' ||
+                        k.toLowerCase().replace(/[\s_]+/g, '') === 'debtloads'
+                      ) || 'Debt_Load';
                       const content = newTemplate.content || newCampaign.messageTemplate || '';
-                      setNewTemplate(prev => ({ ...prev, content: content + '{{debt_loads}}' }));
+                      setNewTemplate(prev => ({ ...prev, content: content + `{{${debtField}}}` }));
                     }}
-                    title="Automatically formats with $ sign"
+                    title="Debt Load — automatically formats with $ sign"
                   >
-                    {'{{debt_loads}}'} 💰
+                    {`{{${selectedListCustomFields.find(k => k.toLowerCase().replace(/[\s_]+/g, '') === 'debtload' || k.toLowerCase().replace(/[\s_]+/g, '') === 'debtloads') || 'Debt_Load'}}}`} 💰
                   </button>
                   {/* Total Debt Amount with automatic $ formatting */}
                   <button
