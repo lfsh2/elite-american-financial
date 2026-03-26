@@ -7095,6 +7095,38 @@ export async function registerRoutes(app: Express): Promise<Server> {
   });
 
   /**
+   * Refresh campaign_recipients.customFields from the contacts table.
+   * Use this when contacts were re-imported with new CSV data (e.g. debt_load)
+   * after the campaign recipients were already created.
+   */
+  app.post("/api/campaigns/sms-campaigns/:campaignId/refresh-custom-fields", async (req, res) => {
+    try {
+      const campaignId = parseInt(req.params.campaignId);
+      if (!campaignId || isNaN(campaignId)) {
+        return res.status(400).json({ error: "Invalid campaign ID" });
+      }
+
+      const result = await db.execute(sql`
+        UPDATE campaign_recipients cr
+        SET custom_fields = c.custom_fields
+        FROM contacts c
+        WHERE cr.contact_id = c.id
+          AND cr.sms_campaign_id = ${campaignId}
+          AND cr.status = 'pending'
+          AND c.custom_fields IS NOT NULL
+          AND c.custom_fields != '{}'::jsonb
+      `);
+
+      const updated = (result as any).rowCount ?? 0;
+      console.log(`[Campaign] Refreshed customFields for ${updated} pending recipients in campaign ${campaignId}`);
+      res.json({ success: true, updated });
+    } catch (error: any) {
+      console.error("Error refreshing campaign recipient custom fields:", error);
+      res.status(500).json({ error: error.message || "Failed to refresh custom fields" });
+    }
+  });
+
+  /**
    * Pause SMS campaign (soft pause - campaign may continue current batch)
    */
   app.post("/api/campaigns/sms-campaigns/:campaignId/pause", async (req, res) => {
