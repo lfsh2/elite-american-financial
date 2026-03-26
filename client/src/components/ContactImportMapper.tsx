@@ -266,10 +266,14 @@ export default function ContactImportMapper({ onImportComplete, onCancel }: Cont
       // Map unmapped columns as custom fields
       const mappedColumnIndices = new Set(Object.values(fieldMappings).filter(idx => idx !== null));
       csvColumns.forEach((column) => {
-        if (!mappedColumnIndices.has(column.index) && row[column.index]) {
-          // Use the original column name as the custom field key
-          const customFieldKey = column.name.replace(/\s+/g, '_');
-          data[customFieldKey] = row[column.index]?.trim() || '';
+        if (!mappedColumnIndices.has(column.index)) {
+          // Normalize the column name: replace spaces/hyphens/dots with underscores
+          const customFieldKey = column.name.trim().replace(/[\s\-\.]+/g, '_');
+          const value = row[column.index]?.trim() || '';
+          // Store all non-empty values (empty values are excluded to keep DB clean)
+          if (value) {
+            data[customFieldKey] = value;
+          }
         }
       });
       

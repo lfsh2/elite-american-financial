@@ -164,42 +164,57 @@ class BatchSmsService {
       return valueStr;
     };
     
-    // Helper: case-insensitive key lookup in recipient object
+    // Normalize a key for flexible matching: lowercase + spaces/hyphens → underscores
+    const normalizeKey = (str: string): string =>
+      str.trim().toLowerCase().replace(/[\s\-\.]+/g, '_');
+
+    // Helper: flexible key lookup in recipient object (spaces↔underscores, case-insensitive, camel/snake)
     const findRecipientKey = (searchKey: string): string | undefined => {
-      const lowerSearch = searchKey.toLowerCase();
-      // Try exact match first
+      // Exact match
       if (recipient[searchKey] !== undefined) return searchKey;
-      // Try case-insensitive match against all keys
+      const normSearch = normalizeKey(searchKey);
       for (const key of Object.keys(recipient)) {
-        if (key.toLowerCase() === lowerSearch) return key;
+        if (normalizeKey(key) === normSearch) return key;
       }
-      // Try camelCase conversion (e.g., debt_loads -> debtLoads)
-      const camelCase = searchKey.replace(/_([a-z])/gi, (g: string) => g[1].toUpperCase());
-      if (recipient[camelCase] !== undefined) return camelCase;
-      // Try snake_case conversion (e.g., debtLoads -> debt_loads)
-      const snakeCase = searchKey.replace(/[A-Z]/g, (letter: string) => `_${letter.toLowerCase()}`);
-      if (recipient[snakeCase] !== undefined) return snakeCase;
       return undefined;
     };
     
+    // Helper to find a value, checking top-level recipient and nested customFields
+    const findValue = (fieldName: string): string | undefined => {
+      const actualKey = findRecipientKey(fieldName);
+      if (actualKey && recipient[actualKey] !== undefined) {
+        return recipient[actualKey];
+      }
+      // Also check nested customFields object with normalized matching
+      const customFields = (recipient as any).customFields;
+      if (customFields && typeof customFields === 'object') {
+        const normField = normalizeKey(fieldName);
+        const cfKey = Object.keys(customFields).find(k => normalizeKey(k) === normField);
+        if (cfKey && customFields[cfKey] !== undefined && customFields[cfKey] !== null) {
+          return customFields[cfKey];
+        }
+      }
+      return undefined;
+    };
+
     // Replace custom fields with double braces {{field}} first
     const doubleBracePattern = /\{\{([a-zA-Z_][a-zA-Z0-9_]*)\}\}/g;
     result = result.replace(doubleBracePattern, (match, fieldName) => {
-      const actualKey = findRecipientKey(fieldName);
-      if (actualKey && recipient[actualKey] !== undefined) {
-        return formatCurrencyValue(recipient[actualKey], fieldName);
+      const value = findValue(fieldName);
+      if (value !== undefined) {
+        return formatCurrencyValue(value, fieldName);
       }
-      return match;
+      return ''; // Return empty string instead of raw tag
     });
-    
+
     // Replace custom fields with single braces {field} or ${field}
     const customFieldPattern = /\$?\{([a-zA-Z_][a-zA-Z0-9_]*)\}/g;
     result = result.replace(customFieldPattern, (match, fieldName) => {
-      const actualKey = findRecipientKey(fieldName);
-      if (actualKey && recipient[actualKey] !== undefined) {
-        return formatCurrencyValue(recipient[actualKey], fieldName);
+      const value = findValue(fieldName);
+      if (value !== undefined) {
+        return formatCurrencyValue(value, fieldName);
       }
-      return match;
+      return ''; // Return empty string instead of raw tag
     });
     
     return result;

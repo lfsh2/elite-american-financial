@@ -915,6 +915,7 @@ export async function addRecipientsFromContactList(
   const currentRecipientCount = existingNumbers.size;
   const recipientLimit = campaign.recipientLimit;
   let processedCount = 0;
+  const recipientsToRefresh: Array<{ phoneNumber: string; customFields: Record<string, any> }> = [];
 
   for (const { contact } of listContacts) {
     processedCount++;
@@ -945,6 +946,14 @@ export async function addRecipientsFromContactList(
 
     // Check if already added
     if (existingNumbers.has(contact.phoneNumber)) {
+      // If contact now has customFields, refresh them on the existing recipient
+      // so re-imports always propagate the latest merge tag data
+      if (contact.customFields && Object.keys(contact.customFields as object).length > 0) {
+        recipientsToRefresh.push({
+          phoneNumber: contact.phoneNumber,
+          customFields: contact.customFields as Record<string, any>,
+        });
+      }
       skipped++;
       continue;
     }
@@ -969,7 +978,7 @@ export async function addRecipientsFromContactList(
     throw new Error('No contacts found in the selected contact list');
   }
 
-  // Batch insert recipients in chunks of 1000
+  // Batch insert new recipients in chunks of 1000
   const BATCH_SIZE = 1000;
   let added = 0;
 
@@ -977,10 +986,22 @@ export async function addRecipientsFromContactList(
     const batch = recipientsToAdd.slice(i, i + BATCH_SIZE);
     await db.insert(campaignRecipients).values(batch);
     added += batch.length;
-    console.log('[Campaign] Inserted batch', Math.floor(i / BATCH_SIZE) + 1, '- total added:', added);
   }
 
-  console.log('[Campaign] Recipients processed - added:', added, 'skipped:', skipped);
+  // Refresh customFields for already-existing recipients (handles re-imports)
+  // Only update pending recipients so we don't overwrite in-flight or completed sends
+  if (recipientsToRefresh.length > 0) {
+    for (const { phoneNumber, customFields } of recipientsToRefresh) {
+      await db
+        .update(campaignRecipients)
+        .set({ customFields })
+        .where(and(
+          eq(campaignRecipients.smsCampaignId, smsCampaignId),
+          eq(campaignRecipients.phoneNumber, phoneNumber),
+          eq(campaignRecipients.status, 'pending')
+        ));
+    }
+  }
 
   // Update campaign recipient count
   await db
@@ -1586,130 +1607,93 @@ function normalizePhoneNumber(phone: string): string {
  * Handles both snake_case ({first_name}) and camelCase (firstName) field names
  */
 function applyMergeTags(template: string, data: Record<string, any>): string {
-  // Create multiple lookup maps for flexible matching
-  const lowerKeyMap: Record<string, string> = {};
-  const snakeToCamelMap: Record<string, string> = {};
-  const camelToSnakeMap: Record<string, string> = {};
-  
-  // Helper to convert snake_case to camelCase
-  const snakeToCamel = (str: string): string => {
-    return str.replace(/_([a-z])/g, (_, letter) => letter.toUpperCase());
-  };
-  
-  // Helper to convert camelCase to snake_case
-  const camelToSnake = (str: string): string => {
-    return str.replace(/[A-Z]/g, letter => `_${letter.toLowerCase()}`);
-  };
-  
+  // Normalize a key: lowercase + replace spaces/hyphens/dots with underscores
+  const normalizeKey = (str: string): string =>
+    str.trim().toLowerCase().replace(/[\s\-\.]+/g, '_');
+
+  // Build lookup map: normalized key → original key
+  const normalizedKeyMap: Record<string, string> = {};
+
   Object.keys(data).forEach(key => {
-    lowerKeyMap[key.toLowerCase()] = key;
-    // Map snake_case versions to original keys
-    const snakeVersion = camelToSnake(key);
-    if (snakeVersion !== key) {
-      snakeToCamelMap[snakeVersion.toLowerCase()] = key;
+    normalizedKeyMap[normalizeKey(key)] = key;
+    // Also map camelCase variant (e.g., debtLoad → debt_load)
+    const snakeVariant = key.replace(/[A-Z]/g, l => `_${l.toLowerCase()}`);
+    if (!normalizedKeyMap[normalizeKey(snakeVariant)]) {
+      normalizedKeyMap[normalizeKey(snakeVariant)] = key;
     }
-    // Map camelCase versions to original keys
-    const camelVersion = snakeToCamel(key);
-    if (camelVersion !== key) {
-      camelToSnakeMap[camelVersion.toLowerCase()] = key;
+    // Also map snake_case → camelCase variant (e.g., first_name → firstName)
+    const camelVariant = key.replace(/_([a-zA-Z])/g, (_, l) => l.toUpperCase());
+    if (!normalizedKeyMap[normalizeKey(camelVariant)]) {
+      normalizedKeyMap[normalizeKey(camelVariant)] = key;
     }
   });
-  
-  // Helper function to find the actual key in data
+
+  // Find the actual data key for a template tag, with flexible matching
   const findActualKey = (tagKey: string): string | undefined => {
-    const trimmedKey = tagKey.trim();
-    const lowerKey = trimmedKey.toLowerCase();
-    
-    // Try exact match first
-    if (data[trimmedKey] !== undefined) return trimmedKey;
-    
-    // Try case-insensitive match
-    if (lowerKeyMap[lowerKey]) return lowerKeyMap[lowerKey];
-    
-    // Try snake_case to camelCase conversion (e.g., first_name -> firstName)
-    if (snakeToCamelMap[lowerKey]) return snakeToCamelMap[lowerKey];
-    
-    // Try camelCase to snake_case conversion (e.g., firstName -> first_name)
-    if (camelToSnakeMap[lowerKey]) return camelToSnakeMap[lowerKey];
-    
-    // Try direct conversion
-    const camelVersion = snakeToCamel(trimmedKey);
-    if (data[camelVersion] !== undefined) return camelVersion;
-    
-    const snakeVersion = camelToSnake(trimmedKey);
-    if (data[snakeVersion] !== undefined) return snakeVersion;
-    
-    return undefined;
+    const trimmed = tagKey.trim();
+    // Exact match
+    if (data[trimmed] !== undefined) return trimmed;
+    // Normalized match: handles spaces↔underscores, case, hyphens
+    const norm = normalizeKey(trimmed);
+    return normalizedKeyMap[norm];
   };
   
   // Helper function to process a merge tag
   const processMergeTag = (match: string, key: string): string => {
     const actualKey = findActualKey(key);
-    
-    console.log(`[MergeTag] Processing: "${key}" -> actualKey: "${actualKey}", available keys:`, Object.keys(data));
-    
-    // If no value found, keep the tag as-is
+
+    // If no value found, return empty string (don't leave raw {{tag}} in sent messages)
     if (!actualKey || data[actualKey] === undefined || data[actualKey] === null) {
-      console.log(`[MergeTag] No value found for "${key}", keeping original: "${match}"`);
-      return match;
+      return '';
     }
-    
+
     const value = data[actualKey];
     const lowerKey = key.trim().toLowerCase();
-    
-    console.log(`[MergeTag] Found value for "${key}": "${value}" (type: ${typeof value})`);
-    
+
     // Convert to string and clean whitespace
     let valueStr = String(value).trim();
-    
+
     // Check if this is a currency/numeric field by name OR if value looks like a number in parentheses
     const looksLikeNumber = /^\(?[\d,]+\.?\d*\)?$/.test(valueStr);
     const isCurrencyField = looksLikeNumber ||
-                           lowerKey.includes('debt') || 
-                           lowerKey.includes('amount') || 
+                           lowerKey.includes('debt') ||
+                           lowerKey.includes('amount') ||
                            lowerKey.includes('balance') ||
                            lowerKey.includes('total') ||
                            lowerKey.includes('price') ||
                            lowerKey.includes('cost') ||
                            lowerKey.includes('payment') ||
                            lowerKey.includes('fee');
-    
+
     // Extract numeric value from string (handles: 39235, (39235), $39,235, etc.)
     const numericPattern = /[\s$,()]*([0-9]+(?:\.[0-9]{1,2})?)[\s$,()]*/;
     const numericMatch = valueStr.match(numericPattern);
-    
-    console.log(`[MergeTag] isCurrencyField: ${isCurrencyField}, looksLikeNumber: ${looksLikeNumber}, numericMatch:`, numericMatch);
-    
+
     // Format as currency if it's a currency field OR if the entire value is numeric
     if (numericMatch && numericMatch[1]) {
       const cleanedNum = numericMatch[1];
       const isEntirelyNumeric = /^[\s$,()]*[0-9]+(?:\.[0-9]{1,2})?[\s$,()]*$/.test(valueStr);
-      
-      console.log(`[MergeTag] cleanedNum: ${cleanedNum}, isEntirelyNumeric: ${isEntirelyNumeric}`);
-      
+
       if (isCurrencyField || isEntirelyNumeric) {
         const numValue = parseFloat(cleanedNum);
-        
+
         if (!isNaN(numValue) && numValue >= 0) {
-          const formatted = '$' + numValue.toLocaleString('en-US', { 
-            minimumFractionDigits: 0, 
-            maximumFractionDigits: 0 
+          return '$' + numValue.toLocaleString('en-US', {
+            minimumFractionDigits: 0,
+            maximumFractionDigits: 0
           });
-          console.log(`[MergeTag] Formatted as currency: ${formatted}`);
-          return formatted;
         }
       }
     }
-    
-    console.log(`[MergeTag] Returning raw value: ${valueStr}`);
+
     return valueStr;
   };
   
-  // Replace double braces {{field}} first
+  // Replace double braces {{field}} — supports spaces, underscores, letters, digits
   let result = template.replace(/\{\{([^}]+)\}\}/g, processMergeTag);
-  
-  // Then replace single braces {field} for any valid field name (lowercase or uppercase)
-  result = result.replace(/\{([a-zA-Z_][a-zA-Z0-9_]*)\}/g, processMergeTag);
+
+  // Replace single braces {field} — supports spaces/underscores in field names
+  result = result.replace(/\{([a-zA-Z_][a-zA-Z0-9_ ]*)\}/g, processMergeTag);
   
   return result;
 }
