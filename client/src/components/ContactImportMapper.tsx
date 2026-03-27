@@ -327,12 +327,30 @@ export default function ContactImportMapper({ onImportComplete, onCancel }: Cont
 
   // Handle import
   const handleImport = () => {
+    const STANDARD_FIELDS = new Set(['phoneNumber', 'firstName', 'lastName', 'email', 'birthday', 'address', 'city', 'state', 'zipCode', 'country']);
+
     const selectedContacts = parsedContacts
       .filter(c => c.selected)
-      .map(c => ({
-        ...c.data,
-        source: 'csv-import'
-      }));
+      .map(c => {
+        const standardData: Record<string, any> = {};
+        const customFieldsData: Record<string, any> = {};
+
+        for (const [key, value] of Object.entries(c.data)) {
+          if (STANDARD_FIELDS.has(key)) {
+            standardData[key] = value;
+          } else {
+            customFieldsData[key] = value;
+          }
+        }
+
+        return {
+          ...standardData,
+          customFields: Object.keys(customFieldsData).length > 0 ? customFieldsData : undefined,
+          // Also spread custom fields at top level for UI/merge tag preview compatibility
+          ...customFieldsData,
+          source: 'csv-import',
+        };
+      });
     
     if (selectedContacts.length === 0) {
       toast({
